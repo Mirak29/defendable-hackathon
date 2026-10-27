@@ -3,6 +3,7 @@
 // give are read by the real test engine.
 import { eq, test } from '/api/lib/test.ts'
 import {
+  INTERVIEWER,
   judgePrompt,
   needAnalysisPrompt,
   needAnalysisSchema,
@@ -144,6 +145,16 @@ test('the prompts say what the demo scenario shows', async (step) => {
     eq(prompt.includes('javascript:alert(1)'), true)
     eq(prompt.includes('names the shortcut it catches'), true)
   })
+  await step(
+    'the interviewer is told to speak one clean question at a time',
+    () => {
+      eq(INTERVIEWER.includes('exactly one question mark'), true)
+      eq(INTERVIEWER.includes('Never announce what you are going to ask'), true)
+      eq(INTERVIEWER.includes('exactly once'), true)
+      eq(INTERVIEWER.includes('One ask per turn'), true)
+      eq(INTERVIEWER.includes('Never state what the code does'), true)
+    },
+  )
   await step('the demo scenario respects its own rules', () => {
     const names = demoAssessment.skills.map((s) => s.name)
     for (const r of demoAssessment.requirements) {

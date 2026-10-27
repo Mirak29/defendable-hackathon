@@ -25,7 +25,8 @@ Built for the Meta Global AI Developer Hackathon, with Meta's models.
 | Sandbox: runs the candidate's code, judges the tests on the server     | done  |
 | Recruiter pages (list, new assessment, review, approval)               | next  |
 | Candidate journey (link, consent, editor, submission)                  | next  |
-| Voice interview with Meta models (Muse Voice Transcribe + Muse Spark)  | next  |
+| Voice interview: server, interviewer prompt, test page (`/dev/voice`)  | done  |
+| Voice interview inside the candidate journey                           | next  |
 | Report and decision                                                    | next  |
 
 ## How an assessment is generated
@@ -49,7 +50,8 @@ the test grammar are checked against the real parsers by `api/prompts.test.js`.
 | Use                                             | Model                                        |
 | ----------------------------------------------- | -------------------------------------------- |
 | Generation, reference solution, judge, analysis | `muse-spark-1.3` (fallback `muse-spark-1.2`) |
-| Listening to the candidate (planned)            | `muse-voice-transcribe-1.0`                  |
+| The interviewer (spoken, streamed)              | `muse-wonder-1.0` (fallback Muse Spark)      |
+| Listening to the candidate                      | `muse-voice-transcribe-1.0`                  |
 | Development and benchmarks with fictional data  | `muse-spark-1.3-contributor`                 |
 
 Candidate code and answers are never sent to a Contributor-mode model (Meta may
