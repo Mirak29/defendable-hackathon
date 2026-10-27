@@ -1,6 +1,6 @@
-import { useEffect } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { paths } from '/web/paths.ts'
-import { navigate } from '/web/lib/router-signal.ts'
+import { navigate, url } from '/web/lib/router-signal.ts'
 import {
   loadMe,
   me,
@@ -9,6 +9,7 @@ import {
 } from '/web/lib/candidate-store.ts'
 import { startVoice, stopVoice, voice } from '/web/lib/voice-client.ts'
 import { Spinner } from '/web/ui/spinner.tsx'
+import { OracleOrb } from '/web/ui/oracle-orb.tsx'
 import { Logo } from '/web/ui/topbar.tsx'
 import { CircleCheck, CircleX, Mic } from '/web/assets/icons.tsx'
 import type { ProgressState } from '/web/types.ts'
@@ -67,6 +68,30 @@ export const InterviewPage = () => {
   // leaving the page ends the call
   useEffect(() => () => stopVoice(), [])
 
+  // Oracle starts by itself. The browser only lets a page speak after a click
+  // of the person: coming from the editor (Submit) it has one, after a reload
+  // it has not and one button asks for it.
+  const ready = view?.preparation?.steps.at(-1)?.state === 'done' &&
+    !view.finishedAt
+  const started = useRef(false)
+  const [needsGesture, setNeedsGesture] = useState(false)
+  useEffect(() => {
+    if (!ready || started.current || url.params.demo === '1') return
+    started.current = true
+    if (navigator.userActivation?.hasBeenActive) startVoice()
+    else setNeedsGesture(true)
+  }, [ready])
+
+  // the conversation follows its latest message
+  const scroller = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight })
+  }, [
+    voice.lines.value.length,
+    voice.writing.value,
+    voice.partial.value,
+  ])
+
   if (!view) {
     return (
       <Shell>
@@ -76,7 +101,6 @@ export const InterviewPage = () => {
   }
 
   const preparation = view.preparation
-  const ready = preparation?.steps.at(-1)?.state === 'done'
   if (!ready) {
     return (
       <Shell>
@@ -115,102 +139,145 @@ export const InterviewPage = () => {
     )
   }
 
+  const demo = url.params.demo === '1'
   const talking = live === 'live' || live === 'connecting'
+  const lines = voice.lines.value
+  const state = voice.listening.value
+    ? 'Listening'
+    : voice.speaking.value
+    ? 'Speaking'
+    : voice.writing.value
+    ? 'Thinking'
+    : live === 'connecting'
+    ? 'Connecting'
+    : live === 'ended'
+    ? 'Interview over'
+    : 'Ready'
   return (
-    <Shell>
-      <section tw='card w-[720px] max-w-full p-6 flex flex-col gap-5'>
-        <header tw='flex flex-col gap-1.5'>
-          <h1 tw='m-0 text-[20px] font-semibold'>
-            Interview about your code
-          </h1>
-          <p tw='m-0 text-[13.5px] text-content-secondary'>
-            An AI interviewer asks you about what you built, out loud. Answer as
-            you would to a colleague. Use headphones, and speak over it if you
-            want to interrupt.
-          </p>
-        </header>
-
-        <div tw='flex flex-wrap items-center gap-3'>
-          {talking
-            ? (
-              <button
-                type='button'
-                data-test='interview-stop'
-                tw='btn btn-secondary'
-                onClick={() => stopVoice()}
-              >
-                Stop
-              </button>
-            )
-            : live === 'ended'
-            ? <span tw='badge badge-neutral'>Interview over, thank you.</span>
-            : (
-              <button
-                type='button'
-                data-test='interview-start'
-                tw='btn btn-primary'
-                onClick={startVoice}
-              >
-                <Mic tw='w-4 h-4' />
-                {view.interviewStartedAt
-                  ? 'Start the interview again'
-                  : 'Start the interview'}
-              </button>
-            )}
-          {voice.listening.value && (
-            <span tw='badge badge-neutral'>Listening…</span>
-          )}
-          {voice.speaking.value && <span tw='badge badge-ai'>Speaking…</span>}
-          <div
-            aria-label='Microphone level'
-            tw='h-2 w-32 rounded bg-surface-sunken overflow-hidden'
-          >
-            <div
-              tw='h-2 bg-accent'
-              style={{ width: `${Math.min(100, voice.level.value * 160)}%` }}
-            />
-          </div>
-        </div>
-
-        {voice.error.value && (
-          <p role='alert' tw='m-0 text-err text-[13px]'>{voice.error.value}</p>
-        )}
-
+    <div tw='h-screen flex flex-col bg-surface-page text-content-primary'>
+      <header tw='h-12 flex-none flex items-center justify-between px-5 border-b border-border-primary'>
+        <Logo />
+        <span tw='text-[12.5px] text-content-tertiary'>
+          Interview about your code
+        </span>
+      </header>
+      <div tw='flex-1 min-h-0 flex flex-col lg:flex-row'>
         <section
-          aria-label='Conversation'
-          data-test='interview-lines'
-          tw='rounded-lg border border-border-primary bg-surface-sunken p-4 flex flex-col gap-3 min-h-[180px]'
+          aria-label='Oracle'
+          tw='relative flex-1 min-h-0 overflow-hidden'
+          style={{ background: '#000' }}
         >
-          {!voice.lines.value.length && !voice.writing.value && (
-            <p tw='m-0 text-content-tertiary text-[13.5px]'>
-              The conversation appears here.
-            </p>
-          )}
-          {voice.lines.value.map((line, i) => (
-            <p
-              key={i}
-              tw={[
-                'm-0 max-w-[560px] text-[14px]',
-                line.who === 'ai'
-                  ? 'text-ai'
-                  : 'text-content-primary self-end text-right',
-              ]}
+          <OracleOrb />
+          <div tw='absolute inset-x-0 bottom-0 flex flex-col items-center gap-2 px-6 pb-6 pt-16'>
+            <span
+              tw='font-display text-[18px] tracking-[0.04em]'
+              style={{ color: '#e4e4e7' }}
             >
-              {line.text}
-            </p>
-          ))}
-          {voice.writing.value && (
-            <p tw='m-0 text-ai max-w-[560px] text-[14px]'>
-              {voice.writing.value}
-            </p>
-          )}
-          {voice.partial.value && (
-            <p tw='m-0 italic text-content-secondary self-end text-[14px]'>
-              {voice.partial.value}
-            </p>
-          )}
+              Oracle
+            </span>
+            <span
+              data-test='oracle-state'
+              role='status'
+              tw='badge'
+              style={{
+                background: 'rgba(255,255,255,.08)',
+                color: '#b4b4bb',
+                borderColor: 'rgba(255,255,255,.14)',
+              }}
+            >
+              {state}
+            </span>
+            {voice.error.value && (
+              <p role='alert' tw='m-0 text-err text-[13px] text-center'>
+                {voice.error.value}
+              </p>
+            )}
+            {(needsGesture || live === 'error' || demo) && live !== 'ended' && (
+              <div tw='flex gap-2'>
+                {talking && demo
+                  ? (
+                    <button
+                      type='button'
+                      data-test='interview-stop'
+                      tw='btn btn-secondary'
+                      onClick={() => stopVoice()}
+                    >
+                      Stop
+                    </button>
+                  )
+                  : !talking && (
+                    <button
+                      type='button'
+                      data-test='interview-start'
+                      tw='btn btn-primary'
+                      onClick={startVoice}
+                    >
+                      <Mic tw='w-4 h-4' />
+                      {live === 'error'
+                        ? 'Try again'
+                        : needsGesture && !demo
+                        ? 'Resume the interview'
+                        : 'Start'}
+                    </button>
+                  )}
+              </div>
+            )}
+          </div>
         </section>
-      </section>
-    </Shell>
+
+        <aside
+          aria-label='Conversation'
+          tw='lg:w-[400px] h-[42vh] lg:h-auto flex-none flex flex-col border-t lg:border-t-0 lg:border-l border-border-primary bg-surface-elevated'
+        >
+          <div tw='px-4 py-3 border-b border-border-primary text-[13px] font-semibold'>
+            Conversation
+          </div>
+          <div
+            ref={scroller}
+            data-test='interview-lines'
+            tw='flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-3'
+          >
+            {!lines.length && !voice.writing.value && (
+              <p tw='m-0 text-content-tertiary text-[13px]'>
+                Oracle will start in a moment. The conversation appears here.
+              </p>
+            )}
+            {lines.map((line, i) => (
+              <Bubble key={i} who={line.who} text={line.text} />
+            ))}
+            {voice.writing.value && (
+              <Bubble who='ai' text={voice.writing.value} live />
+            )}
+            {voice.partial.value && (
+              <Bubble who='you' text={voice.partial.value} live />
+            )}
+          </div>
+        </aside>
+      </div>
+    </div>
   )
 }
+
+/** one message of the conversation */
+const Bubble = (
+  { who, text, live }: { who: 'ai' | 'you'; text: string; live?: boolean },
+) => (
+  <div
+    tw={['flex flex-col gap-1', who === 'you' ? 'items-end' : 'items-start']}
+  >
+    <span tw='text-[11px] text-content-tertiary'>
+      {who === 'ai' ? 'Oracle' : 'You'}
+    </span>
+    <p
+      tw={[
+        'm-0 max-w-[88%] px-3 py-2 rounded-xl text-[14px] leading-[1.5]',
+        who === 'ai'
+          ? 'bg-ai-soft text-content-primary rounded-tl-sm'
+          : 'bg-accent text-on-accent rounded-tr-sm',
+        live && 'opacity-[.75]',
+      ]}
+    >
+      {text}
+    </p>
+  </div>
+)

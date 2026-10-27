@@ -8527,7 +8527,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..c38d7e1 100644
+index 5f704a5..e069e9e 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -8567,12 +8567,12 @@ index 5f704a5..c38d7e1 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +48,31 @@
+@@ -45,41 +48,34 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
 -    "@preact/signals": "npm:@preact/signals@^2.9.1",
-+    "@preact/signals": "npm:@preact/signals@2.11.2",
++    "@preact/signals": "npm:@preact/signals@2.11.3",
      "@twind/preact": "npm:@twind/preact@^1.0.5",
 -    "preact": "npm:preact@^10.29.2",
 +    "preact": "npm:preact@10.29.8",
@@ -8580,7 +8580,10 @@ index 5f704a5..c38d7e1 100644
      "fflate": "npm:fflate@^0.8.3",
 -    "unpdf": "npm:unpdf@^1.8.1"
 +    "unpdf": "npm:unpdf@^1.8.1",
-+    "preact/": "npm:/preact@10.29.8/"
++    "preact/": "npm:/preact@10.29.8/",
++    "npm:@preact/signals@^2.9.0": "npm:@preact/signals@2.11.3",
++    "npm:preact@^10.29.1": "npm:preact@10.29.8",
++    "npm:preact@^10.29.1/jsx-runtime": "npm:preact@10.29.8/jsx-runtime"
    },
    "tasks": {
 -    "dev:with-seed": {
@@ -10901,11 +10904,24 @@ index 1e172ed..bd48c52 100644
    ['faq', paths.faq],
  ] as const
  
+diff --git a/web/lib/signals.ts b/web/lib/signals.ts
+index 23457dc..9016e45 100644
+--- a/web/lib/signals.ts
++++ b/web/lib/signals.ts
+@@ -1,4 +1,4 @@
+-import { computed, Signal } from 'npm:@preact/signals'
++import { computed, Signal } from '@preact/signals'
+ 
+ // return time at each animation frames
+ export const eachFrame = new Signal({ now: Date.now(), delta: 0 })
 diff --git a/web/lib/viewport.ts b/web/lib/viewport.ts
-index d1e347f..f10311c 100644
+index d1e347f..e26fcf9 100644
 --- a/web/lib/viewport.ts
 +++ b/web/lib/viewport.ts
-@@ -3,7 +3,7 @@ import { Signal } from 'npm:@preact/signals'
+@@ -1,9 +1,9 @@
+-import { Signal } from 'npm:@preact/signals'
++import { Signal } from '@preact/signals'
+ 
  // Breakpoints of Twind (Tailwind defaults), in px
  export const BREAKPOINTS = { sm: 640, md: 768, lg: 1024, xl: 1280 } as const
  
@@ -16433,9 +16449,15 @@ index e9f7c70..0768d4d 100644
                  ))}
                </ol>
 diff --git a/web/ui/badge.tsx b/web/ui/badge.tsx
-index 0385f27..52ec414 100644
+index 0385f27..d6e271e 100644
 --- a/web/ui/badge.tsx
 +++ b/web/ui/badge.tsx
+@@ -1,4 +1,4 @@
+-import type { Token } from 'npm:@twind/preact'
++import type { Token } from '@twind/preact'
+ 
+ /** Predefined badge style variants (classes live in web/theme.ts) */
+ const variantStyles = {
 @@ -28,8 +28,8 @@ type BadgeProps = {
   *
   * @example
@@ -16448,9 +16470,15 @@ index 0385f27..52ec414 100644
  export function Badge({ variant = 'neutral', tw, ...props }: BadgeProps) {
    return <span tw={['badge', variantStyles[variant], tw]} {...props} />
 diff --git a/web/ui/button.tsx b/web/ui/button.tsx
-index 890992a..2fab131 100644
+index 890992a..10ebc79 100644
 --- a/web/ui/button.tsx
 +++ b/web/ui/button.tsx
+@@ -1,4 +1,4 @@
+-import type { Token } from 'npm:@twind/preact'
++import type { Token } from '@twind/preact'
+ import { A, type LinkProps } from '/web/lib/router-signal.ts'
+ /**
+  * Props type for the Button component
 @@ -18,7 +18,7 @@ type ButtonProps =
  /**
   * A customizable button component with variant-based styling
@@ -16461,16 +16489,17 @@ index 890992a..2fab131 100644
   * <Button variant="ghost" size="icon" aria-label="Fermer"><X /></Button>
   */
 diff --git a/web/ui/code-view.tsx b/web/ui/code-view.tsx
-index a49321e..a4de18a 100644
+index a49321e..610fdba 100644
 --- a/web/ui/code-view.tsx
 +++ b/web/ui/code-view.tsx
-@@ -1,4 +1,4 @@
+@@ -1,12 +1,11 @@
 -import { useEffect, useRef } from 'npm:preact/hooks'
+-import type { Token } from 'npm:@twind/preact'
 +import { useEffect, useRef } from 'preact/hooks'
- import type { Token } from 'npm:@twind/preact'
++import type { Token } from '@twind/preact'
  import { A, url } from '/web/lib/router-signal.ts'
  import { tokenizeLine, type TokenKind } from '/web/lib/code-tokens.ts'
-@@ -6,7 +6,6 @@ import { formatLines } from '/web/lib/format.ts'
+ import { formatLines } from '/web/lib/format.ts'
  import { DrawerDialog } from '/web/ui/dialog.tsx'
  import { Check, FileCode } from '/web/assets/icons.tsx'
  import type { CandidateFiles } from '/web/types.ts'
@@ -16582,14 +16611,15 @@ index d25266c..7fb69d5 100644
        </div>
      </main>
 diff --git a/web/ui/dialog.tsx b/web/ui/dialog.tsx
-index 72004a7..527a32b 100644
+index 72004a7..1deef58 100644
 --- a/web/ui/dialog.tsx
 +++ b/web/ui/dialog.tsx
 @@ -1,6 +1,6 @@
 -import type { JSX, VNode } from 'npm:preact'
-+import type { JSX, VNode } from 'preact'
- import type { Token } from 'npm:@twind/preact'
+-import type { Token } from 'npm:@twind/preact'
 -import { useState } from 'npm:preact/hooks'
++import type { JSX, VNode } from 'preact'
++import type { Token } from '@twind/preact'
 +import { useState } from 'preact/hooks'
  import { navigate, url } from '/web/lib/router-signal.ts'
  import { Button, type ButtonVariant } from '/web/ui/button.tsx'
@@ -16770,13 +16800,14 @@ index c4ecc86..5a23944 100644
  export function GameIcon(props: JSX.IntrinsicElements['svg']) {
    return <svg viewBox='0 0 24 24' fill='currentColor' {...props} />
 diff --git a/web/ui/notifications.tsx b/web/ui/notifications.tsx
-index f584e6c..bb6a02b 100644
+index f584e6c..22f8332 100644
 --- a/web/ui/notifications.tsx
 +++ b/web/ui/notifications.tsx
 @@ -1,10 +1,9 @@
- import { signal } from 'npm:@preact/signals'
+-import { signal } from 'npm:@preact/signals'
 -import { useMemo, useRef, useState } from 'npm:preact/hooks'
 -import type { ComponentChildren } from 'npm:preact'
++import { signal } from '@preact/signals'
 +import { useMemo, useRef, useState } from 'preact/hooks'
 +import type { ComponentChildren } from 'preact'
  
@@ -16796,14 +16827,15 @@ index f584e6c..bb6a02b 100644
          </button>
        </div>
 diff --git a/web/ui/page.tsx b/web/ui/page.tsx
-index b5f3197..97a3d2c 100644
+index b5f3197..da9e0b7 100644
 --- a/web/ui/page.tsx
 +++ b/web/ui/page.tsx
 @@ -1,11 +1,11 @@
  // Small building blocks shared by the recruiter pages.
 -import type { ComponentChildren } from 'npm:preact'
+-import type { Token } from 'npm:@twind/preact'
 +import type { ComponentChildren } from 'preact'
- import type { Token } from 'npm:@twind/preact'
++import type { Token } from '@twind/preact'
  import { A } from '/web/lib/router-signal.ts'
  import { announceAnchor } from '/web/lib/scroll-spy.ts'
  import { ChevronLeft, ChevronRight } from '/web/assets/icons.tsx'
@@ -16832,12 +16864,13 @@ index b5f3197..97a3d2c 100644
  export const td = 'px-2.5 py-3 align-middle'
  
 diff --git a/web/ui/spinner.tsx b/web/ui/spinner.tsx
-index 5be1e77..25d8ab1 100644
+index 5be1e77..474cf47 100644
 --- a/web/ui/spinner.tsx
 +++ b/web/ui/spinner.tsx
 @@ -1,11 +1,10 @@
- import type { Token } from 'npm:@twind/preact'
+-import type { Token } from 'npm:@twind/preact'
 -import { t } from '/web/lib/i18n.ts'
++import type { Token } from '@twind/preact'
  
  /** Small ring spinner used for running operations */
  export const Spinner = ({ tw }: { tw?: Token }) => (
@@ -17138,9 +17171,15 @@ index 77909b4..1b23a3e 100644
    )
  }
 diff --git a/web/ui/tooltip.tsx b/web/ui/tooltip.tsx
-index 2ae2dea..2b09e48 100644
+index 2ae2dea..1b984f4 100644
 --- a/web/ui/tooltip.tsx
 +++ b/web/ui/tooltip.tsx
+@@ -1,4 +1,4 @@
+-import type { Token } from 'npm:@twind/preact'
++import type { Token } from '@twind/preact'
+ 
+ /** Predefined style variants */
+ const variants = {
 @@ -35,7 +35,7 @@ const summaryStyles = [
   *
   * @example

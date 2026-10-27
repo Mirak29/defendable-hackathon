@@ -24,6 +24,8 @@ export const voice = {
   error: signal(''),
   /** microphone level, 0 to 1 */
   level: signal(0),
+  /** the sentence being spoken and how far the voice is in it (lip sync) */
+  speech: signal({ text: '', charIndex: 0, at: 0 }),
 }
 
 // 80 ms of 24 kHz mono 16-bit audio: the pace the transcription expects
@@ -109,6 +111,7 @@ const speak = (text: string) => {
   utterance.rate = 1.05
   utterance.onstart = () => {
     voice.speaking.value = true
+    voice.speech.value = { text: clean, charIndex: 0, at: performance.now() }
     if (awaitingVoice && heardAt) {
       awaitingVoice = false
       const last = voice.delays.value.at(-1)
@@ -119,6 +122,14 @@ const speak = (text: string) => {
           heardToVoiceMs,
         }]
       }
+    }
+  }
+  // not every voice reports its words: the face then follows the clock
+  utterance.onboundary = (e) => {
+    voice.speech.value = {
+      text: clean,
+      charIndex: e.charIndex,
+      at: performance.now(),
     }
   }
   utterance.onend = () => {
