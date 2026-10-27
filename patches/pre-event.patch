@@ -36,30 +36,19 @@ index f81fee3..0000000
 -*.db-shm
 -*.db-wal
 -coverage
-diff --git a/.env-dev b/.env-dev
-deleted file mode 100644
-index c394339..0000000
---- a/.env-dev
-+++ /dev/null
-@@ -1,4 +0,0 @@
--APP_ENV=dev
--PORT=8000
--DATABASE_PATH=./defendable.db
--DEMO_ACCESS=1
 diff --git a/.env-test b/.env-test
-deleted file mode 100644
-index cd5f307..0000000
+index cd5f307..0bb368d 100644
 --- a/.env-test
-+++ /dev/null
-@@ -1,8 +0,0 @@
--APP_ENV=test
--PORT=7575
--DATABASE_PATH=:memory:
--PASSWORD_ITERATIONS=1000
++++ b/.env-test
+@@ -2,7 +2,5 @@ APP_ENV=test
+ PORT=7575
+ DATABASE_PATH=:memory:
+ PASSWORD_ITERATIONS=1000
 -# no real model nor e-mail in the tests (mocks)
 -NVIDIA_API_KEY=
 -GEMINI_API_KEY=
--RESEND_API_KEY=
++# no real e-mail in the tests (mock)
+ RESEND_API_KEY=
 diff --git a/.gitattributes b/.gitattributes
 index fa3e977..9eefb16 100644
 --- a/.gitattributes
@@ -2821,354 +2810,84 @@ index 711bdb9..0000000
 -    return { sent: false, error: err.message }
 -  }
 -}
-diff --git a/api/entries.ts b/api/entries.ts
-deleted file mode 100644
-index 08f51ab..0000000
---- a/api/entries.ts
-+++ /dev/null
-@@ -1,29 +0,0 @@
--export const entries = {
--  UNKNOWN: 1,
--  ASSESSMENT_CREATED: 2,
--  ASSESSMENT_UPDATED: 3,
--  ASSESSMENT_APPROVED: 4,
--  CANDIDATE_INVITED: 5,
--  ASSESSMENT_GENERATION_STEP: 6,
--  CANDIDATE_BUILD_STARTED: 7,
--  CANDIDATE_CODE_SUBMITTED: 8,
--  CANDIDATE_PREPARATION_STEP: 9,
--  CANDIDATE_QUESTIONS_STARTED: 10,
--  CANDIDATE_ANSWER_SENT: 11,
--  CANDIDATE_INTEGRITY_EVENT: 12,
--  CANDIDATE_FINISHED: 13,
--  CANDIDATE_REPORT_READY: 14,
--  DECISION_SAVED: 15,
--  COMPANY_CREATED: 16,
--  MEMBER_CREATED: 17,
--  MEMBER_LOGIN: 18,
--  MEMBER_LOGIN_FAILED: 19,
--  CANDIDATE_LINK_SENT: 20,
--} as const
--
--export type Entries = typeof entries
--export type EntryTypeName = keyof Entries
--export type EntryTypeId = Entries[EntryTypeName]
--export const entryNames = Object.fromEntries(
--  Object.entries(entries).map((e) => e.reverse()),
--) as { [Name in EntryTypeName as Entries[Name]]: Name }
 diff --git a/api/lib/check.ts b/api/lib/check.ts
-deleted file mode 100644
-index a306559..0000000
+index a306559..c858a54 100644
 --- a/api/lib/check.ts
-+++ /dev/null
-@@ -1,122 +0,0 @@
++++ b/api/lib/check.ts
+@@ -1,11 +1,11 @@
 -// Small validators for model answers: they throw readable French errors,
 -// sent back to the model for one corrected attempt (api/llm.ts).
--
--type Obj = Record<string, unknown>
--
--export const obj = (v: unknown, path: string): Obj => {
--  if (!v || typeof v !== 'object' || Array.isArray(v)) {
++// Small validators for model answers: they throw readable errors, which can
++// be sent back to the model for one corrected attempt.
+ 
+ type Obj = Record<string, unknown>
+ 
+ export const obj = (v: unknown, path: string): Obj => {
+   if (!v || typeof v !== 'object' || Array.isArray(v)) {
 -    throw Error(`${path} doit être un objet`)
--  }
--  return v as Obj
--}
--
--/** A text too long for the UI is shortened, never a reason to reject */
--export const str = (v: unknown, path: string, max = 2000): string => {
--  if (typeof v !== 'string' || !v.trim()) {
++    throw Error(`${path} must be an object`)
+   }
+   return v as Obj
+ }
+@@ -13,7 +13,7 @@ export const obj = (v: unknown, path: string): Obj => {
+ /** A text too long for the UI is shortened, never a reason to reject */
+ export const str = (v: unknown, path: string, max = 2000): string => {
+   if (typeof v !== 'string' || !v.trim()) {
 -    throw Error(`${path} doit être une chaîne non vide`)
--  }
--  const text = v.trim()
--  if (text.length <= max) return text
--  const cut = text.slice(0, max - 1)
--  const space = cut.lastIndexOf(' ')
--  return `${space > max * 0.6 ? cut.slice(0, space) : cut}…`
--}
--
--export const optStr = (v: unknown, path: string, max = 2000) =>
--  v == null || v === '' ? undefined : str(v, path, max)
--
--export const num = (v: unknown, path: string): number => {
--  if (typeof v !== 'number' || !Number.isFinite(v)) {
++    throw Error(`${path} must be a non-empty string`)
+   }
+   const text = v.trim()
+   if (text.length <= max) return text
+@@ -27,13 +27,13 @@ export const optStr = (v: unknown, path: string, max = 2000) =>
+ 
+ export const num = (v: unknown, path: string): number => {
+   if (typeof v !== 'number' || !Number.isFinite(v)) {
 -    throw Error(`${path} doit être un nombre`)
--  }
--  return v
--}
--
--export const bool = (v: unknown, path: string): boolean => {
++    throw Error(`${path} must be a number`)
+   }
+   return v
+ }
+ 
+ export const bool = (v: unknown, path: string): boolean => {
 -  if (typeof v !== 'boolean') throw Error(`${path} doit être un booléen`)
--  return v
--}
--
--export const oneOf = <const T extends readonly (string | number)[]>(
--  v: unknown,
--  values: T,
--  path: string,
--): T[number] => {
--  if (!values.includes(v as T[number])) {
--    throw Error(
++  if (typeof v !== 'boolean') throw Error(`${path} must be a boolean`)
+   return v
+ }
+ 
+@@ -44,7 +44,7 @@ export const oneOf = <const T extends readonly (string | number)[]>(
+ ): T[number] => {
+   if (!values.includes(v as T[number])) {
+     throw Error(
 -      `${path} doit valoir ${values.map((x) => `« ${x} »`).join(', ')}`,
--    )
--  }
--  return v as T[number]
--}
--
--/**
-- * `clip`: a list longer than `max` keeps its first items instead of
-- * rejecting the whole answer (like a text too long for the UI)
-- */
--export const arr = <T>(
--  v: unknown,
--  path: string,
--  item: (v: unknown, path: string) => T,
--  { min = 0, max = 50, clip = false } = {},
--): T[] => {
++      `${path} must be one of ${values.map((x) => `"${x}"`).join(', ')}`,
+     )
+   }
+   return v as T[number]
+@@ -60,12 +60,12 @@ export const arr = <T>(
+   item: (v: unknown, path: string) => T,
+   { min = 0, max = 50, clip = false } = {},
+ ): T[] => {
 -  if (!Array.isArray(v)) throw Error(`${path} doit être un tableau`)
--  if (v.length < min) {
++  if (!Array.isArray(v)) throw Error(`${path} must be an array`)
+   if (v.length < min) {
 -    throw Error(`${path} doit contenir au moins ${min} éléments`)
--  }
--  if (v.length > max && !clip) {
++    throw Error(`${path} must contain at least ${min} items`)
+   }
+   if (v.length > max && !clip) {
 -    throw Error(`${path} contient plus de ${max} éléments`)
--  }
--  return v.slice(0, max).map((x, i) => item(x, `${path}[${i}]`))
--}
--
--/** `str` for array items */
--export const strItem = (v: unknown, path: string) => str(v, path)
--
--/**
-- * Items a result can do without (a claim, a signal): an invalid one is
-- * dropped instead of failing the whole answer, extra ones are cut.
-- */
--export const validItems = <T>(
--  v: unknown,
--  path: string,
--  item: (v: unknown, path: string) => T,
--  max = 50,
--): T[] =>
--  Array.isArray(v)
--    ? v.slice(0, max).flatMap((x, i) => {
--      try {
--        return [item(x, `${path}[${i}]`)]
--      } catch {
--        return []
--      }
--    })
--    : []
--
--const loose = (s: string) =>
--  s.normalize('NFD').replace(/\p{M}/gu, '').trim().toLowerCase()
--
--/**
-- * `oneOf` that forgives the slips of a model: accents, case, gender or
++    throw Error(`${path} contains more than ${max} items`)
+   }
+   return v.slice(0, max).map((x, i) => item(x, `${path}[${i}]`))
+ }
+@@ -98,7 +98,7 @@ const loose = (s: string) =>
+ 
+ /**
+  * `oneOf` that forgives the slips of a model: accents, case, gender or
 - * number ("élevé" for "élevée", "Démontrée" for "Démontré"), and synonyms
-- */
--export const oneOfLoose = <const T extends readonly string[]>(
--  v: unknown,
--  values: T,
--  path: string,
--  synonyms: Record<string, T[number]> = {},
--): T[number] => {
--  if (typeof v === 'string') {
--    const key = loose(v)
--    const synonym = Object.entries(synonyms).find(([k]) => loose(k) === key)
--    if (synonym) return synonym[1]
--    const match = values.find((x) => {
--      const value = loose(x)
--      return value === key ||
--        (Math.min(value.length, key.length) >= 4 &&
--          (value.startsWith(key) || key.startsWith(value)))
--    })
--    if (match) return match
--  }
--  return oneOf(v, values, path)
--}
-diff --git a/api/lib/env.ts b/api/lib/env.ts
-deleted file mode 100644
-index 3d30672..0000000
---- a/api/lib/env.ts
-+++ /dev/null
-@@ -1,18 +0,0 @@
--import { APP_ENV, BASE_URL, ENV, PROD } from '@01edu/api/env'
--
--export { APP_ENV }
--
--export { BASE_URL }
--
--// @01edu/db reads DATABASE_PATH itself: keep the .env-* files in sync
--export const DATABASE_PATH = ENV(
--  'DATABASE_PATH',
--  APP_ENV === 'test' ? ':memory:' : 'defendable.db',
--)
--
--export const REDIRECT_URI = PROD('REDIRECT_URI', '')
--
--export const HOSTNAME = `localhost:${ENV('PORT', '8000')}`
--export const API_URL = `http://${HOSTNAME}/api`
--
--export const ORIGIN = APP_ENV === 'prod' ? REDIRECT_URI : `http://${HOSTNAME}`
-diff --git a/api/lib/log.ts b/api/lib/log.ts
-deleted file mode 100644
-index 5101928..0000000
---- a/api/lib/log.ts
-+++ /dev/null
-@@ -1,25 +0,0 @@
--import { logger } from '@01edu/api/log'
--import { APP_ENV, DEVTOOL_REPORT_TOKEN, DEVTOOL_URL } from '@01edu/api/env'
--
--type Level = 'info' | 'error' | 'warn' | 'debug'
--type Props = Record<string, unknown>
--
--// In production, @01edu/api sends the logs to 01edu's devtools (tournament)
--// and throws without them; a deployment outside that infrastructure (the
--// Docker image of the README) logs to the console instead.
--const consoleLog = () => {
--  const write = (level: Level, event: string, props?: Props) =>
--    console[level](
--      JSON.stringify({ at: new Date().toISOString(), level, event, ...props }),
--    )
--  return Object.assign(write, {
--    error: (event: string, props?: Props) => write('error', event, props),
--    debug: (event: string, props?: Props) => write('debug', event, props),
--    warn: (event: string, props?: Props) => write('warn', event, props),
--    info: (event: string, props?: Props) => write('info', event, props),
--  })
--}
--
--export const log = APP_ENV === 'prod' && !(DEVTOOL_URL && DEVTOOL_REPORT_TOKEN)
--  ? consoleLog()
--  : await logger({})
-diff --git a/api/lib/mail-domain.ts b/api/lib/mail-domain.ts
-deleted file mode 100644
-index 5135cc0..0000000
---- a/api/lib/mail-domain.ts
-+++ /dev/null
-@@ -1,43 +0,0 @@
--// Can this domain receive e-mail? Its MX records: a typo (gmial.com) or an
--// invented domain is refused at sign-up. Answers are cached for 24 h; a DNS failure (no
--// network) never blocks a sign-up, only a domain known to have no MX does.
--import { APP_ENV, ENV } from '@01edu/api/env'
--import { log } from '/api/lib/log.ts'
--
--const DAY = 24 * 3600 * 1000
--const cache = new Map<string, { hasMx: boolean; at: number }>()
--
--/** mutable so tests can fake the DNS; off in tests unless asked */
--export const mailDomainConfig = {
--  enabled: ENV('EMAIL_DNS_CHECK', APP_ENV === 'test' ? '0' : '1') === '1',
--  resolveMx: (domain: string) =>
--    Deno.resolveDns(domain, 'MX', {
--      nameServer: { ipAddr: '1.1.1.1', port: 53 },
--      signal: AbortSignal.timeout(3000),
--    }),
--  cache,
--}
--
--/** false only when the DNS says the domain has no mail server */
--export const domainReceivesMail = async (email: string) => {
--  if (!mailDomainConfig.enabled) return true
--  const domain = email.split('@')[1]?.toLowerCase()
--  if (!domain) return false
--  const cached = cache.get(domain)
--  if (cached && Date.now() - cached.at < DAY) return cached.hasMx
--  try {
--    const records = await mailDomainConfig.resolveMx(domain)
--    // a "null MX" (RFC 7505, exchange ".") says the domain takes no e-mail
--    const hasMx = records.some((r) => r.exchange.replace(/\.$/, '') !== '')
--    cache.set(domain, { hasMx, at: Date.now() })
--    return hasMx
--  } catch (err) {
--    // NXDOMAIN or no MX record: the domain cannot receive e-mail
--    if (err instanceof Deno.errors.NotFound) {
--      cache.set(domain, { hasMx: false, at: Date.now() })
--      return false
--    }
--    log.warn('mail-domain-unknown', { domain, reason: String(err) })
--    return true
--  }
--}
-diff --git a/api/lib/make-queue.ts b/api/lib/make-queue.ts
-deleted file mode 100644
-index aa38816..0000000
---- a/api/lib/make-queue.ts
-+++ /dev/null
-@@ -1,19 +0,0 @@
--export const makeQueue = (max: number) => {
--  let slotsUsed = 0
--  const pendingSlots: Array<(slot: Slot) => void> = []
--  type Slot = { [Symbol.dispose](): void }
--  const freeSlot = {
--    [Symbol.dispose]() {
--      const next = pendingSlots.shift()
--      next ? next(freeSlot) : slotsUsed--
--    },
--  }
--
--  const queueSlot = (resolve: (slot: Slot) => void) =>
--    pendingSlots.push(resolve)
--  return (): Slot | Promise<Slot> => {
--    if (slotsUsed >= max) return new Promise<Slot>(queueSlot)
--    slotsUsed++
--    return freeSlot
--  }
--}
-diff --git a/api/lib/test.ts b/api/lib/test.ts
-deleted file mode 100644
-index 3792b60..0000000
---- a/api/lib/test.ts
-+++ /dev/null
-@@ -1,50 +0,0 @@
--import {
--  assertEquals as eq,
--  assertRejects as rejects,
--  assertThrows as throws,
--} from 'jsr:@std/assert'
--
--import { now } from '@01edu/time'
--import { log } from '/api/lib/log.ts'
--import { APP_ENV } from '/api/lib/env.ts'
--import { type RequestContext } from '@01edu/api/context'
--import { AsyncLocalStorage } from 'node:async_hooks'
--
--const requestContext = new AsyncLocalStorage<RequestContext>()
--// short aliases for most used asserts
--export { eq, rejects, throws }
--
--// test wrapper that sets a context
--type TestStep = Deno.TestContext['step']
--export const test = (
--  name: string,
--  handler: TestStep,
--  opts?: Omit<Deno.TestDefinition, 'fn' | 'name'>,
--) => {
--  if (APP_ENV !== 'test') return
--  const ignore = APP_ENV !== 'test' || opts?.ignore
--  const url = new URL(
--    Error('').stack!.split('\n')[1].match(/\([^)]+\)/)![0].slice(1, -1),
--  )
--  const ctx = {
--    req: new Request(url),
--    url,
--    cookies: {},
--    trace: now(),
--  } as RequestContext
--  const fn = async (t: Deno.TestContext) => {
--    log.debug('test-start', { name, origin: t.origin })
--    await handler(async (...args) => {
--      await requestContext.run({ ...ctx, span: now() }, async () => {
--        const stepName = args[0]?.name || args[0]
--        log.debug('step-start', { name: stepName, origin: t.origin })
--        const result = await t.step(
--          ...args as unknown as Parameters<typeof t.step>,
--        )
--        log.debug('step-end', { name: stepName, origin: t.origin })
--        return result
--      })
--    })
--  }
--  return requestContext.run(ctx, () => Deno.test({ ...opts, name, fn, ignore }))
--}
++ * number ("High" for "high", "Demonstrated" for "demonstrate"), and synonyms
+  */
+ export const oneOfLoose = <const T extends readonly string[]>(
+   v: unknown,
 diff --git a/api/lib/validator.ts b/api/lib/validator.ts
 deleted file mode 100644
 index 6493f68..0000000
@@ -4681,57 +4400,6 @@ index 8d00735..0000000
 -    const count = (pending.get(email) ?? 1) - 1
 -    count ? pending.set(email, count) : pending.delete(email)
 -  }
--}
-diff --git a/api/password.ts b/api/password.ts
-deleted file mode 100644
-index 9af4c6a..0000000
---- a/api/password.ts
-+++ /dev/null
-@@ -1,45 +0,0 @@
--// Independent of the schema so startup can initialize the demo member.
--const iterations = Deno.env.get('APP_ENV') === 'test'
--  ? Number(Deno.env.get('PASSWORD_ITERATIONS') ?? 1000)
--  : 600_000
--if (!Number.isSafeInteger(iterations) || iterations < 1000) {
--  throw Error('PASSWORD_ITERATIONS must be an integer >= 1000')
--}
--
--export const constantTimeEqual = (a: Uint8Array, b: Uint8Array) => {
--  if (a.length !== b.length) return false
--  let difference = 0
--  for (let i = 0; i < a.length; i++) difference |= a[i] ^ b[i]
--  return difference === 0
--}
--
--export const hashPassword = async (
--  password: string,
--  salt = crypto.getRandomValues(new Uint8Array(16)),
--) => {
--  const key = await crypto.subtle.importKey(
--    'raw',
--    new TextEncoder().encode(password),
--    'PBKDF2',
--    false,
--    ['deriveBits'],
--  )
--  const hash = await crypto.subtle.deriveBits(
--    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
--    key,
--    256,
--  )
--  const stored = new Uint8Array(48)
--  stored.set(salt)
--  stored.set(new Uint8Array(hash), 16)
--  return stored
--}
--
--export const verifyPassword = async (password: string, stored: Uint8Array) => {
--  // Demo members without an explicit password have only a random salt.
--  const computed = await hashPassword(
--    password,
--    new Uint8Array(stored.slice(0, 16)),
--  )
--  return stored.length === 48 && constantTimeEqual(computed, stored)
 -}
 diff --git a/api/recovery.ts b/api/recovery.ts
 deleted file mode 100644
@@ -8107,312 +7775,95 @@ index d0468a6..0000000
 -  return out
 -}
 diff --git a/api/schema.ts b/api/schema.ts
-deleted file mode 100644
-index 263037b..0000000
+index 263037b..426dfe5 100644
 --- a/api/schema.ts
-+++ /dev/null
-@@ -1,301 +0,0 @@
--import { entries } from '/api/entries.ts'
--import { createTable, db, type Row, sql } from '@01edu/db'
--import { hashPassword } from '/api/password.ts'
++++ b/api/schema.ts
+@@ -1,16 +1,8 @@
+ import { entries } from '/api/entries.ts'
+ import { createTable, db, type Row, sql } from '@01edu/db'
+ import { hashPassword } from '/api/password.ts'
 -import { runMigrations } from '@01edu/db/migration'
 -import { fromFileUrl } from 'jsr:@std/path'
--import { initEntries } from '@01edu/db/entries'
--
+ import { initEntries } from '@01edu/db/entries'
+ 
 -// Migrations must run before createTable: createTable asserts that the
 -// existing table matches the declared schema, so a column added by a pending
 -// migration would crash the boot before the migration gets a chance to run.
 -const migrationsPath = fromFileUrl(import.meta.resolve('../migrations'))
 -await runMigrations(migrationsPath)
 -
--export const Company = createTable('company', {
--  companyId: { type: 'INTEGER', primary: true },
--  companyName: { type: 'TEXT' },
--  companyCreatedAt: { type: 'REAL' },
--})
--export const Member = createTable('member', {
--  memberId: { type: 'INTEGER', primary: true },
--  companyId: { type: 'INTEGER', join: Company },
--  memberName: { type: 'TEXT' },
--  memberEmail: { type: 'TEXT' },
--  memberPassword: { type: 'BLOB' },
--  memberCreatedAt: { type: 'REAL' },
--})
--sql`CREATE UNIQUE INDEX IF NOT EXISTS member_email_unique ON member(memberEmail)`
--  .run()
--
+ export const Company = createTable('company', {
+   companyId: { type: 'INTEGER', primary: true },
+   companyName: { type: 'TEXT' },
+@@ -27,16 +19,13 @@ export const Member = createTable('member', {
+ sql`CREATE UNIQUE INDEX IF NOT EXISTS member_email_unique ON member(memberEmail)`
+   .run()
+ 
 -// Columns added by a migration go last and are optional (ALTER TABLE ADD).
--export const Assessment = createTable('assessment', {
--  assessmentId: { type: 'INTEGER', primary: true },
--  assessmentTitle: { type: 'TEXT' },
--  assessmentLevel: { type: 'TEXT' }, // junior | intermediate | senior
--  assessmentDuration: { type: 'INTEGER' }, // minutes: 60 | 90 | 120
+ export const Assessment = createTable('assessment', {
+   assessmentId: { type: 'INTEGER', primary: true },
+   assessmentTitle: { type: 'TEXT' },
+   assessmentLevel: { type: 'TEXT' }, // junior | intermediate | senior
+   assessmentDuration: { type: 'INTEGER' }, // minutes: 60 | 90 | 120
 -  assessmentLanguage: { type: 'TEXT' }, // fr | en
--  assessmentJobDescription: { type: 'TEXT' },
--  assessmentSpec: { type: 'JSON', optional: true }, // generated content
+   assessmentJobDescription: { type: 'TEXT' },
+   assessmentSpec: { type: 'JSON', optional: true }, // generated content
 -  // 002
--  assessmentStatus: { type: 'TEXT', optional: true }, // AssessmentStatus
--  assessmentSkills: { type: 'JSON', optional: true }, // recruiter's choice
--  assessmentDomain: { type: 'TEXT', optional: true },
--  assessmentCreatedAt: { type: 'REAL', optional: true }, // ms epoch
--  assessmentApprovedAt: { type: 'REAL', optional: true },
--  assessmentTrace: { type: 'JSON', optional: true }, // generation AiTrace
--  assessmentGeneration: { type: 'JSON', optional: true }, // R3 progress
--  assessmentChecks: { type: 'JSON', optional: true }, // sandbox checks
--  assessmentDeletedTests: { type: 'JSON', optional: true }, // R4, pending
--  assessmentStarterFiles: { type: 'JSON', optional: true }, // C2 start
--  assessmentInvitation: { type: 'TEXT', optional: true }, // candidate link
--  companyId: { type: 'INTEGER', join: Company, optional: true },
--  assessmentCreatedBy: { type: 'INTEGER', join: Member, optional: true },
--})
--
--export const Candidate = createTable('candidate', {
--  candidateId: { type: 'INTEGER', primary: true },
--  candidateToken: { type: 'TEXT' },
--  candidatePseudonym: { type: 'TEXT' }, // e.g. "Candidat A7F3", never a name
--  assessmentId: { type: 'INTEGER', join: Assessment },
+   assessmentStatus: { type: 'TEXT', optional: true }, // AssessmentStatus
+   assessmentSkills: { type: 'JSON', optional: true }, // recruiter's choice
+   assessmentDomain: { type: 'TEXT', optional: true },
+@@ -57,7 +46,6 @@ export const Candidate = createTable('candidate', {
+   candidateToken: { type: 'TEXT' },
+   candidatePseudonym: { type: 'TEXT' }, // e.g. "Candidat A7F3", never a name
+   assessmentId: { type: 'INTEGER', join: Assessment },
 -  // 002
--  candidateCreatedAt: { type: 'REAL', optional: true },
--  candidateStartedAt: { type: 'REAL', optional: true }, // C1 "Commencer"
--  candidateSubmittedAt: { type: 'REAL', optional: true },
--  candidateAutoSubmitted: { type: 'INTEGER', optional: true }, // 0 | 1
--  candidateTools: { type: 'JSON', optional: true }, // declared AI tools
--  candidateFiles: { type: 'JSON', optional: true }, // CandidateFiles
--  candidateSavedAt: { type: 'REAL', optional: true },
--  candidateRuns: { type: 'JSON', optional: true }, // counters of C2 runs
--  candidateResults: { type: 'JSON', optional: true }, // tests after C3
--  candidatePreparation: { type: 'JSON', optional: true }, // C4 progress
--  candidateAnalysis: { type: 'JSON', optional: true }, // observations
--  candidateQuestions: { type: 'JSON', optional: true }, // the 10 questions
--  candidateQuestionsStartedAt: { type: 'REAL', optional: true },
--  candidateAnswers: { type: 'JSON', optional: true }, // by question number
--  candidateFinishedAt: { type: 'REAL', optional: true },
--  candidateReport: { type: 'JSON', optional: true }, // R6
--  candidateDecision: { type: 'JSON', optional: true }, // human decision
+   candidateCreatedAt: { type: 'REAL', optional: true },
+   candidateStartedAt: { type: 'REAL', optional: true }, // C1 "Commencer"
+   candidateSubmittedAt: { type: 'REAL', optional: true },
+@@ -75,8 +63,8 @@ export const Candidate = createTable('candidate', {
+   candidateFinishedAt: { type: 'REAL', optional: true },
+   candidateReport: { type: 'JSON', optional: true }, // R6
+   candidateDecision: { type: 'JSON', optional: true }, // human decision
 -  // 005 (U4): personal link and identity, entered by the recruiter; the
 -  // identity is never sent to the models
--  candidateInvitation: { type: 'TEXT', optional: true }, // token of the link
--  candidateInvitedAt: { type: 'REAL', optional: true },
--  candidateInvitedBy: { type: 'INTEGER', optional: true }, // memberId
--  candidateRevokedAt: { type: 'REAL', optional: true },
--  candidateFirstName: { type: 'TEXT', optional: true },
--  candidateLastName: { type: 'TEXT', optional: true },
--  candidateEmail: { type: 'TEXT', optional: true }, // lower-case
--  candidateProfileUrl: { type: 'TEXT', optional: true }, // https://
--  candidateNote: { type: 'TEXT', optional: true }, // internal, recruiter only
--  candidateIdentitySource: { type: 'TEXT', optional: true }, // manual | cv
++  // personal link and identity, entered by the recruiter; the
++  // identity is never sent to a model
+   candidateInvitation: { type: 'TEXT', optional: true }, // token of the link
+   candidateInvitedAt: { type: 'REAL', optional: true },
+   candidateInvitedBy: { type: 'INTEGER', optional: true }, // memberId
+@@ -87,7 +75,7 @@ export const Candidate = createTable('candidate', {
+   candidateProfileUrl: { type: 'TEXT', optional: true }, // https://
+   candidateNote: { type: 'TEXT', optional: true }, // internal, recruiter only
+   candidateIdentitySource: { type: 'TEXT', optional: true }, // manual | cv
 -  // 006 (U5): the personal link sent by e-mail
--  candidateEmailSentAt: { type: 'REAL', optional: true },
--  candidateEmailError: { type: 'TEXT', optional: true }, // last failure
--})
--sql`CREATE UNIQUE INDEX IF NOT EXISTS candidate_invitation
--  ON candidate(candidateInvitation)`.run()
--
--const relations = {
--  assessmentId: Assessment,
--  candidateId: Candidate,
--  companyId: Company,
--  memberId: Member,
--}
--
--// `undefined === undefined` must not match: a listener only follows the
--// assessment or the candidate it subscribed to (GET/api/events).
--type Scope = {
--  memberSessionId?: number
--  assessmentId?: number | null
--  candidateId?: number | null
--  companyId?: number | null
--}
--const activeListener = (sub: Scope) =>
--  !sub.memberSessionId || !!sql<{ id: number }, number>`
--  SELECT id FROM entryInternal WHERE id = ? AND type = ${entries.MEMBER_LOGIN}
--  AND archivedAt IS NULL AND createdAt > unixepoch('now','subsec') - 1209600
--`.get(sub.memberSessionId)
--
--const sameAssessment = (entry: Scope, sub: Scope) =>
--  activeListener(sub) &&
--  (sub.companyId != null
--    ? entry.companyId === sub.companyId &&
--      (sub.assessmentId == null || entry.assessmentId === sub.assessmentId) &&
--      (sub.candidateId == null || entry.candidateId === sub.candidateId)
--    : sub.candidateId == null && sub.assessmentId != null &&
--      entry.assessmentId === sub.assessmentId)
--
--const sameCandidate = (
--  entry: Scope,
--  sub: Scope,
--) =>
--  sub.companyId != null
--    ? sameAssessment(entry, sub)
--    : sub.candidateId != null
--    ? entry.candidateId === sub.candidateId
--    : sameAssessment(entry, sub)
--
--export const Entry = initEntries(entries, relations, {
--  UNKNOWN: {},
--  COMPANY_CREATED: { companyId: 'company' },
--  MEMBER_CREATED: { companyId: 'company', memberId: 'member' },
--  MEMBER_LOGIN: { companyId: 'company', memberId: 'member' },
--  MEMBER_LOGIN_FAILED: { data: 'normalized email only, never a password' },
--
--  /*
--   * Assessment entries
--   */
--  ASSESSMENT_CREATED: {
--    companyId: 'owning company',
--    assessmentId: 'newly created assessment',
--  },
--  ASSESSMENT_UPDATED: {
--    companyId: 'owning company',
--    assessmentId: 'updated assessment',
--    data: 'previous values',
--    trigger: sameAssessment,
--  },
--  ASSESSMENT_APPROVED: {
--    companyId: 'owning company',
--    assessmentId: 'assessment frozen by the recruiter',
--    trigger: sameAssessment,
--  },
--  ASSESSMENT_GENERATION_STEP: {
--    companyId: 'owning company',
--    assessmentId: 'assessment being generated',
--    data: 'step index, state and AI trace',
--    trigger: sameAssessment,
--  },
--
--  /*
--   * Candidate entries
--   */
--  CANDIDATE_INVITED: {
--    companyId: 'owning company',
--    assessmentId: 'assessment the candidate is invited to',
--    candidateId: 'invited candidate',
--    trigger: sameAssessment,
--  },
--  CANDIDATE_LINK_SENT: {
--    companyId: 'owning company',
--    assessmentId: 'assessment the candidate is invited to',
--    candidateId: 'candidate whose personal link was e-mailed',
--    data: 'sent or failure reason',
--    trigger: sameAssessment,
--  },
--  CANDIDATE_BUILD_STARTED: {
--    companyId: 'owning company',
--    assessmentId: 'assessment',
--    candidateId: 'candidate who accepted the rules (C1)',
--    trigger: sameCandidate,
--  },
--  CANDIDATE_CODE_SUBMITTED: {
--    companyId: 'owning company',
--    assessmentId: 'assessment',
--    candidateId: 'candidate whose code is frozen (C3)',
--    data: 'declared AI tools, automatic submission',
--    trigger: sameCandidate,
--  },
--  CANDIDATE_PREPARATION_STEP: {
--    companyId: 'owning company',
--    assessmentId: 'assessment',
--    candidateId: 'candidate whose questions are being prepared (C4)',
--    data: 'step index, state and AI trace',
--    trigger: sameCandidate,
--  },
--  CANDIDATE_QUESTIONS_STARTED: {
--    companyId: 'owning company',
--    assessmentId: 'assessment',
--    candidateId: 'candidate',
--    trigger: sameCandidate,
--  },
--  CANDIDATE_ANSWER_SENT: {
--    companyId: 'owning company',
--    assessmentId: 'assessment',
--    candidateId: 'candidate',
--    data: 'question number, automatic sending',
--  },
--  CANDIDATE_INTEGRITY_EVENT: {
--    companyId: 'owning company',
--    assessmentId: 'assessment',
--    candidateId: 'candidate',
--    data:
--      'kind (page-leave, paste-blocked, fullscreen-exit), question, duration',
--  },
--  CANDIDATE_FINISHED: {
--    companyId: 'owning company',
--    assessmentId: 'assessment',
--    candidateId: 'candidate who answered the 10 questions (C7)',
--    trigger: sameCandidate,
--  },
--  CANDIDATE_REPORT_READY: {
--    companyId: 'owning company',
--    assessmentId: 'assessment',
--    candidateId: 'candidate whose report is generated (R6)',
--    trigger: sameCandidate,
--  },
--  DECISION_SAVED: {
--    companyId: 'owning company',
--    assessmentId: 'assessment',
--    candidateId: 'candidate',
--    data: 'human decision and note',
--    trigger: sameCandidate,
--  },
--})
--
--export type AssessmentRow = Row<typeof Assessment.properties>
--export type CandidateRow = Row<typeof Candidate.properties>
--
--export type EntryListener = {
--  memberSessionId?: number
--  companyId?: number
--  assessmentId?: number
--  candidateId?: number
--  controller: ReadableStreamDefaultController
--}
--
--export const entryInsertListeners = Entry.insertListeners
--export const archiveEntry = Entry.archive
--
++  // the personal link sent by e-mail
+   candidateEmailSentAt: { type: 'REAL', optional: true },
+   candidateEmailError: { type: 'TEXT', optional: true }, // last failure
+ })
+@@ -256,7 +244,7 @@ export type EntryListener = {
+ export const entryInsertListeners = Entry.insertListeners
+ export const archiveEntry = Entry.archive
+ 
 -// Idempotent U2 backfill runs after createTable, including on fresh databases.
--const demoEmail = 'demo@defendable.invalid'
--const existingDemo = Member.sql<'memberId' | 'companyId', string>`
--  SELECT memberId, companyId FROM member WHERE memberEmail = ?
--`.get(demoEmail)
--const demoPassword = Deno.env.get('DEMO_PASSWORD')
--if (
--  !existingDemo && demoPassword &&
--  (demoPassword.length < 10 || demoPassword.length > 1024)
--) {
--  throw Error('DEMO_PASSWORD must contain 10 to 1024 characters')
--}
--const demoHash = !existingDemo
--  ? demoPassword
--    ? await hashPassword(demoPassword)
--    : crypto.getRandomValues(new Uint8Array(16))
--  : undefined
--const demo = existingDemo ?? db.transaction(() => {
--  const companyId = Company.insert({
++// The demo company and member, created once (also on a fresh database).
+ const demoEmail = 'demo@defendable.invalid'
+ const existingDemo = Member.sql<'memberId' | 'companyId', string>`
+   SELECT memberId, companyId FROM member WHERE memberEmail = ?
+@@ -275,12 +263,12 @@ const demoHash = !existingDemo
+   : undefined
+ const demo = existingDemo ?? db.transaction(() => {
+   const companyId = Company.insert({
 -    companyName: 'Espace démo',
--    companyCreatedAt: Date.now(),
--  })
--  const memberId = Member.insert({
--    companyId,
++    companyName: 'Demo space',
+     companyCreatedAt: Date.now(),
+   })
+   const memberId = Member.insert({
+     companyId,
 -    memberName: 'Démo',
--    memberEmail: demoEmail,
--    memberPassword: demoHash!,
--    memberCreatedAt: Date.now(),
--  })
--  Entry.insert.COMPANY_CREATED({ companyId })
--  Entry.insert.MEMBER_CREATED({ companyId, memberId })
--  return { companyId, memberId }
--})()
--export const demoCompanyId = demo.companyId
--export const demoMemberId = demo.memberId
--sql`UPDATE assessment SET companyId = :companyId, assessmentCreatedBy = :memberId WHERE companyId IS NULL`
--  .run(demo)
--sql`UPDATE entryInternal SET companyId = (SELECT companyId FROM assessment WHERE assessment.assessmentId = entryInternal.assessmentId) WHERE companyId IS NULL AND assessmentId IS NOT NULL`
--  .run()
--sql`CREATE INDEX IF NOT EXISTS assessment_company ON assessment(companyId, assessmentId)`
--  .run()
--export const companyOfAssessment = (assessmentId: number) =>
--  Assessment.require(assessmentId).companyId ?? demoCompanyId
++    memberName: 'Demo',
+     memberEmail: demoEmail,
+     memberPassword: demoHash!,
+     memberCreatedAt: Date.now(),
 diff --git a/api/server.ts b/api/server.ts
 deleted file mode 100644
 index a751410..0000000
@@ -9042,7 +8493,7 @@ index 3f70509..0000000
 -  outdir: 'dist',
 -} as const
 diff --git a/deno.json b/deno.json
-index 5f704a5..662292c 100644
+index 5f704a5..622a129 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -9114,7 +8565,7 @@ index 5f704a5..662292c 100644
 -    "llm:check": "deno run --env-file=.env-dev --env-file=.env -A task-llm-check.ts",
 -    "llm:bench": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-bench.ts",
 -    "deploy": "deno run -A task-deploy.ts"
-+    "test": "deno test -A --no-check"
++    "test": "deno test --env-file=.env-test -A --no-check"
    }
  }
 diff --git a/fixtures/demo-files.ts b/fixtures/demo-files.ts
