@@ -2889,52 +2889,22 @@ index a306559..c858a54 100644
  export const oneOfLoose = <const T extends readonly string[]>(
    v: unknown,
 diff --git a/api/lib/validator.ts b/api/lib/validator.ts
-deleted file mode 100644
-index 6493f68..0000000
+index 6493f68..1252254 100644
 --- a/api/lib/validator.ts
-+++ /dev/null
-@@ -1,57 +0,0 @@
--// Validators for JSON values the router cannot describe with OBJ/ARR (the
--// assessment spec, candidate files…): typed for the client, checked by our
--// own code (api/lib/check.ts) when they come from outside.
++++ b/api/lib/validator.ts
+@@ -1,8 +1,6 @@
+ // Validators for JSON values the router cannot describe with OBJ/ARR (the
+ // assessment spec, candidate files…): typed for the client, checked by our
+ // own code (api/lib/check.ts) when they come from outside.
 -import { assertFiles } from '/api/sandbox.ts'
 -
--type DefJson<T> = {
--  type: 'object'
--  properties: Record<string, never>
--  report: (
--    value: unknown,
--  ) => { path: string[]; type: 'object'; value: unknown }[]
--  optional?: boolean
--  description?: string
--  assert: (value: unknown) => T
--}
--
--/** `check` throws on an invalid value: the router answers 400 */
--export const JSON_OF = <T>(
--  description: string,
--  check: (value: unknown) => T = (value) => value as T,
--): DefJson<T> => {
--  const report = (value: unknown) => {
--    try {
--      check(value)
--      return []
--    } catch (err) {
--      return [{
--        path: [err instanceof Error ? err.message : String(err)],
--        type: 'object' as const,
--        value,
--      }]
--    }
--  }
--  return {
--    type: 'object',
--    properties: {},
--    description,
--    report,
--    assert: check,
--  }
--}
+ type DefJson<T> = {
+   type: 'object'
+   properties: Record<string, never>
+@@ -39,19 +37,3 @@ export const JSON_OF = <T>(
+     assert: check,
+   }
+ }
 -
 -/** { "src/app.ts": "…" } */
 -export const FILES = JSON_OF<Record<string, string>>(
@@ -3976,53 +3946,63 @@ index 76404e9..0000000
 -  )
 -}
 diff --git a/api/member.test.js b/api/member.test.js
-deleted file mode 100644
-index bae3e12..0000000
+index bae3e12..c86c8fb 100644
 --- a/api/member.test.js
-+++ /dev/null
-@@ -1,182 +0,0 @@
++++ b/api/member.test.js
+@@ -1,25 +1,15 @@
 -// Fast, isolated security checks; no server, browser, sandbox or AI journey.
--import { eq, test } from '/api/lib/test.ts'
--import { routeHandler } from '/api/routes.ts'
--import { decodeSession } from '/api/member.ts'
++// Sessions of a company space: login, cookie, logout, lockout, demo access.
+ import { eq, test } from '/api/lib/test.ts'
+ import { routeHandler } from '/api/routes.ts'
+ import { decodeSession } from '/api/member.ts'
 -import { Entry, entryInsertListeners } from '/api/schema.ts'
 -import { seedDemoAssessment, seedFinishedCandidate } from '/fixtures/seed.ts'
--
+ 
 -const call = async (method, path, input, token) => {
--  const url = new URL(`http://localhost${path}`)
++const call = async (method, path, input, token, headers = {}) => {
+   const url = new URL(`http://localhost${path}`)
 -  if (method === 'GET') {
 -    for (const [k, v] of Object.entries(input ?? {})) {
 -      url.searchParams.set(k, String(v))
 -    }
 -  }
--  try {
--    return await routeHandler({
--      req: new Request(url, {
--        method,
+   try {
+     return await routeHandler({
+       req: new Request(url, {
+         method,
 -        headers: {
 -          'content-type': 'application/json',
 -          accept: 'text/event-stream',
 -        },
--        body: method === 'POST' ? JSON.stringify(input ?? {}) : undefined,
--      }),
--      url,
--      cookies: token ? { dfd_session: token } : {},
--      trace: Date.now(),
--    })
--  } catch (error) {
--    if (error.response instanceof Response) return error.response
--    throw error
--  }
--}
--
++        headers: { 'content-type': 'application/json', ...headers },
+         body: method === 'POST' ? JSON.stringify(input ?? {}) : undefined,
+       }),
+       url,
+@@ -32,151 +22,100 @@ const call = async (method, path, input, token) => {
+   }
+ }
+ 
 -test('U2 sessions and company boundaries', async (step) => {
 -  const signup = async (email) => {
 -    const response = await call('POST', '/api/signup', {
 -      companyName: email,
 -      name: 'Test',
--      email,
++const tokenOf = (response) =>
++  response.headers.get('set-cookie').match(/dfd_session=([^;]+)/)[1]
++
++test('company sessions', async (step) => {
++  const email = `rh-${crypto.randomUUID().slice(0, 8)}@example.com`
++  const password = 'Strong-password-1'
++  let token
++
++  await step('sign-up opens a session, cookie httpOnly', async () => {
++    const res = await call('POST', '/api/signup', {
++      companyName: 'Acme',
++      name: 'Awa Diop',
+       email,
 -      password: 'Synthetic-password-1',
--    })
++      password,
+     })
 -    eq(response.status, 200)
 -    const token =
 -      response.headers.get('set-cookie').match(/dfd_session=([^;]+)/)[1]
@@ -4032,9 +4012,43 @@ index bae3e12..0000000
 -  const b = await signup('b@example.invalid')
 -  const assessmentId = seedDemoAssessment('u2-synthetic', a.view.company.id)
 -  const candidateId = seedFinishedCandidate(assessmentId)
--  await step(
++    eq(res.status, 200)
++    eq(res.headers.get('set-cookie').includes('HttpOnly'), true)
++    token = tokenOf(res)
++    eq((await decodeSession(token))?.memberId > 0, true)
++  })
++
++  await step('GET /api/me needs the session', async () => {
++    eq((await call('GET', '/api/me')).status, 401)
++    const res = await call('GET', '/api/me', undefined, token)
++    eq(res.status, 200)
++    eq((await res.json()).member.email, email)
++  })
++
++  await step('a tampered session is refused', async () => {
++    const [id, signature] = token.split(':')
++    eq(await decodeSession(`${id}:${signature.slice(0, -2)}AA`), undefined)
++    eq(await decodeSession('1:abc'), undefined)
++    eq((await call('GET', '/api/me', undefined, `${id}:x`)).status, 401)
++  })
++
++  await step('a request from another origin is refused', async () => {
++    const res = await call('POST', '/api/logout', {}, token, {
++      origin: 'https://evil.example',
++    })
++    eq(res.status, 403)
++  })
++
++  await step('logout ends the session', async () => {
++    eq((await call('POST', '/api/logout', {}, token)).status, 204)
++    eq(await decodeSession(token), undefined)
++    eq((await call('GET', '/api/me', undefined, token)).status, 401)
++  })
++
+   await step(
 -    'all recruiter resource routes hide another company',
--    async () => {
++    'login: a wrong password answers the same as an unknown e-mail',
+     async () => {
 -      const cases = [
 -        ['GET', '/api/assessment', { id: assessmentId }],
 -        ...['retry', 'update', 'deleted-tests', 'regenerate', 'approve'].map((
@@ -4081,16 +4095,44 @@ index bae3e12..0000000
 -        )).status,
 -        404,
 -      )
--    },
--  )
++      const wrong = await call('POST', '/api/login', {
++        email,
++        password: 'Nope-1',
++      })
++      const unknown = await call('POST', '/api/login', {
++        email: 'nobody@example.com',
++        password,
++      })
++      eq([wrong.status, unknown.status], [401, 401])
++      eq((await wrong.json()).message, (await unknown.json()).message)
++      const ok = await call('POST', '/api/login', { email, password })
++      eq(ok.status, 200)
+     },
+   )
 -  await step('SSE company filters exclude other companies', () => {
 -    const payloads = []
 -    const listener = {
 -      companyId: b.view.company.id,
 -      controller: { enqueue: (payload) => payloads.push(payload) },
--    }
++
++  await step('ten failures lock the e-mail for a while', async () => {
++    const target = `lock-${crypto.randomUUID().slice(0, 8)}@example.com`
++    for (let i = 0; i < 10; i++) {
++      await call('POST', '/api/login', { email: target, password: 'x' })
+     }
 -    entryInsertListeners.add(listener)
--    try {
++    eq(
++      (await call('POST', '/api/login', { email: target, password: 'x' }))
++        .status,
++      429,
++    )
++  })
++
++  await step('the demo account follows DEMO_ACCESS', async () => {
++    eq((await (await call('GET', '/api/demo')).json()).available, false)
++    eq((await call('POST', '/api/demo/session')).status, 404)
++    Deno.env.set('DEMO_ACCESS', '1')
+     try {
 -      Entry.insert.ASSESSMENT_UPDATED({
 -        companyId: a.view.company.id,
 -        assessmentId,
@@ -4102,10 +4144,15 @@ index bae3e12..0000000
 -        assessmentId: ownId,
 -      })
 -      eq(payloads.length > 0, true)
--    } finally {
++      eq((await (await call('GET', '/api/demo')).json()).available, true)
++      const res = await call('POST', '/api/demo/session')
++      eq(res.status, 200)
++      eq((await res.json()).demo, true)
+     } finally {
 -      entryInsertListeners.delete(listener)
--    }
--  })
++      Deno.env.delete('DEMO_ACCESS')
+     }
+   })
 -  await step(
 -    'session validation, logout, password redaction and rate cap',
 -    async () => {
@@ -4142,7 +4189,7 @@ index bae3e12..0000000
 -    },
 -  )
 -})
--
+ 
 -test('origin check: same host, whatever the scheme', async () => {
 -  const logout = async (origin) => {
 -    const url = new URL('http://localhost/api/logout')
@@ -4162,245 +4209,112 @@ index bae3e12..0000000
 -  eq((await logout('https://localhost')).status, 204)
 -  eq((await logout('https://evil.example')).status, 403)
 -  eq((await logout('not a url')).status, 403)
--})
++  await step('the health route answers', async () => {
++    const res = await call('GET', '/api/health')
++    eq((await res.json()).status, 'ok')
++  })
+ })
 diff --git a/api/member.ts b/api/member.ts
-deleted file mode 100644
-index 8d00735..0000000
+index 8d00735..4e73220 100644
 --- a/api/member.ts
-+++ /dev/null
-@@ -1,232 +0,0 @@
--import { db, sql } from '@01edu/db'
--import { respond } from '@01edu/api/response'
--import { Company, demoMemberId, Entry, Member } from '/api/schema.ts'
++++ b/api/member.ts
+@@ -1,7 +1,6 @@
+ import { db, sql } from '@01edu/db'
+ import { respond } from '@01edu/api/response'
+ import { Company, demoMemberId, Entry, Member } from '/api/schema.ts'
 -import { emailEnabled } from '/api/email.ts'
--import { domainReceivesMail } from '/api/lib/mail-domain.ts'
--import { passwordProblem } from '/web/lib/password-rules.ts'
--import {
--  constantTimeEqual,
--  hashPassword,
--  verifyPassword,
--} from '/api/password.ts'
--export { hashPassword, verifyPassword } from '/api/password.ts'
--
--export const SESSION_SECONDS = 14 * 24 * 60 * 60
--export type MemberSession = {
--  entryId: number
--  memberId: number
--  companyId: number
--  createdAt: number
--}
--export type MemberView = {
--  member: { id: number; name: string; email: string }
--  company: { id: number; name: string }
--  demo: boolean
--  /** the personal link can be e-mailed (RESEND_API_KEY) */
--  canEmail: boolean
--}
--const b64 = { alphabet: 'base64url' as const, omitPadding: true }
--const encoder = new TextEncoder()
--const byEmail = Member.sql<
--  keyof typeof Member.properties,
--  string
-->`SELECT * FROM member WHERE memberEmail = ?`.get
--const failureCount = sql<{ count: number }, { email: string; since: number }>`
--  SELECT count(*) AS count FROM entryInternal
--  WHERE type = ${Entry.type.MEMBER_LOGIN_FAILED}
--    AND createdAt > :since AND json_extract(data, '$.email') = :email
--`.get
--sql`CREATE INDEX IF NOT EXISTS member_failed_login ON entryInternal(type, createdAt) WHERE type = ${Entry.type.MEMBER_LOGIN_FAILED}`
--  .run()
--
--const invalidCredentials = () =>
--  new respond.UnauthorizedError({
+ import { domainReceivesMail } from '/api/lib/mail-domain.ts'
+ import { passwordProblem } from '/web/lib/password-rules.ts'
+ import {
+@@ -41,7 +40,7 @@ sql`CREATE INDEX IF NOT EXISTS member_failed_login ON entryInternal(type, create
+ 
+ const invalidCredentials = () =>
+   new respond.UnauthorizedError({
 -    message: 'E-mail ou mot de passe incorrect.',
--  })
--/** a refused field: the sign-up page shows the message on that input */
--const badField = (input: string, message: string): never => {
--  throw new respond.BadRequestError({ message, input })
--}
--
--const bounded = (
--  value: string,
--  label: string,
--  max: number,
--  input?: string,
--) => {
--  const clean = value.trim()
--  if (!clean || clean.length > max) {
--    const message = !clean
++    message: 'Incorrect e-mail or password.',
+   })
+ /** a refused field: the sign-up page shows the message on that input */
+ const badField = (input: string, message: string): never => {
+@@ -57,10 +56,10 @@ const bounded = (
+   const clean = value.trim()
+   if (!clean || clean.length > max) {
+     const message = !clean
 -      ? `${label} : champ obligatoire.`
 -      : `${label} : ${max} caractères au plus.`
--    if (input) badField(input, message)
++      ? `${label}: required field.`
++      : `${label}: ${max} characters at most.`
+     if (input) badField(input, message)
 -    throw new respond.BadRequestError({ message: `${label} invalide.` })
--  }
--  return clean
--}
--
--const signature = async (salt: Uint8Array, bytes: Uint8Array) => {
--  const buffer = new Uint8Array(16 + bytes.length)
--  buffer.set(salt.slice(0, 16))
--  buffer.set(bytes, 16)
--  return new Uint8Array(await crypto.subtle.digest('SHA-256', buffer))
--}
--
--export const generateSession = async (memberId: number) => {
--  const member = Member.require(memberId)
--  const entryId = Entry.insert.MEMBER_LOGIN({
--    memberId,
--    companyId: member.companyId,
--  })
--  const bytes = encoder.encode(String(entryId))
--  const hash = await signature(member.memberPassword, bytes)
--  return `${bytes.toBase64(b64)}:${hash.toBase64(b64)}`
--}
--
--const sessionRow = sql<MemberSession & { memberPassword: Uint8Array }, number>`
--  SELECT e.id AS entryId, e.memberId, m.companyId, e.createdAt, m.memberPassword
--  FROM entryInternal e JOIN member m ON m.memberId = e.memberId
--  WHERE e.id = ? AND e.type = ${Entry.type.MEMBER_LOGIN} AND e.archivedAt IS NULL
--`.get
--export const decodeSession = async (
--  token?: string,
--): Promise<MemberSession | undefined> => {
--  if (!token || token.length > 160) return
--  try {
--    const parts = token.split(':')
--    if (parts.length !== 2) return
--    const bytes = Uint8Array.fromBase64(parts[0], b64)
--    const text = new TextDecoder().decode(bytes)
--    if (!/^[1-9]\d*$/.test(text)) return
--    const id = Number(text)
--    if (!Number.isSafeInteger(id)) return
--    const row = sessionRow(id)
--    if (!row || row.createdAt + SESSION_SECONDS <= Date.now() / 1000) return
--    const hash = Uint8Array.fromBase64(parts[1], b64)
--    if (!constantTimeEqual(hash, await signature(row.memberPassword, bytes))) {
--      return
--    }
--    const { memberPassword: _password, ...session } = row
--    return session
--  } catch {
--    return
--  }
--}
--export const logout = (session: MemberSession) => Entry.archive(session.entryId)
--export const memberView = (memberId: number): MemberView => {
--  const member = Member.require(memberId)
--  const company = Company.require(member.companyId)
--  return {
--    member: {
--      id: memberId,
--      name: member.memberName,
--      email: member.memberEmail,
--    },
--    company: { id: company.companyId, name: company.companyName },
--    demo: memberId === demoMemberId,
++    throw new respond.BadRequestError({ message: `Invalid ${label}.` })
+   }
+   return clean
+ }
+@@ -124,7 +123,7 @@ export const memberView = (memberId: number): MemberView => {
+     },
+     company: { id: company.companyId, name: company.companyName },
+     demo: memberId === demoMemberId,
 -    canEmail: emailEnabled(),
--  }
--}
--
--const insertCompany = db.transaction(
--  (companyName: string, name: string, email: string, password: Uint8Array) => {
--    if (byEmail(email)) {
--      throw new respond.ConflictError({
++    canEmail: !!Deno.env.get('RESEND_API_KEY'),
+   }
+ }
+ 
+@@ -132,7 +131,7 @@ const insertCompany = db.transaction(
+   (companyName: string, name: string, email: string, password: Uint8Array) => {
+     if (byEmail(email)) {
+       throw new respond.ConflictError({
 -        message: 'Cet e-mail est déjà utilisé.',
--        input: 'email',
--      })
--    }
--    const companyId = Company.insert({
--      companyName,
--      companyCreatedAt: Date.now(),
--    })
--    const memberId = Member.insert({
--      companyId,
--      memberName: name,
--      memberEmail: email,
--      memberPassword: password,
--      memberCreatedAt: Date.now(),
--    })
--    Entry.insert.COMPANY_CREATED({ companyId })
--    Entry.insert.MEMBER_CREATED({ companyId, memberId })
--    return memberId
--  },
--)
--/** format, length and a domain that receives mail */
--const validEmail = async (raw: string) => {
--  const email = bounded(raw, 'E-mail', 254, 'email').toLowerCase()
--  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
++        message: 'This e-mail is already used.',
+         input: 'email',
+       })
+     }
+@@ -156,14 +155,14 @@ const insertCompany = db.transaction(
+ const validEmail = async (raw: string) => {
+   const email = bounded(raw, 'E-mail', 254, 'email').toLowerCase()
+   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
 -    badField('email', 'E-mail invalide : vérifiez son format (nom@domaine.fr).')
--  }
--  if (!await domainReceivesMail(email)) {
--    badField(
--      'email',
++    badField('email', 'Invalid e-mail: check its format (name@domain.com).')
+   }
+   if (!await domainReceivesMail(email)) {
+     badField(
+       'email',
 -      `Le domaine « ${
--        email.split('@')[1]
++      `The domain "${
+         email.split('@')[1]
 -      } » ne reçoit pas d’e-mails : vérifiez l’adresse.`,
--    )
--  }
--  return email
--}
--
--export const createCompany = async (
--  input: {
--    companyName: string
--    name: string
--    email: string
--    password: string
--    /** the sign-up page always sends it; checked when present */
--    confirmPassword?: string | null
--  },
--) => {
--  const companyName = bounded(
--    input.companyName,
++      }" does not receive e-mail: check the address.`,
+     )
+   }
+   return email
+@@ -181,17 +180,17 @@ export const createCompany = async (
+ ) => {
+   const companyName = bounded(
+     input.companyName,
 -    'Nom de l’entreprise',
--    160,
--    'companyName',
--  )
++    'Company name',
+     160,
+     'companyName',
+   )
 -  const name = bounded(input.name, 'Nom', 160, 'name')
--  const problem = passwordProblem(input.password)
--  if (problem) badField('password', problem)
--  if (
--    input.confirmPassword != null && input.confirmPassword !== input.password
--  ) {
++  const name = bounded(input.name, 'Name', 160, 'name')
+   const problem = passwordProblem(input.password)
+   if (problem) badField('password', problem)
+   if (
+     input.confirmPassword != null && input.confirmPassword !== input.password
+   ) {
 -    badField('confirmPassword', 'Les deux mots de passe ne correspondent pas.')
--  }
--  const email = await validEmail(input.email)
--  const password = await hashPassword(input.password)
--  return insertCompany(companyName, name, email, password)
--}
--
--// Count in-flight verifications too: concurrent requests cannot bypass the cap.
--const pending = new Map<string, number>()
--const dummy = crypto.getRandomValues(new Uint8Array(48))
--export const authenticate = async (rawEmail: string, password: string) => {
--  if (rawEmail.length > 254 || password.length > 1024) {
--    throw invalidCredentials()
--  }
--  const email = rawEmail.trim().toLowerCase()
--  const failures =
--    failureCount({ email, since: Date.now() / 1000 - 15 * 60 })?.count ?? 0
--  if (failures + (pending.get(email) ?? 0) >= 10) {
--    throw new respond.TooManyRequestsError({
++    badField('confirmPassword', 'The two passwords do not match.')
+   }
+   const email = await validEmail(input.email)
+   const password = await hashPassword(input.password)
+@@ -210,7 +209,7 @@ export const authenticate = async (rawEmail: string, password: string) => {
+     failureCount({ email, since: Date.now() / 1000 - 15 * 60 })?.count ?? 0
+   if (failures + (pending.get(email) ?? 0) >= 10) {
+     throw new respond.TooManyRequestsError({
 -      message: 'Trop de tentatives. Réessayez dans 15 minutes.',
--    })
--  }
--  pending.set(email, (pending.get(email) ?? 0) + 1)
--  try {
--    const member = byEmail(email)
--    const valid = await verifyPassword(
--      password,
--      member?.memberPassword ?? dummy,
--    )
--    if (!member || !valid) {
--      Entry.insert.MEMBER_LOGIN_FAILED({ data: { email } })
--      throw invalidCredentials()
--    }
--    return await generateSession(member.memberId)
--  } finally {
--    const count = (pending.get(email) ?? 1) - 1
--    count ? pending.set(email, count) : pending.delete(email)
--  }
--}
++      message: 'Too many attempts. Try again in 15 minutes.',
+     })
+   }
+   pending.set(email, (pending.get(email) ?? 0) + 1)
 diff --git a/api/recovery.ts b/api/recovery.ts
 deleted file mode 100644
 index 952c4db..0000000
@@ -5902,16 +5816,13 @@ index 75d54dc..0000000
 -
 -export type { Question }
 diff --git a/api/routes.ts b/api/routes.ts
-deleted file mode 100644
-index 20228a8..0000000
+index 20228a8..0046942 100644
 --- a/api/routes.ts
-+++ /dev/null
-@@ -1,758 +0,0 @@
--import { deleteCookie, setCookie } from 'jsr:@std/http/cookie'
--import type { RequestContext } from '@01edu/api/context'
--import { makeRouter, route } from '@01edu/api/router'
--import { respond } from '@01edu/api/response'
--import { metrics } from '@01edu/db'
++++ b/api/routes.ts
+@@ -3,29 +3,11 @@ import type { RequestContext } from '@01edu/api/context'
+ import { makeRouter, route } from '@01edu/api/router'
+ import { respond } from '@01edu/api/response'
+ import { metrics } from '@01edu/db'
 -import {
 -  ARR,
 -  BOOL,
@@ -5922,9 +5833,10 @@ index 20228a8..0000000
 -  STR,
 -  UNION,
 -} from '@01edu/api/validator'
--import { log } from '/api/lib/log.ts'
++import { BOOL, OBJ, optional, STR } from '@01edu/api/validator'
+ import { log } from '/api/lib/log.ts'
 -import { replayForDemo } from '/api/lib/ai-context.ts'
--import { APP_ENV } from '/api/lib/env.ts'
+ import { APP_ENV } from '/api/lib/env.ts'
 -import { FILES, JSON_OF } from '/api/lib/validator.ts'
 -import {
 -  Assessment,
@@ -5935,17 +5847,15 @@ index 20228a8..0000000
 -  entryInsertListeners,
 -  type EntryListener,
 -} from '/api/schema.ts'
--import {
--  authenticate,
--  createCompany,
--  decodeSession,
--  generateSession,
--  logout,
--  type MemberSession,
--  type MemberView,
--  memberView,
--  SESSION_SECONDS,
--} from '/api/member.ts'
++import { JSON_OF } from '/api/lib/validator.ts'
++import { demoMemberId } from '/api/schema.ts'
+ import {
+   authenticate,
+   createCompany,
+@@ -37,58 +19,6 @@ import {
+   memberView,
+   SESSION_SECONDS,
+ } from '/api/member.ts'
 -import {
 -  approveAssessment,
 -  createAssessment,
@@ -5998,22 +5908,25 @@ index 20228a8..0000000
 -
 -const ACK_PAYLOAD = new TextEncoder().encode('event: ack\ndata: \n\n')
 -const CANDIDATE_COOKIE = 'dfd_candidate'
--
--/* ---------- sessions ---------- */
--
--const MEMBER_COOKIE = 'dfd_session'
--// the guided demo can log in the demo member (POST/api/demo/session)
--const demoAccess = () => Deno.env.get('DEMO_ACCESS') === '1'
--const withSession = async (ctx: RequestContext) => {
--  const session = await decodeSession(ctx.cookies[MEMBER_COOKIE])
--  if (!session) {
+ 
+ /* ---------- sessions ---------- */
+ 
+@@ -98,36 +28,16 @@ const demoAccess = () => Deno.env.get('DEMO_ACCESS') === '1'
+ const withSession = async (ctx: RequestContext) => {
+   const session = await decodeSession(ctx.cookies[MEMBER_COOKIE])
+   if (!session) {
 -    throw new respond.UnauthorizedError({ message: 'Connexion requise.' })
--  }
--  return session
--}
++    throw new respond.UnauthorizedError({ message: 'Sign-in required.' })
+   }
+   return session
+ }
 -// U3: every recruiter route needs a session, in every environment
 -const withMember = async (ctx: RequestContext): Promise<MemberSession> => {
--  if (ctx.req.method !== 'GET') checkOrigin(ctx)
++// every recruiter route needs a session, in every environment
++export const withMember = async (
++  ctx: RequestContext,
++): Promise<MemberSession> => {
+   if (ctx.req.method !== 'GET') checkOrigin(ctx)
 -  const session = await withSession(ctx)
 -  // the demo company replays the recorded answers (api/lib/ai-context.ts)
 -  replayForDemo(session.companyId === demoCompanyId)
@@ -6037,38 +5950,30 @@ index 20228a8..0000000
 -  }
 -  ownedAssessment(ctx, row.assessmentId)
 -  return candidateId
--}
--// Same host only: behind a TLS proxy the server sees http:// while the
--// browser sends Origin: https://, so the scheme is not compared.
--const checkOrigin = (ctx: RequestContext) => {
--  const origin = ctx.req.headers.get('origin')
--  let host: string | undefined
--  try {
--    host = origin ? new URL(origin).host : undefined
--  } catch { /* malformed Origin: refused below */ }
--  if (origin && host !== ctx.url.host) {
++  return await withSession(ctx)
+ }
+ // Same host only: behind a TLS proxy the server sees http:// while the
+ // browser sends Origin: https://, so the scheme is not compared.
+@@ -138,13 +48,13 @@ const checkOrigin = (ctx: RequestContext) => {
+     host = origin ? new URL(origin).host : undefined
+   } catch { /* malformed Origin: refused below */ }
+   if (origin && host !== ctx.url.host) {
 -    throw new respond.ForbiddenError({ message: 'Origine non autorisée.' })
--  }
--}
--const sessionResponse = async (token: string) => {
--  const session = await decodeSession(token)
--  if (!session) {
++    throw new respond.ForbiddenError({ message: 'Origin not allowed.' })
+   }
+ }
+ const sessionResponse = async (token: string) => {
+   const session = await decodeSession(token)
+   if (!session) {
 -    throw new respond.UnauthorizedError({ message: 'Session invalide.' })
--  }
--  const response = respond.OK(memberView(session.memberId))
--  setCookie(response.headers, {
--    name: MEMBER_COOKIE,
--    value: token,
--    httpOnly: true,
--    secure: APP_ENV === 'prod',
--    sameSite: 'Lax',
--    path: '/',
--    maxAge: SESSION_SECONDS,
--  })
--  response.headers.set('Cache-Control', 'no-store')
--  return response
--}
--
++    throw new respond.UnauthorizedError({ message: 'Invalid session.' })
+   }
+   const response = respond.OK(memberView(session.memberId))
+   setCookie(response.headers, {
+@@ -160,32 +70,8 @@ const sessionResponse = async (token: string) => {
+   return response
+ }
+ 
 -const withCandidate = (ctx: RequestContext) => {
 -  const c = findCandidate(ctx.cookies[CANDIDATE_COOKIE])
 -  // a candidate of the demo company: replay, set before any automatic
@@ -6089,92 +5994,37 @@ index 20228a8..0000000
 -  return n
 -}
 -
--/* ---------- shared validators ---------- */
--
+ /* ---------- shared validators ---------- */
+ 
 -const ASSESSMENT = JSON_OF<AssessmentState>('Assessment and its state')
 -const CANDIDATE = JSON_OF<CandidateView>('Candidate session')
 -const TRACE = JSON_OF<AiTrace>('AI trace: model, place, latency, tokens')
 -const LEVEL = LIST(['junior', 'intermediate', 'senior'], 'Level')
--// The framework's default validator report echoes invalid values. Auth fields
--// must never be echoed, even when a password has an unexpected JSON type.
--const signupInput = {
--  ...OBJ({
--    companyName: STR('Company name'),
--    name: STR('Member name'),
--    email: STR('Email'),
--    password: STR('Password'),
--    confirmPassword: optional(STR('Password typed again')),
--  }),
--  report: () => [],
--}
--const loginInput = {
--  ...OBJ({ email: STR('Email'), password: STR('Password') }),
--  report: () => [],
--}
--
--const defs = {
--  // Prevent makeRouter from injecting unrestricted SQL/dev endpoints.
--  'POST/api/sql/execute': route({ fn: () => respond.NotFound() }),
--  'GET/api/sql/metrics': route({ fn: () => respond.NotFound() }),
--  'GET/api/router/metrics': route({ fn: () => respond.NotFound() }),
--  'POST/api/signup': route({
--    fn: async (ctx, input) => {
--      checkOrigin(ctx)
--      return sessionResponse(await generateSession(await createCompany(input)))
--    },
--    input: signupInput,
--    output: JSON_OF<MemberView>('Current member and company'),
--  }),
--  'POST/api/login': route({
--    fn: async (ctx, { email, password }) => {
--      checkOrigin(ctx)
--      return sessionResponse(await authenticate(email, password))
--    },
--    input: loginInput,
--    output: JSON_OF<MemberView>('Current member and company'),
--  }),
--  'POST/api/logout': route({
--    fn: async (ctx) => {
--      checkOrigin(ctx)
--      const session = await decodeSession(ctx.cookies[MEMBER_COOKIE])
--      if (session) logout(session)
--      const response = respond.NoContent()
--      deleteCookie(response.headers, MEMBER_COOKIE, { path: '/' })
--      return response
--    },
--  }),
--  'GET/api/me': route({
--    authorize: withSession,
--    fn: (ctx) => {
--      const response = respond.OK(memberView(ctx.session.memberId))
--      response.headers.set('Cache-Control', 'no-store')
--      return response
--    },
--    output: JSON_OF<MemberView>('Current member and company'),
--  }),
--  'POST/api/demo/session': route({
--    fn: async (ctx) => {
--      if (!demoAccess()) {
+ // The framework's default validator report echoes invalid values. Auth fields
+ // must never be echoed, even when a password has an unexpected JSON type.
+ const signupInput = {
+@@ -246,7 +132,7 @@ const defs = {
+   'POST/api/demo/session': route({
+     fn: async (ctx) => {
+       if (!demoAccess()) {
 -        throw new respond.NotFoundError({ message: 'Démo indisponible.' })
--      }
--      checkOrigin(ctx)
--      return sessionResponse(await generateSession(demoMemberId))
--    },
--    output: JSON_OF<MemberView>('Demo member and company'),
--  }),
--  'GET/api/demo': route({
--    fn: () => ({ available: demoAccess() }),
--    output: OBJ({ available: BOOL('Demo account available (DEMO_ACCESS)') }),
++        throw new respond.NotFoundError({ message: 'Demo unavailable.' })
+       }
+       checkOrigin(ctx)
+       return sessionResponse(await generateSession(demoMemberId))
+@@ -256,7 +142,7 @@ const defs = {
+   'GET/api/demo': route({
+     fn: () => ({ available: demoAccess() }),
+     output: OBJ({ available: BOOL('Demo account available (DEMO_ACCESS)') }),
 -    description: 'Whether « Essayer la démo » can log in the demo member',
--  }),
--  'GET/api/health': route({
--    fn: () => ({ status: 'ok', env: APP_ENV }),
--    output: OBJ({
--      status: STR('Always "ok" when the server answers'),
--      env: STR('Current APP_ENV (dev, test or prod)'),
--    }),
--    description: 'Healthcheck used by docker and the dev tooling',
--  }),
++    description: 'Whether the demo account can be signed in',
+   }),
+   'GET/api/health': route({
+     fn: () => ({ status: 'ok', env: APP_ENV }),
+@@ -266,493 +152,7 @@ const defs = {
+     }),
+     description: 'Healthcheck used by docker and the dev tooling',
+   }),
 -
 -  /* ---------- recruiter: assessments (R1 → R5) ---------- */
 -
@@ -6660,11 +6510,11 @@ index 20228a8..0000000
 -      candidate: optional(STR('Followed candidate, "me" for the candidate')),
 -    }),
 -  }),
--} as const
--
--export type RouteDefinitions = typeof defs
+ } as const
+ 
+ export type RouteDefinitions = typeof defs
 -export type { AssistantMessage }
--export const routeHandler = makeRouter(defs, { log, metrics })
+ export const routeHandler = makeRouter(defs, { log, metrics })
 diff --git a/api/sandbox.test.js b/api/sandbox.test.js
 deleted file mode 100644
 index a5ddc2b..0000000
@@ -7865,22 +7715,21 @@ index 263037b..426dfe5 100644
      memberPassword: demoHash!,
      memberCreatedAt: Date.now(),
 diff --git a/api/server.ts b/api/server.ts
-deleted file mode 100644
-index a751410..0000000
+index a751410..f866298 100644
 --- a/api/server.ts
-+++ /dev/null
-@@ -1,44 +0,0 @@
--import { log } from '/api/lib/log.ts'
--import { routeHandler } from '/api/routes.ts'
--import '/api/schema.ts'
++++ b/api/server.ts
+@@ -1,44 +1,21 @@
+ import { log } from '/api/lib/log.ts'
+ import { routeHandler } from '/api/routes.ts'
+ import '/api/schema.ts'
 -import { recoverInterruptedJobs } from '/api/recovery.ts'
 -import { withAiScope } from '/api/lib/ai-context.ts'
 -import { translateMessage } from '/web/lib/messages.ts'
--
--import { server } from '@01edu/api/server'
--
--const fetch = server({ log, routeHandler })
--
+ 
+ import { server } from '@01edu/api/server'
+ 
+ const fetch = server({ log, routeHandler })
+ 
 -/** the language of the page (web/lib/i18n.ts), French by default */
 -const wantsEnglish = (req: Request) =>
 -  /(?:^|;\s*)dfd_lang=en(?:;|$)/.test(req.headers.get('cookie') ?? '')
@@ -7898,157 +7747,136 @@ index a751410..0000000
 -  )
 -}
 -
--export default {
+ export default {
 -  async fetch(req: Request) {
--    // @01edu/api fails on an empty Cookie header (sent by some HTTP clients)
--    if (req.headers.get('cookie') === '') {
--      const headers = new Headers(req.headers)
--      headers.delete('cookie')
--      req = new Request(req, { headers })
--    }
++  fetch(req: Request) {
+     // @01edu/api fails on an empty Cookie header (sent by some HTTP clients)
+     if (req.headers.get('cookie') === '') {
+       const headers = new Headers(req.headers)
+       headers.delete('cookie')
+       req = new Request(req, { headers })
+     }
 -    // the scope of the request, inherited by the jobs it starts
 -    const res = await withAiScope(() => fetch(req, new URL(req.url)))
 -    return wantsEnglish(req) ? inEnglish(res) : res
--  },
--}
--
++    return fetch(req, new URL(req.url))
+   },
+ }
+ 
 -recoverInterruptedJobs()
--log.info('server-start')
+ log.info('server-start')
 diff --git a/api/signup.test.js b/api/signup.test.js
-deleted file mode 100644
-index f506745..0000000
+index f506745..f85449f 100644
 --- a/api/signup.test.js
-+++ /dev/null
-@@ -1,129 +0,0 @@
--// Sign-up of a company space: every refused field is named, so the page
++++ b/api/signup.test.js
+@@ -1,6 +1,5 @@
+ // Sign-up of a company space: every refused field is named, so the page
 -// shows the message on that field. The DNS of
 -// the e-mail check is faked.
--import { eq, test } from '/api/lib/test.ts'
--import { routeHandler } from '/api/routes.ts'
--import { mailDomainConfig } from '/api/lib/mail-domain.ts'
--import { passwordProblem } from '/web/lib/password-rules.ts'
--
--const signup = async (input) => {
--  const url = new URL('http://localhost/api/signup')
--  try {
--    const res = await routeHandler({
--      req: new Request(url, {
--        method: 'POST',
--        headers: { 'content-type': 'application/json' },
--        body: JSON.stringify(input),
--      }),
--      url,
--      cookies: {},
--      trace: Date.now(),
--    })
--    return { status: res.status, body: await res.json() }
--  } catch (error) {
--    if (!(error.response instanceof Response)) throw error
--    return { status: error.response.status, body: await error.response.json() }
--  }
--}
--
--const valid = () => ({
--  companyName: 'Acme',
--  name: 'Awa Diop',
--  email: `rh-${crypto.randomUUID().slice(0, 8)}@example.com`,
++// shows the message on that field. The DNS of the e-mail check is faked.
+ import { eq, test } from '/api/lib/test.ts'
+ import { routeHandler } from '/api/routes.ts'
+ import { mailDomainConfig } from '/api/lib/mail-domain.ts'
+@@ -30,8 +29,8 @@ const valid = () => ({
+   companyName: 'Acme',
+   name: 'Awa Diop',
+   email: `rh-${crypto.randomUUID().slice(0, 8)}@example.com`,
 -  password: 'Mot-de-passe-solide-1',
 -  confirmPassword: 'Mot-de-passe-solide-1',
--})
--
--/** the status and the field a refusal names */
--const refused = async (input) => {
--  const { status, body } = await signup(input)
--  return [status, body.input]
--}
--
--test('sign-up validation', async (step) => {
--  await step('a strong password, confirmed: the space is created', async () => {
--    const { status, body } = await signup(valid())
--    eq([status, body.company.name], [200, 'Acme'])
--  })
--
--  await step(
--    'each missing rule refuses the password, and says which',
--    async () => {
--      for (
--        const password of [
++  password: 'Strong-password-1',
++  confirmPassword: 'Strong-password-1',
+ })
+ 
+ /** the status and the field a refusal names */
+@@ -51,11 +50,11 @@ test('sign-up validation', async (step) => {
+     async () => {
+       for (
+         const password of [
 -          'Court-1',
 -          'sans-majuscule-1',
 -          'SANS-MINUSCULE-1',
 -          'Sans-chiffre-ici',
 -          'Sanscaractere1',
--        ]
--      ) {
--        eq(await refused({ ...valid(), password, confirmPassword: password }), [
--          400,
--          'password',
--        ], password)
--      }
--      eq(
++          'Short-1',
++          'no-capital-letter-1',
++          'NO-LOWER-CASE-1',
++          'No-digit-in-here',
++          'Nospecialchar1',
+         ]
+       ) {
+         eq(await refused({ ...valid(), password, confirmPassword: password }), [
+@@ -64,12 +63,12 @@ test('sign-up validation', async (step) => {
+         ], password)
+       }
+       eq(
 -        passwordProblem('Sans-chiffre-ici'),
 -        'Le mot de passe doit contenir un chiffre.',
--      )
--      eq(
++        passwordProblem('No-digit-in-here'),
++        'The password must contain a digit.',
+       )
+       eq(
 -        passwordProblem('court'),
 -        'Le mot de passe doit contenir 10 caractères minimum, une majuscule, un chiffre, un caractère spécial (! ? - _ …).',
--      )
--      eq(passwordProblem('Été-2026-solide'), undefined)
--    },
--  )
--
--  await step('the confirmation must match', async () => {
--    eq(
++        passwordProblem('short'),
++        'The password must contain at least 10 characters, an upper-case letter, a digit, a special character (! ? - _ …).',
+       )
+       eq(passwordProblem('Été-2026-solide'), undefined)
+     },
+@@ -77,7 +76,7 @@ test('sign-up validation', async (step) => {
+ 
+   await step('the confirmation must match', async () => {
+     eq(
 -      await refused({ ...valid(), confirmPassword: 'Autre-mot-de-passe-2' }),
--      [400, 'confirmPassword'],
--    )
--  })
--
--  await step('empty or malformed fields are named', async () => {
--    eq(await refused({ ...valid(), companyName: '  ' }), [400, 'companyName'])
--    eq(await refused({ ...valid(), name: '' }), [400, 'name'])
++      await refused({ ...valid(), confirmPassword: 'Another-password-2' }),
+       [400, 'confirmPassword'],
+     )
+   })
+@@ -85,13 +84,13 @@ test('sign-up validation', async (step) => {
+   await step('empty or malformed fields are named', async () => {
+     eq(await refused({ ...valid(), companyName: '  ' }), [400, 'companyName'])
+     eq(await refused({ ...valid(), name: '' }), [400, 'name'])
 -    eq(await refused({ ...valid(), email: 'awa@exemple' }), [400, 'email'])
--  })
--
--  await step('an e-mail already used is named too', async () => {
--    const input = valid()
--    await signup(input)
++    eq(await refused({ ...valid(), email: 'awa@example' }), [400, 'email'])
+   })
+ 
+   await step('an e-mail already used is named too', async () => {
+     const input = valid()
+     await signup(input)
 -    eq(await refused({ ...input, companyName: 'Autre' }), [409, 'email'])
--  })
--
--  await step('a domain without mail server is refused (MX)', async () => {
--    const saved = { ...mailDomainConfig }
--    const asked = []
--    mailDomainConfig.enabled = true
--    mailDomainConfig.resolveMx = (domain) => {
--      asked.push(domain)
--      if (domain === 'gmial.com') throw new Deno.errors.NotFound('no MX')
++    eq(await refused({ ...input, companyName: 'Other' }), [409, 'email'])
+   })
+ 
+   await step('a domain without mail server is refused (MX)', async () => {
+@@ -101,8 +100,8 @@ test('sign-up validation', async (step) => {
+     mailDomainConfig.resolveMx = (domain) => {
+       asked.push(domain)
+       if (domain === 'gmial.com') throw new Deno.errors.NotFound('no MX')
 -      if (domain === 'panne-dns.fr') throw new Error('timeout')
 -      if (domain === 'null-mx.fr') {
--        return Promise.resolve([{ preference: 0, exchange: '.' }])
--      }
--      return Promise.resolve([{ preference: 10, exchange: `mx.${domain}` }])
--    }
--    try {
--      const { status, body } = await signup({
--        ...valid(),
--        email: 'awa@gmial.com',
--      })
--      eq([status, body.input], [400, 'email'])
--      eq(body.message.includes('gmial.com'), true)
--      // a null MX (RFC 7505): no mail either
++      if (domain === 'dns-down.com') throw new Error('timeout')
++      if (domain === 'null-mx.com') {
+         return Promise.resolve([{ preference: 0, exchange: '.' }])
+       }
+       return Promise.resolve([{ preference: 10, exchange: `mx.${domain}` }])
+@@ -115,13 +114,13 @@ test('sign-up validation', async (step) => {
+       eq([status, body.input], [400, 'email'])
+       eq(body.message.includes('gmial.com'), true)
+       // a null MX (RFC 7505): no mail either
 -      eq((await signup({ ...valid(), email: 'awa@null-mx.fr' })).status, 400)
--      // the DNS down never blocks a sign-up
++      eq((await signup({ ...valid(), email: 'awa@null-mx.com' })).status, 400)
+       // the DNS down never blocks a sign-up
 -      eq((await signup({ ...valid(), email: 'awa@panne-dns.fr' })).status, 200)
--      // answers are cached: one question per domain
++      eq((await signup({ ...valid(), email: 'awa@dns-down.com' })).status, 200)
+       // answers are cached: one question per domain
 -      await signup({ ...valid(), email: 'rh-1@acme-mx.fr' })
 -      await signup({ ...valid(), email: 'rh-2@acme-mx.fr' })
 -      eq(asked.filter((d) => d === 'acme-mx.fr').length, 1)
--    } finally {
--      Object.assign(mailDomainConfig, saved)
--    }
--  })
--})
++      await signup({ ...valid(), email: 'rh-1@acme-mx.com' })
++      await signup({ ...valid(), email: 'rh-2@acme-mx.com' })
++      eq(asked.filter((d) => d === 'acme-mx.com').length, 1)
+     } finally {
+       Object.assign(mailDomainConfig, saved)
+     }
 diff --git a/api/test-steps.test.js b/api/test-steps.test.js
 deleted file mode 100644
 index 8da2238..0000000
@@ -12689,35 +12517,39 @@ index 1d79ae1..0000000
 -  }
 -})
 diff --git a/web/lib/password-rules.ts b/web/lib/password-rules.ts
-deleted file mode 100644
-index 0f131b9..0000000
+index 0f131b9..d42ded1 100644
 --- a/web/lib/password-rules.ts
-+++ /dev/null
-@@ -1,68 +0,0 @@
--// Password of a company space: 10 characters, a lower case and an upper case
--// letter, a digit and a special character. Shared by the API (api/member.ts
--// refuses a weak password) and the sign-up page (the same rules, checked as
++++ b/web/lib/password-rules.ts
+@@ -1,51 +1,23 @@
+ // Password of a company space: 10 characters, a lower case and an upper case
+ // letter, a digit and a special character. Shared by the API (api/member.ts
+ // refuses a weak password) and the sign-up page (the same rules, checked as
 -// one types). The labels follow the language of the page (French on the
 -// API, whose messages are translated at the response, api/server.ts).
 -import { t } from '/web/lib/i18n.ts'
--
--export type PasswordRule = { label: string; ok: (password: string) => boolean }
--
--export const PASSWORD_MIN = 10
--export const PASSWORD_MAX = 1024
--
++// one types).
+ 
+ export type PasswordRule = { label: string; ok: (password: string) => boolean }
+ 
+ export const PASSWORD_MIN = 10
+ export const PASSWORD_MAX = 1024
+ 
 -// getters: each label is read in the language of the moment
--export const passwordRules: PasswordRule[] = [
--  {
+ export const passwordRules: PasswordRule[] = [
+   {
 -    get label() {
 -      return t(
 -        `${PASSWORD_MIN} caractères minimum`,
 -        `at least ${PASSWORD_MIN} characters`,
 -      )
 -    },
--    ok: (p) => p.length >= PASSWORD_MIN,
--  },
--  {
++    label: `at least ${PASSWORD_MIN} characters`,
+     ok: (p) => p.length >= PASSWORD_MIN,
+   },
++  { label: 'a lower-case letter', ok: (p) => /\p{Ll}/u.test(p) },
++  { label: 'an upper-case letter', ok: (p) => /\p{Lu}/u.test(p) },
++  { label: 'a digit', ok: (p) => /\d/.test(p) },
+   {
 -    get label() {
 -      return t('une minuscule', 'a lower-case letter')
 -    },
@@ -12742,26 +12574,29 @@ index 0f131b9..0000000
 -        'a special character (! ? - _ …)',
 -      )
 -    },
--    ok: (p) => /[^\p{L}\p{N}]/u.test(p),
--  },
--]
--
--/** the first rule the password breaks, as a sentence; undefined when strong */
--export const passwordProblem = (password: string) => {
--  if (password.length > PASSWORD_MAX) {
++    label: 'a special character (! ? - _ …)',
+     ok: (p) => /[^\p{L}\p{N}]/u.test(p),
+   },
+ ]
+@@ -53,16 +25,9 @@ export const passwordRules: PasswordRule[] = [
+ /** the first rule the password breaks, as a sentence; undefined when strong */
+ export const passwordProblem = (password: string) => {
+   if (password.length > PASSWORD_MAX) {
 -    return t(
 -      `Le mot de passe doit contenir ${PASSWORD_MAX} caractères au plus.`,
 -      `The password must contain at most ${PASSWORD_MAX} characters.`,
 -    )
--  }
--  const missing = passwordRules.filter((r) => !r.ok(password))
--  if (!missing.length) return
++    return `The password must contain at most ${PASSWORD_MAX} characters.`
+   }
+   const missing = passwordRules.filter((r) => !r.ok(password))
+   if (!missing.length) return
 -  const rules = missing.map((r) => r.label).join(', ')
 -  return t(
 -    `Le mot de passe doit contenir ${rules}.`,
 -    `The password must contain ${rules}.`,
 -  )
--}
++  return `The password must contain ${missing.map((r) => r.label).join(', ')}.`
+ }
 diff --git a/web/lib/report-store.ts b/web/lib/report-store.ts
 deleted file mode 100644
 index 3101eb6..0000000
