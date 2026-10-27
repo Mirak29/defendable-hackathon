@@ -2905,31 +2905,38 @@ index 6493f68..1252254 100644
 -  },
 -)
 diff --git a/api/llm.test.js b/api/llm.test.js
-deleted file mode 100644
-index 03637a4..0000000
+index 03637a4..85a0cff 100644
 --- a/api/llm.test.js
-+++ /dev/null
-@@ -1,269 +0,0 @@
++++ b/api/llm.test.js
+@@ -1,269 +1,291 @@
 -import { eq, rejects, test } from '/api/lib/test.ts'
 -import { mockLlm } from '/api/lib/llm-mock.ts'
--import {
--  AiError,
++// The AI client against a local mock of the Meta Model API: JSON, retries,
++// fallback model, readable failures, recorded answers without a key.
++import { eq, test } from '/api/lib/test.ts'
+ import {
+   AiError,
 -  aiErrorText,
--  ask,
--  extractJson,
--  llmConfig,
+   ask,
+   extractJson,
++  hasAiKey,
+   llmConfig,
 -  MODELS,
 -  retryDelay,
 -  routeChain,
--} from '/api/llm.ts'
--
++  modelLabel,
+ } from '/api/llm.ts'
+ 
 -retryDelay.ms = 0
 -
--const parse = (v) => {
+ const parse = (v) => {
 -  if (typeof v?.answer !== 'number') throw Error('answer doit être un nombre')
 -  return v
--}
--
++  if (!v || typeof v.n !== 'number') throw Error('n must be a number')
++  return v.n
+ }
++const base = { task: 'test', system: 'system', prompt: 'prompt', parse }
+ 
 -const mock = mockLlm
 -
 -const task = (extra = {}) => ({
@@ -2947,7 +2954,27 @@ index 03637a4..0000000
 -    eq(extractJson('<think>hmm {"no":1}</think>Voici : {"a":[1,2]} merci'), {
 -      a: [1, 2],
 -    })
--  })
++/** a mock endpoint: `script` gives, per call, a status and a body */
++const withMock = async (script, fn) => {
++  const calls = []
++  const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
++    const body = await req.json()
++    calls.push({ body, auth: req.headers.get('authorization') })
++    const [status, payload, headers] =
++      script[Math.min(calls.length, script.length) - 1]
++    if (payload?.sse) {
++      const text = payload.sse.map((c) => `data: ${JSON.stringify(c)}\n\n`)
++        .join('') + 'data: [DONE]\n\n'
++      return new Response(text, {
++        status,
++        headers: { 'content-type': 'text/event-stream' },
++      })
++    }
++    return new Response(
++      typeof payload === 'string' ? payload : JSON.stringify(payload),
++      { status, headers },
++    )
+   })
 -
 -  await step(
 -    'a code block inside a value is not the envelope (LIVE-005)',
@@ -2973,9 +3000,24 @@ index 03637a4..0000000
 -      a: [1, 2],
 -      b: { c: 3 },
 -    })
--  })
++  const saved = { ...llmConfig }
++  Object.assign(llmConfig, {
++    key: 'test-key',
++    baseUrl: `http://localhost:${server.addr.port}/v1`,
++    model: 'muse-spark-1.3',
++    fallback: 'muse-spark-1.2',
++    retryDelayMs: 0,
++    maxRetryAfterMs: 0,
+   })
 -})
--
++  try {
++    return await fn(calls)
++  } finally {
++    Object.assign(llmConfig, saved)
++    await server.shutdown()
++  }
++}
+ 
 -test('ask', async (step) => {
 -  await step('valid answer, trace with tokens', async () => {
 -    await using m = mock(() => [200, '{"answer":42}'])
@@ -2989,7 +3031,14 @@ index 03637a4..0000000
 -    ])
 -    eq(m.calls[0].model, 'model-super')
 -  })
--
++const reply = (
++  content,
++  usage = { prompt_tokens: 10, completion_tokens: 5 },
++) => [
++  200,
++  { choices: [{ message: { content }, finish_reason: 'stop' }], usage },
++]
+ 
 -  await step('invalid answer is retried with the error', async () => {
 -    await using m = mock((
 -      _,
@@ -3003,7 +3052,14 @@ index 03637a4..0000000
 -      true,
 -    )
 -    eq(trace.tokensIn, 20)
--  })
++test('JSON extraction', async (step) => {
++  await step('plain, fenced, with prose and a trailing comma', () => {
++    eq(extractJson('{"n": 1}'), { n: 1 })
++    eq(extractJson('```json\n{"n": 2}\n```'), { n: 2 })
++    eq(extractJson('Here you go: {"n": 3} done'), { n: 3 })
++    eq(extractJson('{"n": 4,}'), { n: 4 })
++    eq(extractJson('<think>{"n": 0}</think>{"n": 5}'), { n: 5 })
+   })
 -
 -  await step('main model down: fallback model, amber banner', async () => {
 -    await using m = mock((body) =>
@@ -3015,28 +3071,77 @@ index 03637a4..0000000
 -    )
 -    eq([data.answer, trace.model, fallbacks.length], [7, 'Nemotron 3 Ultra', 1])
 -    eq(m.calls.length, 2)
--  })
--
++  await step('no JSON at all is an error', () => {
++    let failed = false
++    try {
++      extractJson('nothing here')
++    } catch {
++      failed = true
++    }
++    eq(failed, true)
++  })
++  await step('model labels are readable', () => {
++    eq(modelLabel('muse-spark-1.3'), 'Muse Spark 1.3')
++    eq(modelLabel('muse-spark-1.2-contributor'), 'Muse Spark 1.2 (contributor)')
+   })
++})
+ 
 -  await step('overloaded endpoint: one retry on the same model', async () => {
 -    await using m = mock((_, n) => n === 1 ? [503] : [200, '{"answer":2}'])
 -    const { data, trace } = await ask(task())
 -    eq([data.answer, trace.model, m.calls.length], [2, 'Nemotron 3 Super', 2])
--  })
--
++test('ask: the Meta Model API', async (step) => {
++  await step('a valid answer: parsed, traced, key and body sent', async () => {
++    await withMock([reply('{"n": 7}')], async (calls) => {
++      const { data, trace } = await ask(base)
++      eq(data, 7)
++      eq([trace.model, trace.where, trace.tokensIn, trace.tokensOut], [
++        'Muse Spark 1.3',
++        'Meta Model API',
++        10,
++        5,
++      ])
++      eq(trace.failures, undefined)
++      eq(calls[0].auth, 'Bearer test-key')
++      eq(calls[0].body.model, 'muse-spark-1.3')
++      eq(calls[0].body.reasoning_effort, 'low')
++      eq(calls[0].body.messages.map((m) => m.role), ['system', 'user'])
++      eq(calls[0].body.response_format, undefined)
++    })
+   })
+ 
 -  await step('patient job: spaced retries before the fallback', async () => {
 -    await using m = mock((_, n) => n <= 3 ? [503] : [200, '{"answer":4}'])
 -    const { data, trace } = await ask(task({ patient: true }))
 -    eq([data.answer, trace.model, m.calls.length], [4, 'Nemotron 3 Super', 4])
--  })
--
++  await step('a schema asks for json_schema', async () => {
++    await withMock([reply('{"n": 1}')], async (calls) => {
++      await ask({
++        ...base,
++        schema: { name: 'Answer', schema: { type: 'object' } },
++      })
++      eq(calls[0].body.response_format.type, 'json_schema')
++      eq(calls[0].body.response_format.json_schema.name, 'Answer')
++    })
+   })
+ 
 -  await step('fallback chosen by the step', async () => {
 -    await using m = mock((body) =>
 -      body.model === 'model-precise' ? [200, '{"answer":6}'] : [500]
 -    )
 -    const { data } = await ask(task({ fallback: 'precise' }))
 -    eq([data.answer, m.calls.at(-1).model], [6, 'model-precise'])
--  })
--
++  await step('an invalid answer gets one retry with the reason', async () => {
++    await withMock([reply('{"x": 1}'), reply('{"n": 9}')], async (calls) => {
++      const { data, trace } = await ask(base)
++      eq(data, 9)
++      eq(calls.length, 2)
++      const retry = calls[1].body.messages.at(-1).content
++      eq(retry.includes('n must be a number'), true)
++      eq(trace.failures.map((f) => f.reason), ['answer not valid'])
++    })
+   })
+ 
 -  await step('every failed attempt is kept, with its reason', async () => {
 -    await using _m = mock((body) =>
 -      body.model === 'model-super' ? [503] : [200, '{"answer":1}']
@@ -3049,14 +3154,37 @@ index 03637a4..0000000
 -        'Nemotron 3 Super : service surchargé (503)',
 -      ],
 -    )
--  })
--
--  await step(
++  await step('a busy endpoint (429) is retried on the same model', async () => {
++    await withMock([[429, 'busy'], reply('{"n": 3}')], async (calls) => {
++      const { data, trace } = await ask(base)
++      eq(data, 3)
++      eq(calls.map((c) => c.body.model), ['muse-spark-1.3', 'muse-spark-1.3'])
++      eq(trace.failures[0].reason, 'rate limit (429)')
++    })
+   })
+ 
+   await step(
 -    'invalid answer, then total failure: AiError says why',
--    async () => {
++    'a model that keeps failing hands over to the fallback',
+     async () => {
 -      await using _m = mock((body) =>
 -        body.model === 'model-super' ? [200, '{"answer":"deux"}'] : [404]
--      )
++      await withMock(
++        [[503, 'down'], [503, 'down'], [503, 'down'], reply('{"n": 4}')],
++        async (calls) => {
++          const reasons = []
++          const { data, trace } = await ask({
++            ...base,
++            onFallback: (reason) => reasons.push(reason),
++          })
++          eq(data, 4)
++          eq(calls.at(-1).body.model, 'muse-spark-1.2')
++          eq(trace.model, 'Muse Spark 1.2')
++          eq(trace.failures.length, 3)
++          eq(reasons.length, 1)
++          eq(reasons[0].includes('service unavailable (503)'), true)
++        },
+       )
 -      const err = await ask(task()).catch((e) => e)
 -      eq(err instanceof AiError, true)
 -      eq(err.failures.map((f) => f.reason), [
@@ -3064,9 +3192,9 @@ index 03637a4..0000000
 -        'réponse inexploitable : answer doit être un nombre',
 -        'modèle introuvable (404)',
 -      ])
--    },
--  )
--
+     },
+   )
+ 
 -  await step('readable error for the pages', () => {
 -    eq(
 -      aiErrorText(
@@ -3092,14 +3220,35 @@ index 03637a4..0000000
 -    )
 -  })
 -
--  await step(
+   await step(
 -    'with a key, the brief answer never replaces a failure',
--    async () => {
++    'a request that times out (504) is replayed streamed',
+     async () => {
 -      await using _m = mock(() => [500])
 -      await rejects(() => ask(task({ demo: () => ({ answer: 0 }) })), AiError)
--    },
--  )
--
++      const delta = (content) => ({ choices: [{ delta: { content } }] })
++      await withMock([
++        [504, 'too long'],
++        [200, {
++          sse: [
++            delta('{"n"'),
++            delta(': 11}'),
++            {
++              choices: [{ delta: {}, finish_reason: 'stop' }],
++              usage: { prompt_tokens: 20, completion_tokens: 8 },
++            },
++          ],
++        }],
++      ], async (calls) => {
++        const { data, trace } = await ask(base)
++        eq(data, 11)
++        eq(calls.map((c) => c.body.stream), [false, true])
++        eq([trace.tokensIn, trace.tokensOut], [20, 8])
++        eq(trace.failures[0].reason, 'gateway timeout (504)')
++      })
+     },
+   )
+ 
 -  await step('both models down, no demo answer: AiError', async () => {
 -    await using _m = mock(() => [503])
 -    await rejects(() => ask(task()), AiError)
@@ -3116,8 +3265,15 @@ index 03637a4..0000000
 -      eq([data.answer, trace.replay, trace.tokensIn], [5, true, 10])
 -      eq([...Deno.readDirSync(dir)].length, 1)
 -    }
--  })
--
++  await step('a long step is streamed from the start', async () => {
++    await withMock([[200, {
++      sse: [{ choices: [{ delta: { content: '{"n": 2}' } }] }],
++    }]], async (calls) => {
++      eq((await ask({ ...base, stream: true })).data, 2)
++      eq(calls[0].body.stream, true)
++    })
+   })
+ 
 -  await step('no key and nothing cached: demo answer', async () => {
 -    const saved = llmConfig.keys
 -    llmConfig.keys = { nvidia: '', gemini: '' }
@@ -3126,9 +3282,20 @@ index 03637a4..0000000
 -    )
 -    llmConfig.keys = saved
 -    eq([data.answer, trace.replay], [3, true])
--  })
++  await step('Retry-After is honoured, up to the ceiling', async () => {
++    await withMock([
++      [503, 'overloaded', { 'retry-after': '60' }],
++      reply('{"n": 6}'),
++    ], async () => {
++      llmConfig.maxRetryAfterMs = 120
++      const started = performance.now()
++      eq((await ask(base)).data, 6)
++      const waited = performance.now() - started
++      eq(waited >= 100 && waited < 1500, true)
++    })
+   })
 -})
--
+ 
 -test('routes of the tasks', async (step) => {
 -  const saved = llmConfig.keys
 -  const labels = (o) => routeChain({ tier: 'super', ...o }).map((e) => e.label)
@@ -3143,18 +3310,42 @@ index 03637a4..0000000
 -        MODELS['lite-3.1'].label,
 -        MODELS.super.label,
 -      ])
--    })
--
++  await step('missing billing (402) is named', async () => {
++    await withMock([[402, 'billing']], async () => {
++      let error
++      try {
++        await ask(base)
++      } catch (err) {
++        error = err
++      }
++      eq(error.failures[0].reason, 'billing not configured (402)')
+     })
++  })
+ 
 -    await step('a second key never asks the model to check', () => {
--      eq(
++  await step('a refused key is not retried and says so', async () => {
++    await withMock([[401, 'no']], async (calls) => {
++      let error
++      try {
++        await ask({ ...base })
++      } catch (err) {
++        error = err
++      }
++      eq(error instanceof AiError, true)
+       eq(
 -        labels({
 -          task: 'contradiction-check',
 -          avoid: MODELS['lite-3.1'].label,
 -        }),
 -        [MODELS.super.label, MODELS.ultra.label],
--      )
--    })
--
++        error.failures.map((f) => f.reason).includes('key refused (401)'),
++        true,
+       )
++      // both models are tried once, neither is retried
++      eq(calls.length, 2)
+     })
++  })
+ 
 -    await step('a model without its key is skipped', () => {
 -      llmConfig.keys = { nvidia: 'k', gemini: '' }
 -      eq(labels({ task: 'assistant' }), [
@@ -3163,8 +3354,19 @@ index 03637a4..0000000
 -      ])
 -      llmConfig.keys = { nvidia: '', gemini: 'k' }
 -      eq(labels({ task: 'evaluation' }), [MODELS['lite-3.1'].label])
--    })
--
++  await step('a request refused (400) is not retried', async () => {
++    await withMock([[400, 'bad']], async (calls) => {
++      let error
++      try {
++        await ask({ ...base })
++      } catch (err) {
++        error = err
++      }
++      eq(error.failures[0].reason, 'request refused (400)')
++      eq(calls.length, 2)
+     })
++  })
+ 
 -    await step('a scanned document goes to Gemini only', () => {
 -      llmConfig.keys = { nvidia: 'k', gemini: 'k' }
 -      eq(
@@ -3178,13 +3380,51 @@ index 03637a4..0000000
 -  } finally {
 -    llmConfig.keys = saved
 -  }
--})
++  await step('an empty answer cut by the budget is explained', async () => {
++    await withMock(
++      [[200, {
++        choices: [{ message: { content: null }, finish_reason: 'length' }],
++      }]],
++      async () => {
++        let error
++        try {
++          await ask({ ...base })
++        } catch (err) {
++          error = err
++        }
++        eq(error.failures[0].reason.includes('token budget'), true)
++      },
++    )
++  })
++
++  await step(
++    'without a key: the recorded answer, or a readable error',
++    async () => {
++      const saved = llmConfig.key
++      llmConfig.key = ''
++      try {
++        eq(hasAiKey(), false)
++        const { data, trace } = await ask({ ...base, demo: () => 42 })
++        eq([data, trace.replay, trace.model], [42, true, 'Recorded answer'])
++        let error
++        try {
++          await ask(base)
++        } catch (err) {
++          error = err
++        }
++        eq(error instanceof AiError, true)
++        eq(error.message.includes('MODEL_API_KEY'), true)
++      } finally {
++        llmConfig.key = saved
++      }
++    },
++  )
+ })
 diff --git a/api/llm.ts b/api/llm.ts
-deleted file mode 100644
-index 76404e9..0000000
+index 76404e9..a8a77cc 100644
 --- a/api/llm.ts
-+++ /dev/null
-@@ -1,743 +0,0 @@
++++ b/api/llm.ts
+@@ -1,189 +1,41 @@
 -// AI client (OpenAI-compatible chat completions) for every AI step, over two
 -// providers: NVIDIA (build.nvidia.com, or a Brev NIM) and Google Gemini.
 -// Each task is routed to the models that did best on it, for the lowest cost
@@ -3192,25 +3432,37 @@ index 76404e9..0000000
 -// main model → fallback model → replay cache. The replay cache holds recorded
 -// answers (LLM_RECORD=1) and, for the demo, the answers of the brief: without
 -// any key the whole journey still works, with grey "Cache de rejeu" badges.
--import { ENV } from '@01edu/api/env'
++// AI client for every AI step, over the Meta Model API (Chat Completions,
++// https://api.meta.ai/v1). One main model and a fallback model; an invalid
++// answer gets one retry with the validation error; every failed attempt is
++// kept with a readable reason and shown with the trace. Without a key, a step
++// that has a `demo` answer replays it (grey "recorded answer" badge) and the
++// others fail with a readable error: the journey still works for the demo.
+ import { ENV } from '@01edu/api/env'
 -import { AsyncLocalStorage } from 'node:async_hooks'
 -import { encodeHex } from 'jsr:@std/encoding/hex'
 -import { encodeBase64 } from 'jsr:@std/encoding/base64'
 -import { fromFileUrl } from 'jsr:@std/path'
--import { log } from '/api/lib/log.ts'
--import type { AiFailure, AiTrace } from '/web/types.ts'
+ import { log } from '/api/lib/log.ts'
+ import type { AiFailure, AiTrace } from '/web/types.ts'
 -import { replayOnly } from '/api/lib/ai-context.ts'
 -import { inContentLang } from '/api/lib/content-lang.ts'
--
+ 
 -/**
 - * Size class of a step, kept in the cache key and used when a task has no
 - * route: precise = the heavy steps, super = the quick ones, nano = the small
 - * model (a Brev NIM).
 - */
 -export type Tier = 'precise' | 'super' | 'nano'
--
++const where = 'Meta Model API'
+ 
 -export type Provider = 'nvidia' | 'gemini'
--
++/** "muse-spark-1.3" → "Muse Spark 1.3" */
++export const modelLabel = (model: string) =>
++  model.replace(/-contributor$/, ' (contributor)').split(/[-\s]+/).map((w) =>
++    /^\d/.test(w) || w.startsWith('(') ? w : w[0].toUpperCase() + w.slice(1)
++  ).join(' ')
+ 
 -export type Endpoint = {
 -  provider: Provider
 -  model: string
@@ -3368,19 +3620,34 @@ index 76404e9..0000000
 -    if (!chain.some((c) => c.model === e.model)) chain.push(e)
 -  }
 -  return chain.slice(0, 2)
--}
--
++/** mutable so tests can point the client at a local mock */
++export const llmConfig = {
++  key: ENV('MODEL_API_KEY', ''),
++  baseUrl: ENV('MODEL_API_BASE_URL', 'https://api.meta.ai/v1'),
++  model: ENV('MODEL_NAME', 'muse-spark-1.3'),
++  /** tried when the main model fails; empty: no fallback */
++  fallback: ENV('MODEL_FALLBACK', 'muse-spark-1.2'),
++  /** Muse Spark always reasons: "none" is refused (HTTP 400) */
++  effort: ENV('MODEL_EFFORT', 'low'),
++  timeoutMs: 60_000,
++  /** wait before the retry of a busy or failing endpoint, doubled each time */
++  retryDelayMs: 1_000,
++  /** transient failures retried on the same model before giving up on it */
++  retries: 2,
++  /** longest wait honoured from a Retry-After header (the API sends 60 s) */
++  maxRetryAfterMs: 60_000,
++  onCall: undefined as ((stat: CallStat) => void) | undefined,
+ }
+ 
 -/** one attempt of a model, for `deno task llm:bench` */
--export type CallStat = {
--  task: string
--  model: string
--  ok: boolean
--  ms: number
--  tokensIn: number
--  tokensOut: number
--  reason?: string
--}
--
++/** one attempt of a model, for benchmarks and tests */
+ export type CallStat = {
+   task: string
+   model: string
+@@ -194,28 +46,14 @@ export type CallStat = {
+   reason?: string
+ }
+ 
 -/** mutable so tests can point the client at a local mock */
 -export const llmConfig = {
 -  keys: {
@@ -3397,46 +3664,58 @@ index 76404e9..0000000
 -
 -/** at least one provider key: the models are called */
 -export const hasAiKey = () => Object.values(llmConfig.keys).some(Boolean)
--
--export class AiError extends Error {
--  constructor(
--    message: string,
--    public readonly task: string,
++/** a key is set: the models are called */
++export const hasAiKey = () => !!llmConfig.key
+ 
+ export class AiError extends Error {
+   constructor(
+     message: string,
+     public readonly task: string,
 -    /** every failed attempt, shown under « Pourquoi ? » */
--    public readonly failures: AiFailure[] = [],
--  ) {
--    super(message)
--    this.name = 'AiError'
--  }
--}
--
--export type Message = { role: 'system' | 'user' | 'assistant'; content: string }
--
--export type AskOptions<T> = {
++    /** every failed attempt, shown under « Why? » */
+     public readonly failures: AiFailure[] = [],
+   ) {
+     super(message)
+@@ -226,70 +64,36 @@ export class AiError extends Error {
+ export type Message = { role: 'system' | 'user' | 'assistant'; content: string }
+ 
+ export type AskOptions<T> = {
 -  /** short name of the step, also the cache file prefix: "generation" */
--  task: string
++  /** short name of the step: "generation" */
+   task: string
 -  tier: Tier
--  system: string
--  prompt: string
--  /** validates the model answer, throws a readable error otherwise */
--  parse: (value: unknown) => T
+   system: string
+   prompt: string
+   /** validates the model answer, throws a readable error otherwise */
+   parse: (value: unknown) => T
 -  /** answer of the brief, served as a replay when nothing else works */
--  demo?: () => T
++  /** JSON schema of the answer: the API then constrains it (json_schema) */
++  schema?: { name: string; schema: Record<string, unknown> }
++  /** false: the answer is plain text, handed to `parse` as a string */
++  json?: boolean
++  /** answer served as a recording when no key is set (demo, tests) */
+   demo?: () => T
 -  /** trace of the demo answer (model, tokens of the brief) */
--  demoTrace?: AiTrace
++  /** trace of the recorded answer */
+   demoTrace?: AiTrace
 -  json?: boolean // default true: the answer must be a JSON value
--  maxTokens?: number
++  /** reasoning counts in the budget: leave room (default 8000) */
+   maxTokens?: number
 -  temperature?: number
 -  /** long answers (tests, questions) need more than the default 60 s */
--  timeoutMs?: number
++  /** long answers (tests, report) need more than the default 60 s */
+   timeoutMs?: number
 -  /** called before trying the fallback model (amber banner, brief §2.13) */
 -  onFallback?: (error: string) => void
 -  /** model tried when the main one fails (default: the other of super/nano) */
 -  fallback?: Tier
--  /**
++  effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+   /**
 -   * background jobs nobody waits for second by second (generation): an
 -   * overloaded endpoint gets several spaced retries instead of one
--   */
++   * stream the answer: long steps (generation, report) must, a non-streaming
++   * request that runs too long ends in HTTP 504
+    */
 -  patient?: boolean
 -  /** label of a model to skip: a second key never asks the first model */
 -  avoid?: string
@@ -3444,10 +3723,13 @@ index 76404e9..0000000
 -  personal?: boolean
 -  /** a file the model reads itself (a scanned CV): Gemini models only */
 -  document?: { mime: string; data: Uint8Array }
--}
--
--export type AiResult<T> = { data: T; trace: AiTrace }
--
++  stream?: boolean
++  /** called before trying the fallback model (amber banner) */
++  onFallback?: (reason: string) => void
+ }
+ 
+ export type AiResult<T> = { data: T; trace: AiTrace }
+ 
 -type Cached = { data: unknown; trace: AiTrace }
 -
 -const cacheKey = async (o: AskOptions<unknown>) => {
@@ -3477,56 +3759,48 @@ index 76404e9..0000000
 -  )
 -}
 -
--/** from the first [ or { to the last ] or }, undefined when there is none */
--const jsonSlice = (body: string) => {
--  const start = body.search(/[[{]/)
--  if (start < 0) return
--  const end = Math.max(body.lastIndexOf('}'), body.lastIndexOf(']'))
--  return body.slice(start, end + 1)
--}
--
--const parseRelaxed = (json: string) => {
--  try {
--    return JSON.parse(json)
--  } catch (err) {
--    // a trailing comma, a frequent slip of the models: {"a": 1,} [1, 2,]
--    const relaxed = json.replace(/,(\s*[}\]])/g, '$1')
--    if (relaxed === json) throw err
--    return JSON.parse(relaxed)
--  }
--}
--
--/** JSON of a model answer: without <think> blocks nor ```json fences */
--export const extractJson = (content: string) => {
--  const text = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+ /** from the first [ or { to the last ] or }, undefined when there is none */
+ const jsonSlice = (body: string) => {
+   const start = body.search(/[[{]/)
+@@ -312,15 +116,15 @@ const parseRelaxed = (json: string) => {
+ /** JSON of a model answer: without <think> blocks nor ```json fences */
+ export const extractJson = (content: string) => {
+   const text = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
 -  // the whole answer first: a question may quote a ```typescript block, whose
 -  // fence is not the envelope of the answer (LIVE-005)
--  try {
--    return JSON.parse(text)
--  } catch { /* prose or fences around */ }
--  const outer = text.match(/```(?:json)?\s*([\s\S]*)```/)?.[1] // widest
--  const inner = text.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1] // first block
--  const main = jsonSlice((inner ?? text).trim())
++  // the whole answer first: a value may quote a ```typescript block, whose
++  // fence is not the envelope of the answer
+   try {
+     return JSON.parse(text)
+   } catch { /* prose or fences around */ }
+   const outer = text.match(/```(?:json)?\s*([\s\S]*)```/)?.[1] // widest
+   const inner = text.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1] // first block
+   const main = jsonSlice((inner ?? text).trim())
 -  if (main === undefined) throw Error('Aucun JSON dans la réponse')
--  let error: unknown
--  try {
--    return parseRelaxed(main)
--  } catch (err) {
--    error = err
--  }
--  for (const body of [outer, text]) {
++  if (main === undefined) throw Error('No JSON in the answer')
+   let error: unknown
+   try {
+     return parseRelaxed(main)
+@@ -328,266 +132,162 @@ export const extractJson = (content: string) => {
+     error = err
+   }
+   for (const body of [outer, text]) {
 -    const json = body === undefined ? undefined : jsonSlice(body.trim())
 -    if (json === undefined || json === main) continue
--    try {
++    const slice = body && jsonSlice(body.trim())
++    if (!slice || slice === main) continue
+     try {
 -      return parseRelaxed(json)
 -    } catch { /* the error of the main reading is reported */ }
--  }
--  throw error
--}
--
++      return parseRelaxed(slice)
++    } catch { /* next candidate */ }
+   }
+   throw error
+ }
+ 
 -const REASONING_TIMEOUT_MS = 480_000
 -
--class HttpError extends Error {
+ class HttpError extends Error {
 -  constructor(public readonly status: number, body: string) {
 -    super(`${status} ${body}`)
 -  }
@@ -3613,7 +3887,12 @@ index 76404e9..0000000
 -  if (
 -    /\b(429|502|503|504)\b|overloaded|rate limit|surchargé|trop de requêtes/i
 -      .test(message)
--  ) {
++  constructor(
++    public readonly status: number,
++    message: string,
++    /** Retry-After header, in ms */
++    public readonly retryAfterMs = 0,
+   ) {
 -    return 'Les modèles sont surchargés en ce moment (points d’accès gratuits). Réessayez dans quelques minutes.'
 -  }
 -  if (/timeout|timed out|aborted|délai dépassé/i.test(message)) {
@@ -3623,21 +3902,24 @@ index 76404e9..0000000
 -  // the attempts are listed under « Pourquoi ? »: no need to repeat them
 -  if (err instanceof AiError && err.failures.length) {
 -    return 'Le modèle n’a pas donné de réponse exploitable.'
--  }
++    super(message)
+   }
 -  return `Le modèle n’a pas donné de réponse exploitable (${
 -    message.slice(0, 160)
 -  }).`
--}
--
--type Completion = {
+ }
+ 
+ type Completion = {
 -  choices: { message: { content: string | null } }[]
 -  usage?: {
 -    prompt_tokens: number
 -    completion_tokens: number
 -    total_tokens?: number
 -  }
--}
--
++  choices: { message: { content: string | null }; finish_reason?: string }[]
++  usage?: { prompt_tokens?: number; completion_tokens?: number }
+ }
+ 
 -/** the request body of a provider (both speak OpenAI chat completions) */
 -const requestBody = (
 -  e: Endpoint,
@@ -3656,10 +3938,34 @@ index 76404e9..0000000
 -      max_tokens: (o.maxTokens ?? 4096) + (e.reasoning ? 8192 : 0),
 -      ...(e.reasoning && { reasoning_effort: e.reasoning }),
 -      ...(o.json !== false && { response_format: { type: 'json_object' } }),
--    }
--  }
++/** a readable reason for a failed call, and whether trying again can help */
++const explain = (err: unknown): { reason: string; transient: boolean } => {
++  if (err instanceof HttpError) {
++    const { status } = err
++    if (status === 401 || status === 403) {
++      return { reason: `key refused (${status})`, transient: false }
+     }
++    if (status === 402) {
++      return { reason: 'billing not configured (402)', transient: false }
++    }
++    if (status === 429) return { reason: 'rate limit (429)', transient: true }
++    // not retried as it is: the same request would time out again
++    if (status === 504) {
++      return { reason: 'gateway timeout (504)', transient: false }
++    }
++    if (status >= 500) {
++      return { reason: `service unavailable (${status})`, transient: true }
++    }
++    return { reason: `request refused (${status})`, transient: false }
++  }
++  if (err instanceof DOMException && err.name === 'TimeoutError') {
++    return { reason: 'no answer in time', transient: true }
++  }
++  if (err instanceof TypeError) {
++    return { reason: 'network unreachable', transient: true }
+   }
 -  const nemotron = e.model.startsWith('nvidia/')
--  return {
+   return {
 -    ...common,
 -    // its reasoning counts in the output tokens
 -    max_tokens: reasons(e)
@@ -3671,9 +3977,11 @@ index 76404e9..0000000
 -    // of code with its own quotes no longer breaks the answer)
 -    ...(nemotron && o.json !== false &&
 -      { response_format: { type: 'json_object' } }),
--  }
--}
--
++    reason: err instanceof Error ? err.message : String(err),
++    transient: false,
+   }
+ }
+ 
 -type GeminiAnswer = {
 -  candidates?: { content?: { parts?: { text?: string }[] } }[]
 -  usageMetadata?: {
@@ -3682,12 +3990,15 @@ index 76404e9..0000000
 -    thoughtsTokenCount?: number
 -  }
 -}
--
++const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+ 
 -/** Gemini's own API, which reads a PDF or an image given inline */
 -const completeDocument = async (
 -  e: Endpoint,
--  messages: Message[],
--  o: AskOptions<unknown>,
++const requestBody = (
++  model: string,
+   messages: Message[],
+   o: AskOptions<unknown>,
 -  document: { mime: string; data: Uint8Array },
 -) => {
 -  const base = e.baseUrl.replace(/\/openai\/?$/, '')
@@ -3697,7 +4008,16 @@ index 76404e9..0000000
 -    headers: {
 -      'Content-Type': 'application/json',
 -      'x-goog-api-key': llmConfig.keys[e.provider],
--    },
++) => ({
++  model,
++  messages,
++  max_completion_tokens: o.maxTokens ?? 8_000,
++  reasoning_effort: o.effort ?? llmConfig.effort,
++  ...(o.schema && {
++    response_format: {
++      type: 'json_schema',
++      json_schema: { name: o.schema.name, schema: o.schema.schema },
+     },
 -    body: JSON.stringify({
 -      systemInstruction: { parts: [{ text: o.system }] },
 -      contents: messages.filter((m) => m.role !== 'system').map((m, i) => ({
@@ -3723,7 +4043,27 @@ index 76404e9..0000000
 -  })
 -  if (!res.ok) {
 -    throw new HttpError(res.status, (await res.text()).slice(0, 200))
--  }
++  }),
++})
++
++/** the text and the usage of a Server-Sent Events chat completion */
++const readStream = async (res: Response) => {
++  let content = ''
++  let finish: string | undefined
++  let usage: Completion['usage']
++  const decoder = new TextDecoder()
++  let buffer = ''
++  const line = (raw: string) => {
++    if (!raw.startsWith('data:')) return
++    const data = raw.slice(5).trim()
++    if (!data || data === '[DONE]') return
++    const chunk = JSON.parse(data)
++    if (chunk.error) throw Error(chunk.error.message ?? 'stream error')
++    const choice = chunk.choices?.[0]
++    content += choice?.delta?.content ?? ''
++    finish = choice?.finish_reason ?? finish
++    usage = chunk.usage ?? usage
+   }
 -  const body = await res.json() as GeminiAnswer
 -  const usage = body.usageMetadata
 -  return {
@@ -3732,59 +4072,103 @@ index 76404e9..0000000
 -    tokensIn: usage?.promptTokenCount ?? 0,
 -    tokensOut: (usage?.candidatesTokenCount ?? 0) +
 -      (usage?.thoughtsTokenCount ?? 0),
--  }
--}
--
--const complete = async (
++  for await (const part of res.body!) {
++    buffer += decoder.decode(part, { stream: true })
++    const lines = buffer.split('\n')
++    buffer = lines.pop()!
++    lines.forEach(line)
+   }
++  line(buffer)
++  return { content, finish, usage }
+ }
+ 
+ const complete = async (
 -  e: Endpoint,
--  messages: Message[],
--  o: AskOptions<unknown>,
--) => {
++  model: string,
+   messages: Message[],
+   o: AskOptions<unknown>,
++  stream: boolean,
+ ) => {
 -  if (o.document) return completeDocument(e, messages, o, o.document)
 -  const res = await fetch(`${e.baseUrl}/chat/completions`, {
--    method: 'POST',
++  const res = await fetch(`${llmConfig.baseUrl}/chat/completions`, {
+     method: 'POST',
 -    // a reasoning model takes minutes: precision first (it is on long jobs)
 -    signal: AbortSignal.timeout(timeoutOf(e, o)),
--    headers: {
--      'Content-Type': 'application/json',
++    signal: AbortSignal.timeout(o.timeoutMs ?? llmConfig.timeoutMs),
+     headers: {
+       'Content-Type': 'application/json',
 -      Authorization: `Bearer ${llmConfig.keys[e.provider]}`,
--    },
++      Authorization: `Bearer ${llmConfig.key}`,
+     },
 -    body: JSON.stringify(requestBody(e, messages, o)),
--  })
--  if (!res.ok) {
++    body: JSON.stringify({ ...requestBody(model, messages, o), stream }),
+   })
+   if (!res.ok) {
 -    throw new HttpError(res.status, (await res.text()).slice(0, 200))
--  }
++    const wait = Number(res.headers.get('retry-after')) * 1000
++    throw new HttpError(
++      res.status,
++      (await res.text()).slice(0, 200),
++      Number.isFinite(wait) ? wait : 0,
++    )
++  }
++  let content: string
++  let finish: string | undefined
++  let usage: Completion['usage']
++  if (stream) {
++    ;({ content, finish, usage } = await readStream(res))
++  } else {
++    const body = await res.json() as Completion
++    const choice = body.choices?.[0]
++    content = choice?.message.content ?? ''
++    finish = choice?.finish_reason
++    usage = body.usage
++  }
++  if (!content && finish === 'length') {
++    throw Error('answer cut: the reasoning used the whole token budget')
+   }
 -  const body = await res.json() as Completion
 -  const usage = body.usage
--  return {
+   return {
 -    content: body.choices[0]?.message.content ?? '',
--    tokensIn: usage?.prompt_tokens ?? 0,
++    content,
+     tokensIn: usage?.prompt_tokens ?? 0,
 -    // hidden thinking tokens are billed as output: total - prompt
 -    tokensOut: Math.max(
 -      usage?.completion_tokens ?? 0,
 -      (usage?.total_tokens ?? 0) - (usage?.prompt_tokens ?? 0),
 -    ),
--  }
--}
--
++    tokensOut: usage?.completion_tokens ?? 0,
+   }
+ }
+ 
 -/** One model: an invalid answer gets one retry with the validation error */
--const attempt = async <T>(
++/** One model: transient failures are retried, an invalid answer once */
+ const attempt = async <T>(
 -  e: Endpoint,
--  o: AskOptions<T>,
++  model: string,
+   o: AskOptions<T>,
 -  note: Note,
 -  usage: { tokensIn: number; tokensOut: number },
--): Promise<AiResult<T>> => {
++  failures: AiFailure[],
+ ): Promise<AiResult<T>> => {
 -  const { label, where } = e
--  const messages: Message[] = [
--    { role: 'system', content: o.system },
--    { role: 'user', content: o.prompt },
--  ]
--  const started = performance.now()
--  let tokensIn = 0
--  let tokensOut = 0
++  const label = modelLabel(model)
+   const messages: Message[] = [
+     { role: 'system', content: o.system },
+     { role: 'user', content: o.prompt },
+@@ -595,149 +295,130 @@ const attempt = async <T>(
+   const started = performance.now()
+   let tokensIn = 0
+   let tokensOut = 0
 -  let lastError = ''
 -  for (let i = 0; i < 2; i++) {
--    const since = performance.now()
++  let transient = 0
++  let invalid = 0
++  let stream = o.stream ?? false
++  while (true) {
+     const since = performance.now()
 -    const answer = await completeWithRetry(
 -      e,
 -      messages,
@@ -3794,7 +4178,20 @@ index 76404e9..0000000
 -    tokensIn += answer.tokensIn
 -    tokensOut += answer.tokensOut
 -    Object.assign(usage, { tokensIn, tokensOut })
--    try {
++    const fail = (reason: string, detail?: string) => {
++      const ms = Math.round(performance.now() - since)
++      failures.push({ model: label, reason, ...(detail && { detail }), ms })
++      llmConfig.onCall?.({
++        task: o.task,
++        model,
++        ok: false,
++        ms,
++        tokensIn,
++        tokensOut,
++        reason,
++      })
++    }
+     try {
 -      const value = o.json === false
 -        ? answer.content.trim()
 -        : extractJson(answer.content)
@@ -3805,12 +4202,53 @@ index 76404e9..0000000
 -          model: label,
 -          where,
 -          latencyMs: Math.round(performance.now() - started),
--          tokensIn,
--          tokensOut,
++      const out = await complete(model, messages, o, stream)
++      tokensIn += out.tokensIn
++      tokensOut += out.tokensOut
++      try {
++        const data = o.parse(
++          o.json === false ? out.content : extractJson(out.content),
++        )
++        const ms = Math.round(performance.now() - started)
++        llmConfig.onCall?.({
++          task: o.task,
++          model,
++          ok: true,
++          ms,
+           tokensIn,
+           tokensOut,
 -          at: new Date().toISOString(),
 -        },
--      }
--    } catch (err) {
++        })
++        return {
++          data,
++          trace: {
++            model: label,
++            where,
++            latencyMs: ms,
++            tokensIn,
++            tokensOut,
++            at: new Date().toISOString(),
++            ...(failures.length && { failures: [...failures] }),
++          },
++        }
++      } catch (err) {
++        const message = err instanceof Error ? err.message : String(err)
++        fail('answer not valid', message)
++        if (invalid++ >= 1) {
++          throw new AiError(`${label}: ${message}`, o.task, failures)
++        }
++        // one retry: the model sees what was wrong
++        messages.push(
++          { role: 'assistant', content: out.content },
++          {
++            role: 'user',
++            content: `Your answer is not valid: ${message}. ` +
++              'Answer again with the corrected JSON only.',
++          },
++        )
+       }
+     } catch (err) {
 -      lastError = err instanceof Error ? err.message : String(err)
 -      // the first one is corrected by the model, the last one by ask()
 -      if (i === 0) note(e, new InvalidAnswer(lastError), since)
@@ -3848,12 +4286,29 @@ index 76404e9..0000000
 -    return {
 -      data: o.parse(cached.data),
 -      trace: replayTrace(o.tier, cached.trace),
--    }
--  }
++      if (err instanceof AiError) throw err
++      const { reason, transient: retry } = explain(err)
++      fail(reason, err instanceof Error ? err.message : undefined)
++      // a request that ran too long: the same one, streamed, is not subject
++      // to the limit (once)
++      if (err instanceof HttpError && err.status === 504 && !stream) {
++        stream = true
++        continue
++      }
++      if (!retry || transient++ >= llmConfig.retries) {
++        throw new AiError(`${label}: ${reason}`, o.task, failures)
++      }
++      const asked = err instanceof HttpError ? err.retryAfterMs : 0
++      await sleep(Math.max(
++        llmConfig.retryDelayMs * 2 ** (transient - 1),
++        Math.min(asked, llmConfig.maxRetryAfterMs),
++      ))
+     }
+   }
 -  if (withDemo && o.demo) {
 -    return { data: o.demo(), trace: replayTrace(o.tier, o.demoTrace) }
 -  }
--}
+ }
 -
 -export const ask = async <T>(asked: AskOptions<T>): Promise<AiResult<T>> => {
 -  // an English assessment: every step writes in English
@@ -3867,14 +4322,35 @@ index 76404e9..0000000
 -  if (!chain.length || replayOnly()) {
 -    const result = o.personal ? undefined : await replay(key, o, true)
 -    if (result) return result
--    throw new AiError(
++/** No key: the recorded answer of the step, if it has one */
++const recorded = <T>(o: AskOptions<T>): AiResult<T> => {
++  if (!o.demo) {
+     throw new AiError(
 -      replayOnly()
 -        ? 'Espace démo : réponses rejouées, aucune réponse enregistrée pour cette étape'
 -        : 'Aucune clé NVIDIA_API_KEY ni GEMINI_API_KEY et pas de réponse en cache',
--      o.task,
--    )
--  }
--  const failures: AiFailure[] = []
++      'No MODEL_API_KEY: this step needs a model (no recorded answer).',
+       o.task,
+     )
+   }
++  return {
++    data: o.demo(),
++    trace: o.demoTrace ?? {
++      model: 'Recorded answer',
++      where: 'Demo',
++      latencyMs: 0,
++      tokensIn: 0,
++      tokensOut: 0,
++      at: new Date().toISOString(),
++      replay: true,
++    },
++  }
++}
++
++/** Ask a model: main model, then the fallback model */
++export const ask = async <T>(o: AskOptions<T>): Promise<AiResult<T>> => {
++  if (!hasAiKey()) return recorded(o)
+   const failures: AiFailure[] = []
 -  const note: Note = (e, err, since) => {
 -    const reason = failureReason(err, timeoutOf(e, o as AskOptions<unknown>))
 -    const detail = (err instanceof Error ? err.message : String(err))
@@ -3891,7 +4367,10 @@ index 76404e9..0000000
 -      reason,
 -      detail,
 -    })
--  }
++  const models = [llmConfig.model]
++  if (llmConfig.fallback && llmConfig.fallback !== llmConfig.model) {
++    models.push(llmConfig.fallback)
+   }
 -  const withFailures = (result: AiResult<T>) =>
 -    failures.length
 -      ? { ...result, trace: { ...result.trace, failures: [...failures] } }
@@ -3908,18 +4387,25 @@ index 76404e9..0000000
 -        ...usage,
 -        ...(reason && { reason }),
 -      })
--    try {
++  let last: AiError | undefined
++  for (const [i, model] of models.entries()) {
+     try {
 -      const result = await attempt(e, o, note, usage)
 -      stat(true)
 -      if (llmConfig.record && !o.personal) await writeCache(key, result)
 -      return withFailures(result)
--    } catch (err) {
++      return await attempt(model, o, failures)
+     } catch (err) {
 -      note(e, err, since)
 -      const last = failures.at(-1)!
 -      stat(false, last.reason)
 -      if (i === 0) o.onFallback?.(`${last.model} : ${last.reason}`)
--    }
--  }
++      if (!(err instanceof AiError)) throw err
++      last = err
++      log.warn('ai-failed', { task: o.task, model, reason: err.message })
++      if (i < models.length - 1) o.onFallback?.(err.message)
+     }
+   }
 -  const result = o.personal ? undefined : await replay(key, o, false)
 -  if (result) return withFailures(result)
 -  throw new AiError(
@@ -3927,7 +4413,8 @@ index 76404e9..0000000
 -    o.task,
 -    failures,
 -  )
--}
++  throw last!
+ }
 diff --git a/api/member.test.js b/api/member.test.js
 index bae3e12..c86c8fb 100644
 --- a/api/member.test.js
@@ -8284,7 +8771,7 @@ index 97f3f12..0000000
 -  })
 -}
 diff --git a/deno.json b/deno.json
-index 5f704a5..452f54d 100644
+index 5f704a5..f94afc2 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -8324,7 +8811,7 @@ index 5f704a5..452f54d 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +48,27 @@
+@@ -45,41 +48,28 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
@@ -8361,13 +8848,6 @@ index 5f704a5..452f54d 100644
 -    "qa:serve": {
 -      "command": "deno run --env-file=.env-qa -A --unstable-ffi prod-server.ts",
 -      "dependencies": ["qa:build"]
--    },
--    "qa": "deno run -A qa/scripts/test.ts",
--    "qa:single": "deno test -A qa/scripts/run.ts --",
--    "qa:audit": "deno run -A qa/scripts/audit.ts",
--    "llm:check": "deno run --env-file=.env-dev --env-file=.env -A task-llm-check.ts",
--    "llm:bench": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-bench.ts",
--    "deploy": "deno run -A task-deploy.ts"
 +    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts",
 +    "prod:build": "deno run --env-file -A task-prod.ts",
 +    "prod:serve": "deno run --env-file -A --unstable-ffi prod-server.ts",
@@ -8376,7 +8856,14 @@ index 5f704a5..452f54d 100644
 +      "dependencies": [
 +        "prod:build"
 +      ]
-+    }
+     },
+-    "qa": "deno run -A qa/scripts/test.ts",
+-    "qa:single": "deno test -A qa/scripts/run.ts --",
+-    "qa:audit": "deno run -A qa/scripts/audit.ts",
+-    "llm:check": "deno run --env-file=.env-dev --env-file=.env -A task-llm-check.ts",
+-    "llm:bench": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-bench.ts",
+-    "deploy": "deno run -A task-deploy.ts"
++    "llm:check": "deno run --env-file=.env-dev --env-file=.env -A task-llm-check.ts"
    }
  }
 diff --git a/fixtures/demo-files.ts b/fixtures/demo-files.ts
@@ -9676,22 +10163,35 @@ index 24e2259..0000000
 -console.log(`\n→ ${out}`)
 -Deno.exit(0)
 diff --git a/task-llm-check.ts b/task-llm-check.ts
-deleted file mode 100644
-index a1f76fa..0000000
+index a1f76fa..bacb112 100644
 --- a/task-llm-check.ts
-+++ /dev/null
-@@ -1,56 +0,0 @@
++++ b/task-llm-check.ts
+@@ -1,56 +1,98 @@
 -// `deno task llm:check`: one small call per model of the routes, to check the
 -// keys and the endpoints (build.nvidia.com, a Brev NIM through
 -// NVIDIA_NANO_BASE_URL, Google AI Studio). Prints the model, the latency and
 -// the answer, never a key.
 -import { hasAiKey, llmConfig, MODELS } from '/api/llm.ts'
--
--if (!hasAiKey()) {
++// `deno task llm:check`: one small call per model (and reasoning level) of the
++// Meta Model API, to check the key, the billing and the endpoints. Prints the
++// model, the effort, the latency, the tokens and the answer, never the key.
++//
++//   deno task llm:check [--models=muse-spark-1.3,muse-wonder-1.0]
++//                       [--efforts=minimal,low,medium] [--stream]
++import { parseArgs } from 'jsr:@std/cli/parse-args'
++import { ask, hasAiKey, llmConfig, modelLabel } from '/api/llm.ts'
++
++const args = parseArgs(Deno.args, {
++  string: ['models', 'efforts'],
++  boolean: ['stream'],
++})
+ 
+ if (!hasAiKey()) {
 -  console.error('Ni NVIDIA_API_KEY ni GEMINI_API_KEY : ajoutez-les dans .env')
--  Deno.exit(1)
--}
--
++  console.error('MODEL_API_KEY is empty: add it to .env')
+   Deno.exit(1)
+ }
+ 
 -let failed = false
 -for (const [id, e] of Object.entries(MODELS)) {
 -  const key = llmConfig.keys[e.provider]
@@ -9726,17 +10226,92 @@ index a1f76fa..0000000
 -    if (!res.ok) throw Error(`${res.status} ${text.slice(0, 200)}`)
 -    const body = JSON.parse(text)
 -    const answer = body.choices?.[0]?.message?.content ?? ''
--    console.log(
++const models = (args.models ??
++  'muse-spark-1.3,muse-spark-1.2,muse-wonder-1.0,muse-spark-1.3-contributor')
++  .split(',')
++const efforts = (args.efforts ?? 'minimal,low,high').split(',')
++
++// the health of the service, when it answers
++try {
++  const res = await fetch(`${llmConfig.baseUrl}/status`, {
++    headers: { Authorization: `Bearer ${llmConfig.key}` },
++    signal: AbortSignal.timeout(10_000),
++  })
++  console.log(`status endpoint: HTTP ${res.status}`)
++  await res.body?.cancel()
++} catch (err) {
++  console.log(`status endpoint: ${(err as Error).message}`)
++}
++
++type Row = {
++  model: string
++  effort: string
++  ok: boolean
++  ms: number
++  tokensIn: number
++  tokensOut: number
++  note: string
++}
++const rows: Row[] = []
++const saved = { ...llmConfig }
++for (const model of models) {
++  for (const effort of efforts) {
++    // "max" is refused on contributor models: not asked
++    if (model.endsWith('-contributor') && effort === 'max') continue
++    llmConfig.model = model
++    llmConfig.fallback = '' // one model at a time: no hand-over
++    llmConfig.retries = 0
++    const started = performance.now()
++    try {
++      const { data, trace } = await ask({
++        task: 'check',
++        system: 'You answer with one JSON object and nothing else.',
++        prompt: 'Return {"sum": <7 + 5>, "word": "ready"}.',
++        effort: effort as 'low',
++        stream: args.stream,
++        parse: (v) => {
++          const o = v as { sum?: number; word?: string }
++          if (o?.sum !== 12) throw Error('wrong sum')
++          return o
++        },
++      })
++      rows.push({
++        model: modelLabel(model),
++        effort,
++        ok: true,
++        ms: trace.latencyMs,
++        tokensIn: trace.tokensIn,
++        tokensOut: trace.tokensOut,
++        note: JSON.stringify(data),
++      })
++    } catch (err) {
++      rows.push({
++        model: modelLabel(model),
++        effort,
++        ok: false,
++        ms: Math.round(performance.now() - started),
++        tokensIn: 0,
++        tokensOut: 0,
++        note: (err as Error).message,
++      })
++    }
++    const r = rows.at(-1)!
+     console.log(
 -      `✅ ${id} · ${e.model} · ${e.where} · ${ms} ms · ${answer.trim()}`,
 -    )
 -  } catch (err) {
 -    failed = true
 -    console.error(
 -      `❌ ${id} · ${e.model} · ${e.baseUrl} · ${(err as Error).message}`,
--    )
--  }
--}
++      `${r.ok ? '✓' : '✗'} ${r.model.padEnd(30)} ${r.effort.padEnd(8)} ${
++        String(r.ms).padStart(6)
++      } ms  ${r.tokensIn}→${r.tokensOut} tokens  ${r.note}`,
+     )
+   }
+ }
 -Deno.exit(failed ? 1 : 0)
++Object.assign(llmConfig, saved)
++Deno.exit(rows.some((r) => !r.ok) ? 1 : 0)
 diff --git a/web/app.tsx b/web/app.tsx
 index da0b0a9..534414b 100644
 --- a/web/app.tsx
@@ -10549,84 +11124,6 @@ index 1908fbc..0000000
 -    errors.add(range)
 -  }
 -}
-diff --git a/web/lib/code-tokens.ts b/web/lib/code-tokens.ts
-deleted file mode 100644
-index fc0bb12..0000000
---- a/web/lib/code-tokens.ts
-+++ /dev/null
-@@ -1,72 +0,0 @@
--// Tiny line tokenizer for read-only code (TypeScript, JSON, Markdown).
--// Ported from the prototype (shared.js). Token kinds map to the `code-*`
--// semantic colors of web/theme.ts.
--
--export type TokenKind = 'kw' | 'str' | 'type' | 'fn' | 'num' | 'com' | 'txt'
--export type CodeToken = [text: string, kind: TokenKind]
--
--const KW = new Set(
--  'import export from const let var function return if else try catch throw new async await class extends interface type as typeof instanceof of for while in is this super default break continue switch case finally true false null undefined'
--    .split(' '),
--)
--const BUILTIN_TYPES = new Set(
--  'string number boolean unknown void never any Record Promise Map Response Request Error URL Boolean Date'
--    .split(' '),
--)
--
--const tokenizeTs = (line: string): CodeToken[] => {
--  const out: CodeToken[] = []
--  let i = 0
--  let prev = '' // last non-blank char, to tell a regex from a division
--  const push = (text: string, kind: TokenKind) => {
--    out.push([text, kind])
--    if (text.trim()) prev = text.trim().slice(-1)
--  }
--  while (i < line.length) {
--    const rest = line.slice(i)
--    let m: RegExpMatchArray | null
--    if ((m = rest.match(/^\/\/.*/))) push(m[0], 'com')
--    else if (
--      (m = rest.match(
--        /^("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/,
--      ))
--    ) push(m[0], 'str')
--    else if (
--      '=(,:'.includes(prev) &&
--      (m = rest.match(/^\/(?![\/*])(?:[^\/\\\n]|\\.)+\/[gimsuy]*/))
--    ) push(m[0], 'str')
--    else if ((m = rest.match(/^\d+(?:\.\d+)?/))) push(m[0], 'num')
--    else if ((m = rest.match(/^[A-Za-z_$][\w$]*/))) {
--      const word = m[0]
--      const after = line.slice(i + word.length)
--      const kind: TokenKind = KW.has(word)
--        ? 'kw'
--        : BUILTIN_TYPES.has(word) || /^[A-Z]/.test(word)
--        ? 'type'
--        : /^\s*\(/.test(after)
--        ? 'fn'
--        : 'txt'
--      push(word, kind)
--    } else {
--      push(line[i], 'txt')
--      i++
--      continue
--    }
--    i += m[0].length
--  }
--  return out
--}
--
--const tokenizeJson = (line: string): CodeToken[] =>
--  line.split(/("(?:[^"\\]|\\.)*")/).filter(Boolean).map((part, index, all) => {
--    if (part[0] !== '"') return [part, 'txt']
--    const isKey = /^\s*:/.test(all[index + 1] || '')
--    return [part, isKey ? 'type' : 'str']
--  })
--
--export const tokenizeLine = (line: string, file: string): CodeToken[] => {
--  if (/\.json$/.test(file)) return tokenizeJson(line)
--  if (/\.md$/.test(file)) return [[line, /^#/.test(line) ? 'kw' : 'txt']]
--  if (/\.(ts|tsx|js)$/.test(file)) return tokenizeTs(line)
--  return [[line, 'txt']]
--}
 diff --git a/web/lib/drag.ts b/web/lib/drag.ts
 deleted file mode 100644
 index 3d62e9e..0000000
@@ -10749,18 +11246,38 @@ index df75f2e..0000000
 -  source.addEventListener('error', setDisconnected)
 -})
 diff --git a/web/lib/format.test.js b/web/lib/format.test.js
-index bc90fc2..7e5db51 100644
+index bc90fc2..3716f66 100644
 --- a/web/lib/format.test.js
 +++ b/web/lib/format.test.js
-@@ -25,7 +25,7 @@ test('format', async (step) => {
+@@ -9,12 +9,12 @@ import {
+ import { tokenizeLine } from '/web/lib/code-tokens.ts'
+ 
+ test('format', async (step) => {
+-  await step('latency in seconds with a comma', () => {
+-    eq(formatLatency(4200), '4,2 s')
+-    eq(formatLatency(100), '0,1 s')
++  await step('latency in seconds', () => {
++    eq(formatLatency(4200), '4.2 s')
++    eq(formatLatency(100), '0.1 s')
+   })
+-  await step('integers with french grouping', () => {
+-    eq(formatInt(1842).replace(/\s/g, ' '), '1 842')
++  await step('integers with a thousands separator', () => {
++    eq(formatInt(1842), '1,842')
+   })
+   await step('date and time', () => {
+     eq(formatDateTime('2026-09-22T10:14:08'), '22/09/2026 · 10:14:08')
+@@ -25,8 +25,8 @@ test('format', async (step) => {
      eq(formatClock(-3, false), '00:00')
    })
    await step('cited lines', () => {
 -    eq(formatLines(22, 30), 'l. 22–30')
+-    eq(formatLines(23), 'l. 23')
 +    eq(formatLines(22, 30), 'lines 22–30')
-     eq(formatLines(23), 'l. 23')
++    eq(formatLines(23), 'line 23')
    })
  })
+ 
 diff --git a/web/lib/format.ts b/web/lib/format.ts
 index 5d6656e..5358b3a 100644
 --- a/web/lib/format.ts
@@ -17583,11 +18100,10 @@ index 2d61787..3520189 100644
 +  { space: 'recruiter', title: 'Candidate report', path: paths.report },
  ]
 diff --git a/web/types.ts b/web/types.ts
-deleted file mode 100644
-index 83f3535..0000000
+index 83f3535..3c7bed0 100644
 --- a/web/types.ts
-+++ /dev/null
-@@ -1,389 +0,0 @@
++++ b/web/types.ts
+@@ -1,68 +1,10 @@
 -// Domain types shared by the API, the fixtures and the web app.
 -
 -export type Level = 'junior' | 'intermediate' | 'senior'
@@ -17648,26 +18164,27 @@ index 83f3535..0000000
 -  skills: Skill[]
 -  tests: TestCase[]
 -}
--
--/** A model call that failed (retried, or replaced by another model) */
--export type AiFailure = {
++// Domain types shared by the API, the fixtures and the web app. They are added
++// here as the modules that use them are built.
+ 
+ /** A model call that failed (retried, or replaced by another model) */
+ export type AiFailure = {
 -  model: string // label: "Nemotron 3 Super"
 -  reason: string // readable: "service surchargé (503)"
--  detail?: string // technical message, for the curious
--  ms: number // time lost on this attempt
--}
--
--export type AiTrace = {
--  model: string
--  where: string
--  latencyMs: number
--  tokensIn: number
--  tokensOut: number
--  at: string // ISO date
++  model: string // label: "Muse Spark 1.3"
++  reason: string // readable: "service overloaded (503)"
+   detail?: string // technical message, for the curious
+   ms: number // time lost on this attempt
+ }
+@@ -74,316 +16,7 @@ export type AiTrace = {
+   tokensIn: number
+   tokensOut: number
+   at: string // ISO date
 -  replay?: boolean // served from the replay cache
--  /** attempts that failed before this answer, in order */
--  failures?: AiFailure[]
--}
++  replay?: boolean // a recorded answer, no call to a model
+   /** attempts that failed before this answer, in order */
+   failures?: AiFailure[]
+ }
 -
 -export type TestResult = {
 -  id: string
