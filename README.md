@@ -84,16 +84,17 @@ without any key.
 
 ## Environment
 
-| Variable             | Role                                                     |
-| -------------------- | -------------------------------------------------------- |
-| `MODEL_API_KEY`      | Meta Model API key (`LLM_…`)                             |
-| `MODEL_NAME`         | main model, default `muse-spark-1.3`                     |
-| `MODEL_FALLBACK`     | fallback model, default `muse-spark-1.2`, empty for none |
-| `MODEL_EFFORT`       | default reasoning effort, `low`                          |
-| `MODEL_API_BASE_URL` | default `https://api.meta.ai/v1`                         |
-| `DEMO_ACCESS`        | `1`: a demo account can be signed in without a password  |
-| `DATABASE_PATH`      | SQLite file (`:memory:` in tests)                        |
-| `RESEND_API_KEY`     | e-mail of the personal link of a candidate (planned)     |
+| Variable             | Role                                                      |
+| -------------------- | --------------------------------------------------------- |
+| `MODEL_API_KEY`      | Meta Model API key (`LLM_…`)                              |
+| `MODEL_NAME`         | main model, default `muse-spark-1.3`                      |
+| `MODEL_FALLBACK`     | fallback model, default `muse-spark-1.2`, empty for none  |
+| `MODEL_EFFORT`       | default reasoning effort, `low`                           |
+| `MODEL_API_BASE_URL` | default `https://api.meta.ai/v1`                          |
+| `DEMO_ACCESS`        | `1`: a demo account can be signed in without a password   |
+| `DATABASE_PATH`      | SQLite file (`:memory:` in tests)                         |
+| `RESEND_API_KEY`     | e-mail of the personal link of a candidate (Resend)       |
+| `RESEND_FROM`        | sender, a verified domain, e.g. `Defendable <hi@you.com>` |
 
 ## Layout
 

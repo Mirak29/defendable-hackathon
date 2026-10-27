@@ -313,7 +313,7 @@ test('voice interview: a sound or an echo is not an interruption', async (step) 
       // the interviewer's own words, back through the speakers
       send({
         type: 'transcript',
-        transcript: 'word3 word4 word5',
+        transcript: 'word0 word1 word2',
         final: false,
       })
       await sleep(30)

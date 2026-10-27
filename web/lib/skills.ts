@@ -11,3 +11,20 @@ export const skillCatalog = [
   'Code architecture',
   'Git',
 ]
+
+// How each catalog skill can be evaluated in a Deno HTTP API exercise (the
+// scope preview of the form). Unknown skills fall back to the interview.
+import type { Method } from '/web/types.ts'
+
+export const skillMethods: Record<string, Method[]> = {
+  'REST API design': ['Tests', 'Interview'],
+  'Data validation': ['Tests', 'Code analysis'],
+  'Error handling': ['Tests'],
+  'Automated tests': ['Code analysis'],
+  'PostgreSQL': ['Interview'],
+  'Performance': ['Code analysis', 'Interview'],
+  'Application security': ['Tests', 'Code analysis'],
+  'Distributed systems': ['Interview'],
+  'Code architecture': ['Code analysis'],
+  'Git': ['Interview'],
+}

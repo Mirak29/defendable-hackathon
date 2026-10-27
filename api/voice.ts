@@ -382,6 +382,8 @@ export const handleVoice = async (
     return new Response('Sign-in required.', { status: 401 })
   }
   const facts = await options.facts(req)
+  // the headers of a request cannot be read once it is upgraded
+  const asked = new Request(req.url, { headers: new Headers(req.headers) })
   const { socket, response } = Deno.upgradeWebSocket(req)
   socket.binaryType = 'arraybuffer'
   const transcript: InterviewLine[] = []
@@ -404,10 +406,10 @@ export const handleVoice = async (
   const finish = () => {
     if (finished) return
     finished = true
-    options.onFinish?.(req, transcript, completed)
+    options.onFinish?.(asked, transcript, completed)
   }
   socket.onopen = () => {
-    options.onStart?.(req)
+    options.onStart?.(asked)
     interview.start()
   }
   socket.onmessage = (e) => {
