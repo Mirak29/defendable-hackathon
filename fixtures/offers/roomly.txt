@@ -1,0 +1,19 @@
+Backend TypeScript developer (intermediate) — Roomly
+
+Roomly is a booking tool for companies that share meeting rooms between teams. People book a room for a time slot, see what is free, and cancel when plans change. Double bookings are the number one complaint we receive, so correctness matters more than speed here.
+
+What you will do
+- Build and maintain the booking API: create a booking for a room and a time slot, list the bookings of a room for a given day, check whether a room is available for a slot, and cancel a booking.
+- Make double bookings impossible: two bookings of the same room must never overlap, while a booking that starts exactly when another one ends is fine.
+- Validate every input: unknown rooms, malformed dates, slots that end before they start, slots longer than a working day.
+- Return errors that other teams can rely on, with consistent status codes.
+- Cover the tricky rules with automated tests.
+
+What we are looking for
+- 3 or more years of TypeScript on the backend.
+- Care for edge cases around dates, time slots and boundaries.
+- Comfortable reasoning about state that changes between requests.
+- Experience with PostgreSQL or Redis is a plus.
+
+How we hire
+A practical task done with the tools you normally use, AI assistants included, followed by a short conversation about your own code.

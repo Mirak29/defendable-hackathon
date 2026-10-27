@@ -1,0 +1,20 @@
+Senior backend engineer — Stockly
+
+Stockly runs the inventory service behind a network of small online shops. Shops send us orders, we reserve the stock, and warehouses confirm or cancel. Stock numbers must always add up: a product can never be sold twice or go negative.
+
+What you will do
+- Own the inventory and order API: register products with a stock level, create an order made of several product lines, confirm an order, cancel an order, and read the current stock of a product.
+- An order is accepted only if every line can be served; otherwise nothing is reserved and the caller learns which product is short.
+- Cancelling an order gives the reserved stock back exactly once, even if the call is repeated.
+- Keep stock numbers consistent across operations and make the rules of the order lifecycle (pending, confirmed, cancelled) explicit.
+- Validate quantities and product references, and answer with clear status codes.
+- Write the automated tests that protect these invariants.
+
+What we are looking for
+- 5 or more years of backend experience, with strong TypeScript.
+- A habit of thinking in invariants and state transitions, and of handling repeated or conflicting requests.
+- Experience designing APIs used by other teams.
+- Knowledge of PostgreSQL transactions is a plus.
+
+How we hire
+A practical task done with the tools you normally use, AI assistants included, followed by a short conversation about your own code.
