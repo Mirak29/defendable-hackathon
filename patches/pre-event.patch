@@ -1481,10 +1481,10 @@ index 2d5d576..6c0cab0 100644
    })
  })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..ff52fc3 100644
+index 9a19ccb..59936a7 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
-@@ -1,63 +1,52 @@
+@@ -1,63 +1,53 @@
 -import { companyOfAssessment } from '/api/schema.ts'
 -// Candidate journey (C1 → C7). The candidate is identified by a token in an
 -// httpOnly cookie, set when they start (no account, brief §6). The server is
@@ -1529,6 +1529,7 @@ index 9a19ccb..ff52fc3 100644
    CandidateFiles,
    CandidateView,
 -  IntegrityKind,
++  InterviewLine,
    Invitation,
    InvitationState,
    Progress,
@@ -1571,7 +1572,7 @@ index 9a19ccb..ff52fc3 100644
  
  const byInvitation = Candidate.sql`
    SELECT * FROM candidate WHERE candidateInvitation = :invitation
-@@ -90,7 +79,7 @@ const findInvitation = (invitation?: string) => {
+@@ -90,7 +80,7 @@ const findInvitation = (invitation?: string) => {
    const c = invitation ? byInvitation({ invitation }) : undefined
    const a = c && Assessment.get(c.assessmentId)
    if (!c || !a || a.assessmentStatus !== 'approved') {
@@ -1580,7 +1581,7 @@ index 9a19ccb..ff52fc3 100644
    }
    return { c, a }
  }
-@@ -111,9 +100,9 @@ export const getInvitation = (invitation?: string): Invitation => {
+@@ -111,9 +101,9 @@ export const getInvitation = (invitation?: string): Invitation => {
    }
  }
  
@@ -1593,7 +1594,7 @@ index 9a19ccb..ff52fc3 100644
      Array.from(crypto.getRandomValues(new Uint8Array(2)), (n) =>
        n.toString(16).padStart(2, '0')).join('').toUpperCase()
    }`
-@@ -125,15 +114,19 @@ const field = (
+@@ -125,15 +115,19 @@ const field = (
  ) => {
    const clean = (value ?? '').trim()
    if (clean.length > max) {
@@ -1618,7 +1619,7 @@ index 9a19ccb..ff52fc3 100644
  export const inviteCandidate = (
    assessmentId: number,
    memberId: number,
-@@ -143,44 +136,42 @@ export const inviteCandidate = (
+@@ -143,44 +137,42 @@ export const inviteCandidate = (
      email: string
      profileUrl?: string | null
      note?: string | null
@@ -1672,7 +1673,7 @@ index 9a19ccb..ff52fc3 100644
      assessmentId,
      candidateCreatedAt: now,
      candidateInvitation: invitation,
-@@ -191,62 +182,51 @@ export const inviteCandidate = (
+@@ -191,62 +183,51 @@ export const inviteCandidate = (
      candidateEmail: email,
      candidateProfileUrl: profileUrl || undefined,
      candidateNote: note || undefined,
@@ -1747,7 +1748,7 @@ index 9a19ccb..ff52fc3 100644
    })
    Entry.insert.CANDIDATE_BUILD_STARTED({
      companyId: companyOfAssessment(a.assessmentId),
-@@ -261,7 +241,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
+@@ -261,7 +242,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
  export const findCandidate = (token?: string) => {
    const row = token ? byToken({ token }) : undefined
    if (!row) {
@@ -1758,7 +1759,7 @@ index 9a19ccb..ff52fc3 100644
    }
    return row
  }
-@@ -272,26 +254,21 @@ const deadline = (c: CandidateRow) =>
+@@ -272,26 +255,21 @@ const deadline = (c: CandidateRow) =>
    (c.candidateStartedAt ?? Date.now()) +
    assessmentOf(c).assessmentDuration * 60_000
  
@@ -1786,7 +1787,7 @@ index 9a19ccb..ff52fc3 100644
      now: Date.now(),
      assessment: {
        title: spec.title,
-@@ -316,18 +293,17 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -316,18 +294,17 @@ export const toView = (c: CandidateRow): CandidateView => {
      files: json<CandidateFiles>(c.candidateFiles) ?? {},
      savedAt: c.candidateSavedAt ?? undefined,
      preparation: json(c.candidatePreparation),
@@ -1808,7 +1809,7 @@ index 9a19ccb..ff52fc3 100644
      })
    }
  }
-@@ -343,15 +319,16 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
+@@ -343,15 +320,16 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
    return { savedAt }
  }
  
@@ -1827,7 +1828,7 @@ index 9a19ccb..ff52fc3 100644
    files: CandidateFiles,
  ) => {
    saveFiles(c, files)
-@@ -366,7 +343,22 @@ export const runCode = async (
+@@ -366,7 +344,22 @@ export const runCode = async (
  
  export const checkCode = (files: CandidateFiles) => checkTypes(files)
  
@@ -1851,7 +1852,7 @@ index 9a19ccb..ff52fc3 100644
  
  export const submitCode = (
    c: CandidateRow,
-@@ -376,261 +368,89 @@ export const submitCode = (
+@@ -376,261 +369,129 @@ export const submitCode = (
      auto?: boolean
    },
  ) => {
@@ -1910,8 +1911,47 @@ index 9a19ccb..ff52fc3 100644
 -  if (!questionsOf(c).length) {
 -    throw new respond.ConflictError({
 -      message: 'Vos questions sont encore en préparation.',
--    })
--  }
++/**
++ * What the interviewer will know: every test (the hidden ones too), the type
++ * check and the tests the candidate wrote, run by the server on the frozen
++ * code.
++ */
++export const prepareInterview = async (
++  candidateId: number,
++  progress: Progress,
++) => {
++  const c = Candidate.require(candidateId)
++  const spec = specOf(assessmentOf(c))
++  const files = json<CandidateFiles>(c.candidateFiles) ?? {}
++  try {
++    progress.steps[1] = { state: 'run' }
++    saveProgress(c, progress)
++    const [tests, problems, own] = await Promise.all([
++      runEvaluation(files, spec.tests),
++      checkTypes(files),
++      runOwnTests(files),
++    ])
++    Candidate.update({
++      candidateId,
++      candidateResults: {
++        tests,
++        problems,
++        own: { passed: own.passed, failed: own.failed },
++      } satisfies StoredResults,
+     })
++    progress.steps[1] = { state: 'done' }
++    progress.steps[2] = { state: 'done' }
++    delete progress.error
++    saveProgress(c, progress)
++  } catch (err) {
++    log.warn('preparation-failed', { candidateId, message: String(err) })
++    const running = progress.steps.findIndex((s) => s.state === 'run')
++    if (running >= 0) progress.steps[running] = { state: 'error' }
++    progress.error = `The preparation of the interview failed: ${
++      err instanceof Error ? err.message.slice(0, 160) : String(err)
++    }`
++    saveProgress(c, progress)
+   }
 -  if (c.candidateQuestionsStartedAt) return
 -  Candidate.update({
 -    candidateId: c.candidateId,
@@ -1922,8 +1962,8 @@ index 9a19ccb..ff52fc3 100644
 -    assessmentId: c.assessmentId,
 -    candidateId: c.candidateId,
 -  })
--}
--
+ }
+ 
 -/** Opens the next question: one at a time, no going back (brief C4) */
 -export const openQuestion = (c: CandidateRow) => {
 -  if (!c.candidateQuestionsStartedAt) startQuestions(c)
@@ -1945,12 +1985,26 @@ index 9a19ccb..ff52fc3 100644
 -    secondsLeft: Math.max(
 -      0,
 -      Math.round((stored.openedAt + q.seconds * 1000 - now) / 1000),
--    ),
++/** « Retry » after a failed preparation */
++export const retryPreparation = (candidateId: number) => {
++  const c = Candidate.require(candidateId)
++  const previous = json<Progress>(c.candidatePreparation)
++  if (!previous?.error) {
++    throw new respond.ConflictError({ message: 'Nothing to retry.' })
++  }
++  const progress: Progress = {
++    steps: Array.from(
++      { length: PREPARATION_STEPS },
++      (_, i) =>
++        i === 0 ? { state: 'done' as const } : { state: 'wait' as const },
+     ),
 -    assistant: stored.assistant,
 -    assistantTraces: stored.assistantTraces,
--  }
--}
--
+   }
++  saveProgress(c, progress)
++  prepareInterview(candidateId, progress)
+ }
+ 
 -export const sendAnswer = (
 -  c: CandidateRow,
 -  { n, choice, text, auto }: {
@@ -1959,15 +2013,7 @@ index 9a19ccb..ff52fc3 100644
 -    text?: string | null
 -    auto?: boolean | null
 -  },
-+/**
-+ * What the interviewer will know: every test (the hidden ones too), the type
-+ * check and the tests the candidate wrote, run by the server on the frozen
-+ * code.
-+ */
-+export const prepareInterview = async (
-+  candidateId: number,
-+  progress: Progress,
- ) => {
+-) => {
 -  const questions = questionsOf(c)
 -  const answers = answersOf(c)
 -  const stored = answers[n]
@@ -1990,58 +2036,35 @@ index 9a19ccb..ff52fc3 100644
 -    ...(expired && { expired: true }),
 -  }
 -  const finished = n >= questions.length
--  Candidate.update({
--    candidateId: c.candidateId,
++/* ---------- interview ---------- */
++
++/** the interview opens: the clock of the interview starts, once */
++export const startInterview = (c: CandidateRow) => {
++  if (c.candidateInterviewStartedAt) return
+   Candidate.update({
+     candidateId: c.candidateId,
 -    candidateAnswers: answers,
 -    ...(finished && { candidateFinishedAt: now }),
--  })
++    candidateInterviewStartedAt: Date.now(),
+   })
 -  Entry.insert.CANDIDATE_ANSWER_SENT({
--    companyId: companyOfAssessment(c.assessmentId),
--    assessmentId: c.assessmentId,
--    candidateId: c.candidateId,
++  Entry.insert.CANDIDATE_INTERVIEW_STARTED({
+     companyId: companyOfAssessment(c.assessmentId),
+     assessmentId: c.assessmentId,
+     candidateId: c.candidateId,
 -    data: { n, auto: !!auto, expired },
--  })
+   })
 -  if (finished) {
 -    Entry.insert.CANDIDATE_FINISHED({
 -      companyId: companyOfAssessment(c.assessmentId),
 -      assessmentId: c.assessmentId,
 -      candidateId: c.candidateId,
-+  const c = Candidate.require(candidateId)
-+  const spec = specOf(assessmentOf(c))
-+  const files = json<CandidateFiles>(c.candidateFiles) ?? {}
-+  try {
-+    progress.steps[1] = { state: 'run' }
-+    saveProgress(c, progress)
-+    const [tests, problems, own] = await Promise.all([
-+      runEvaluation(files, spec.tests),
-+      checkTypes(files),
-+      runOwnTests(files),
-+    ])
-+    Candidate.update({
-+      candidateId,
-+      candidateResults: {
-+        tests,
-+        problems,
-+        own: { passed: own.passed, failed: own.failed },
-+      } satisfies StoredResults,
-     })
+-    })
 -    buildReport(c.candidateId)
-+    progress.steps[1] = { state: 'done' }
-+    progress.steps[2] = { state: 'done' }
-+    delete progress.error
-+    saveProgress(c, progress)
-+  } catch (err) {
-+    log.warn('preparation-failed', { candidateId, message: String(err) })
-+    const running = progress.steps.findIndex((s) => s.state === 'run')
-+    if (running >= 0) progress.steps[running] = { state: 'error' }
-+    progress.error = `The preparation of the interview failed: ${
-+      err instanceof Error ? err.message.slice(0, 160) : String(err)
-+    }`
-+    saveProgress(c, progress)
-   }
+-  }
 -  return { finished }
- }
- 
+-}
+-
 -/* ---------- documentation assistant (C6) ---------- */
 -
 -const ASSISTANT_SYSTEM =
@@ -2082,22 +2105,24 @@ index 9a19ccb..ff52fc3 100644
 -    const left = (pendingAssistant.get(slot) ?? 1) - 1
 -    if (left) pendingAssistant.set(slot, left)
 -    else pendingAssistant.delete(slot)
-+/** « Retry » after a failed preparation */
-+export const retryPreparation = (candidateId: number) => {
-+  const c = Candidate.require(candidateId)
-+  const previous = json<Progress>(c.candidatePreparation)
-+  if (!previous?.error) {
-+    throw new respond.ConflictError({ message: 'Nothing to retry.' })
-   }
--}
--
+-  }
+ }
+ 
 -const replyAssistant = async (
--  c: CandidateRow,
++/**
++ * The interview is over. The transcript is kept either way; the candidate is
++ * finished only when the interviewer closed it, otherwise they may start over
++ * (connection lost, page closed).
++ */
++export const finishInterview = (
+   c: CandidateRow,
 -  n: number,
 -  message: string,
 -  stored: StoredAnswer,
 -  used: number,
--) => {
++  transcript: InterviewLine[],
++  completed: boolean,
+ ) => {
 -  const text = message.trim().slice(0, 500)
 -  const history = stored.assistant
 -    .map((m) => `${m.role === 'user' ? 'Question' : 'Réponse'} : ${m.text}`)
@@ -2133,7 +2158,12 @@ index 9a19ccb..ff52fc3 100644
 -            : 'Je peux expliquer un concept ou une API, sans voir votre code ni la question.')
 -    },
 -    demoTrace: demoTraces.assistant,
--  })
++  if (c.candidateFinishedAt) return
++  Candidate.update({
++    candidateId: c.candidateId,
++    candidateInterview: transcript,
++    ...(completed ? { candidateFinishedAt: Date.now() } : {}),
+   })
 -  const latest = answersOf(Candidate.require(c.candidateId))
 -  latest[n] = {
 -    ...latest[n],
@@ -2142,13 +2172,7 @@ index 9a19ccb..ff52fc3 100644
 -      text: data,
 -    }],
 -    assistantTraces: [...latest[n].assistantTraces, trace],
-+  const progress: Progress = {
-+    steps: Array.from(
-+      { length: PREPARATION_STEPS },
-+      (_, i) =>
-+        i === 0 ? { state: 'done' as const } : { state: 'wait' as const },
-+    ),
-   }
+-  }
 -  Candidate.update({ candidateId: c.candidateId, candidateAnswers: latest })
 -  return { reply: data, trace, left: ASSISTANT_LIMIT - used - 1 }
 -}
@@ -2164,13 +2188,13 @@ index 9a19ccb..ff52fc3 100644
 -  },
 -) => {
 -  Entry.insert.CANDIDATE_INTEGRITY_EVENT({
--    companyId: companyOfAssessment(c.assessmentId),
--    assessmentId: c.assessmentId,
--    candidateId: c.candidateId,
++  if (!completed) return
++  Entry.insert.CANDIDATE_FINISHED({
+     companyId: companyOfAssessment(c.assessmentId),
+     assessmentId: c.assessmentId,
+     candidateId: c.candidateId,
 -    data: event,
--  })
-+  saveProgress(c, progress)
-+  prepareInterview(candidateId, progress)
+   })
  }
 diff --git a/api/cv.test.js b/api/cv.test.js
 deleted file mode 100644
@@ -8025,10 +8049,10 @@ index 263037b..9695e09 100644
      memberPassword: demoHash!,
      memberCreatedAt: Date.now(),
 diff --git a/api/server.ts b/api/server.ts
-index a751410..126105c 100644
+index a751410..e824640 100644
 --- a/api/server.ts
 +++ b/api/server.ts
-@@ -2,41 +2,26 @@ import { log } from '/api/lib/log.ts'
+@@ -2,41 +2,29 @@ import { log } from '/api/lib/log.ts'
  import { routeHandler } from '/api/routes.ts'
  import '/api/schema.ts'
  import { recoverInterruptedJobs } from '/api/recovery.ts'
@@ -8036,6 +8060,7 @@ index a751410..126105c 100644
 -import { translateMessage } from '/web/lib/messages.ts'
 +import { handleVoice } from '/api/voice.ts'
 +import { labFacts } from '/api/voice-lab.ts'
++import { candidateVoice } from '/api/interview.ts'
  
  import { server } from '@01edu/api/server'
  
@@ -8063,7 +8088,9 @@ index a751410..126105c 100644
 +  fetch(req: Request) {
 +    // the voice interview is a WebSocket: it does not go through the router
 +    if (new URL(req.url).pathname === '/api/voice') {
-+      return handleVoice(req, { facts: labFacts })
++      // a candidate (cookie) talks about their own code; the lab uses the demo
++      const candidate = req.headers.get('cookie')?.includes('dfd_candidate=')
++      return handleVoice(req, candidate ? candidateVoice : { facts: labFacts })
 +    }
      // @01edu/api fails on an empty Cookie header (sent by some HTTP clients)
      if (req.headers.get('cookie') === '') {
@@ -9954,7 +9981,7 @@ index a1f76fa..bacb112 100644
 +Object.assign(llmConfig, saved)
 +Deno.exit(rows.some((r) => !r.ok) ? 1 : 0)
 diff --git a/web/app.tsx b/web/app.tsx
-index da0b0a9..474690d 100644
+index da0b0a9..d18fb2b 100644
 --- a/web/app.tsx
 +++ b/web/app.tsx
 @@ -1,6 +1,6 @@
@@ -9966,7 +9993,7 @@ index da0b0a9..474690d 100644
  import { buildPreflightTokens, customClasses, semanticColors } from './theme.ts'
  import { url } from '/web/lib/router-signal.ts'
  import { tailwindColors } from '/web/tailwind-colors.ts'
-@@ -13,23 +13,11 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
+@@ -13,23 +13,16 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
  import { makePlaceholder } from '/web/pages/placeholder-page.tsx'
  import { screens } from '/web/screens.ts'
  import { Notifications } from '/web/ui/notifications.tsx'
@@ -9982,16 +10009,19 @@ index da0b0a9..474690d 100644
 -import { NewAssessmentPage } from '/web/pages/recruiter/new-assessment-page.tsx'
 -import { ReviewPage } from '/web/pages/recruiter/review-page.tsx'
 -import { AssessmentPage } from '/web/pages/recruiter/assessment-page.tsx'
--import { ConsentPage } from '/web/pages/candidate/consent-page.tsx'
+ import { ConsentPage } from '/web/pages/candidate/consent-page.tsx'
 -import { WorkspacePage } from '/web/pages/workspace/workspace-page.tsx'
 -import { RulesPage } from '/web/pages/candidate/rules-page.tsx'
 -import { QuestionsPage } from '/web/pages/questions/questions-page.tsx'
--import { DonePage } from '/web/pages/candidate/done-page.tsx'
++import { InterviewPage } from '/web/pages/candidate/interview-page.tsx'
+ import { DonePage } from '/web/pages/candidate/done-page.tsx'
 -import { ReportPage } from '/web/pages/report/report-page.tsx'
++import { WorkspacePage } from '/web/pages/workspace/workspace-page.tsx'
++import { DesktopOnly } from '/web/ui/desktop-only.tsx'
  import '/web/ui/themetoggle.tsx'
  
  Object.assign(globalThis, { h, Fragment })
-@@ -54,7 +42,7 @@ setup({
+@@ -54,7 +47,7 @@ setup({
          'wide-narrow': 'minmax(0,1.3fr) minmax(0,1fr)',
          'split': 'minmax(0,1.4fr) minmax(0,1fr)',
          'nav-main': '168px minmax(0,1fr)',
@@ -10000,7 +10030,7 @@ index da0b0a9..474690d 100644
          'report': '168px minmax(0,880px) 280px',
          'report-md': 'minmax(0,1fr) 264px',
          'cards': 'repeat(auto-fill, minmax(min(340px, 100%), 1fr))',
-@@ -75,24 +63,14 @@ setup({
+@@ -75,23 +68,21 @@ setup({
    },
  })
  
@@ -10018,16 +10048,21 @@ index da0b0a9..474690d 100644
 -  [paths.review]: ReviewPage,
 -  [paths.assessment]: AssessmentPage,
 -  [paths.report]: ReportPage,
--  [paths.candidate]: ConsentPage,
++  [paths.voiceLab]: VoiceLabPage,
+   [paths.candidate]: ConsentPage,
 -  [paths.workspace]: WorkspacePage,
 -  [paths.rules]: RulesPage,
 -  [paths.questions]: QuestionsPage,
--  [paths.done]: DonePage,
-+  [paths.voiceLab]: VoiceLabPage,
++  [paths.workspace]: () => (
++    <DesktopOnly>
++      <WorkspacePage />
++    </DesktopOnly>
++  ),
++  [paths.interview]: InterviewPage,
+   [paths.done]: DonePage,
  }
  
- const App = () => {
-@@ -111,14 +89,7 @@ const App = () => {
+@@ -111,14 +102,7 @@ const App = () => {
          : screen?.space === 'candidate'
          ? <CandidateTopBar />
          : <PublicHeader />)}
@@ -10466,120 +10501,98 @@ index afdabfc..0000000
 -  refreshAssessment()
 -}
 diff --git a/web/lib/candidate-store.ts b/web/lib/candidate-store.ts
-deleted file mode 100644
-index ed969e7..0000000
+index ed969e7..144c216 100644
 --- a/web/lib/candidate-store.ts
-+++ /dev/null
-@@ -1,120 +0,0 @@
++++ b/web/lib/candidate-store.ts
+@@ -1,23 +1,18 @@
 -// Candidate session (C1 → C7), from the API (api/candidate.ts). The session
 -// is an httpOnly cookie set at C1; the server is the clock, the page only
--// aligns on it (`serverNow`) and refetches on its events.
--import { computed, effect, signal } from '@preact/signals'
++// Candidate session, from the API (api/candidate.ts). The session
++// is an httpOnly cookie set at the start; the server is the clock, the page only
+ // aligns on it (`serverNow`) and refetches on its events.
+ import { computed, effect, signal } from '@preact/signals'
 -import { t } from '/web/lib/i18n.ts'
--import { api } from '/web/lib/api.ts'
--import { candidateSessionId, onEvent } from '/web/lib/events.ts'
--import { url } from '/web/lib/router-signal.ts'
--import { isCandidatePath, paths } from '/web/paths.ts'
+ import { api } from '/web/lib/api.ts'
+ import { candidateSessionId, onEvent } from '/web/lib/events.ts'
+ import { url } from '/web/lib/router-signal.ts'
+ import { isCandidatePath, paths } from '/web/paths.ts'
 -import type {
 -  CandidateFiles,
 -  CandidateView,
 -  IntegrityKind,
 -} from '/web/types.ts'
--
--const meApi = api['GET/api/candidate/me'].signal()
--const clockOffset = signal(0)
--
--export const me = computed(() => meApi.$.value.data)
++import type { CandidateFiles, CandidateView } from '/web/types.ts'
+ 
+ const meApi = api['GET/api/candidate/me'].signal()
+ const clockOffset = signal(0)
+ 
+ export const me = computed(() => meApi.$.value.data)
 -/** 'none' when there is no session yet (C1 not accepted) */
--export const meStatus = computed(() => {
--  const state = meApi.$.value
--  if (state.data) return 'ready' as const
--  return state.error ? 'none' as const : 'loading' as const
--})
--
--const setMe = (view: CandidateView) => {
--  clockOffset.value = view.now - Date.now()
--  meApi.$.value = { data: view, at: Date.now() }
--}
--
--export const loadMe = async () => {
--  await meApi.fetch()
--  const data = meApi.$.peek().data
--  if (data) clockOffset.value = data.now - Date.now()
--}
--
++/** 'none' when there is no session yet (not started yet) */
+ export const meStatus = computed(() => {
+   const state = meApi.$.value
+   if (state.data) return 'ready' as const
+@@ -35,7 +30,7 @@ export const loadMe = async () => {
+   if (data) clockOffset.value = data.now - Date.now()
+ }
+ 
 -/** C1 needs no session: every other candidate page loads it */
--effect(() => {
--  if (!isCandidatePath(url.path) || url.path === paths.candidate) return
--  meApi.$.peek().data || loadMe()
--})
--
--effect(() => {
--  candidateSessionId.value = me.value?.id ?? 0
--})
--
--onEvent([
--  'CANDIDATE_CODE_SUBMITTED',
--  'CANDIDATE_PREPARATION_STEP',
--  'CANDIDATE_FINISHED',
--], () => loadMe())
--
--export const serverNow = () => Date.now() + clockOffset.peek()
--
--export const buildSeconds = () => (me.value?.assessment.durationMin ?? 90) * 60
--
--export const elapsedBuildSeconds = (now = serverNow()) => {
--  const start = me.value?.startedAt
--  const end = me.value?.submittedAt ?? now
--  return start ? Math.max(0, Math.floor((end - start) / 1000)) : 0
--}
--
++/** the welcome page needs no session: every other candidate page loads it */
+ effect(() => {
+   if (!isCandidatePath(url.path) || url.path === paths.candidate) return
+   meApi.$.peek().data || loadMe()
+@@ -48,6 +43,7 @@ effect(() => {
+ onEvent([
+   'CANDIDATE_CODE_SUBMITTED',
+   'CANDIDATE_PREPARATION_STEP',
++  'CANDIDATE_INTERVIEW_STARTED',
+   'CANDIDATE_FINISHED',
+ ], () => loadMe())
+ 
+@@ -61,7 +57,7 @@ export const elapsedBuildSeconds = (now = serverNow()) => {
+   return start ? Math.max(0, Math.floor((end - start) / 1000)) : 0
+ }
+ 
 -/* ---------- C1: invitation and start ---------- */
--
--const invitationApi = api['GET/api/invitation'].signal()
--export const invitation = computed(() => invitationApi.$.value.data)
--export const invitationError = computed(() =>
--  invitationApi.$.value.error?.message
--)
--
--effect(() => {
--  if (url.path !== paths.candidate) return
--  invitationApi.fetch({ invitation: url.params.invitation ?? '' })
--})
--
++/* ---------- invitation and start ---------- */
+ 
+ const invitationApi = api['GET/api/invitation'].signal()
+ export const invitation = computed(() => invitationApi.$.value.data)
+@@ -74,18 +70,16 @@ effect(() => {
+   invitationApi.fetch({ invitation: url.params.invitation ?? '' })
+ })
+ 
 -/** C1 "Commencer": creates the session, the clock starts on the server */
 -export const startBuild = async (demo = false) => {
--  const token = invitation.peek()?.invitation
--  if (!token) {
++/** "Begin": creates the session, the clock starts on the server */
++export const startBuild = async () => {
+   const token = invitation.peek()?.invitation
+   if (!token) {
 -    throw Error(t('Lien d’évaluation invalide', 'Invalid assessment link'))
--  }
++    throw Error('Invalid assessment link')
+   }
 -  setMe(
 -    await api['POST/api/candidate/start'].fetch({ invitation: token, demo }),
 -  )
--}
--
++  setMe(await api['POST/api/candidate/start'].fetch({ invitation: token }))
+ }
+ 
 -/* ---------- C3, C4 ---------- */
--
--export const submitBuild = async (
--  tools: string[],
--  otherTool: string | undefined,
--  files: CandidateFiles,
--) =>
--  setMe(
--    await api['POST/api/candidate/submit'].fetch({
--      tools,
--      otherTool,
--      files: me.peek()?.submittedAt ? undefined : files,
--    }),
--  )
--
++/* ---------- submission ---------- */
+ 
+ export const submitBuild = async (
+   tools: string[],
+@@ -100,21 +94,7 @@ export const submitBuild = async (
+     }),
+   )
+ 
 -export const startQuestions = () =>
 -  api['POST/api/candidate/questions/start'].fetch()
 -
--export const retryPreparation = async () => {
--  await api['POST/api/candidate/preparation/retry'].fetch()
--  loadMe()
--}
+ export const retryPreparation = async () => {
+   await api['POST/api/candidate/preparation/retry'].fetch()
+   loadMe()
+ }
 -
 -/* ---------- C6: facts for the recruiter, no automatic penalty ---------- */
 -
@@ -10591,94 +10604,6 @@ index ed969e7..0000000
 -    question: event.question,
 -    durationSec: event.durationSec,
 -  }).catch(() => {/* best effort: the answer matters more */})
-diff --git a/web/lib/code-highlight.ts b/web/lib/code-highlight.ts
-deleted file mode 100644
-index 1908fbc..0000000
---- a/web/lib/code-highlight.ts
-+++ /dev/null
-@@ -1,82 +0,0 @@
--// Editor highlighting with the CSS Custom Highlight API, like tournament's
--// syntax-highlighter.ts: ranges over the editor's single text node, no DOM
--// rewrite, so CodeJar keeps the caret. Colors live in style.css.
--import { tokenizeLine, type TokenKind } from '/web/lib/code-tokens.ts'
--
--const KINDS: TokenKind[] = ['kw', 'str', 'type', 'fn', 'num', 'com']
--const EXTRA = ['code-error', 'code-focus'] as const
--
--export const setupTokenHighlights = () => {
--  if (!CSS.highlights) {
--    console.warn('CSS Custom Highlight API not supported: no highlighting.')
--    return
--  }
--  for (const name of [...KINDS.map((k) => `tok-${k}`), ...EXTRA]) {
--    CSS.highlights.has(name) || CSS.highlights.set(name, new Highlight())
--  }
--}
--
--const textNode = (editor: HTMLElement) =>
--  editor.firstChild instanceof Text ? editor.firstChild : null
--
--/** offset in the whole text of the first char of each line */
--const lineOffsets = (code: string) => {
--  const offsets = [0]
--  for (let i = 0; i < code.length; i++) {
--    if (code[i] === '\n') offsets.push(i + 1)
--  }
--  return offsets
--}
--
--export const highlightCode = (
--  editor: HTMLElement,
--  code: string,
--  file: string,
--) => {
--  const node = textNode(editor)
--  if (!CSS.highlights || !node) return
--  for (const k of KINDS) CSS.highlights.get(`tok-${k}`)?.clear()
--  let offset = 0
--  for (const line of code.split('\n')) {
--    for (const [text, kind] of tokenizeLine(line, file)) {
--      if (kind !== 'txt' && text.length) {
--        const range = new Range()
--        range.setStart(node, offset)
--        range.setEnd(node, offset + text.length)
--        CSS.highlights.get(`tok-${kind}`)?.add(range)
--      }
--      offset += text.length
--    }
--    offset++ // the \n
--  }
--}
--
--export type CodeProblem = {
--  line: number
--  column: number
--  length: number
--  message: string
--  code: string // e.g. deno-ts(2322)
--}
--
--/** wavy red underline under each problem (type errors from deno check) */
--export const highlightProblems = (
--  editor: HTMLElement,
--  code: string,
--  problems: CodeProblem[],
--) => {
--  const node = textNode(editor)
--  const errors = CSS.highlights?.get('code-error')
--  if (!errors) return
--  errors.clear()
--  if (!node) return
--  const offsets = lineOffsets(code)
--  for (const p of problems) {
--    const start = (offsets[p.line - 1] ?? -1) + p.column - 1
--    if (start < 0 || start + p.length > code.length) continue
--    const range = new Range()
--    range.setStart(node, start)
--    range.setEnd(node, start + p.length)
--    errors.add(range)
--  }
--}
 diff --git a/web/lib/code-tokens.ts b/web/lib/code-tokens.ts
 index fc0bb12..caf7e67 100644
 --- a/web/lib/code-tokens.ts
@@ -10690,127 +10615,6 @@ index fc0bb12..caf7e67 100644
  // semantic colors of web/theme.ts.
  
  export type TokenKind = 'kw' | 'str' | 'type' | 'fn' | 'num' | 'com' | 'txt'
-diff --git a/web/lib/drag.ts b/web/lib/drag.ts
-deleted file mode 100644
-index 3d62e9e..0000000
---- a/web/lib/drag.ts
-+++ /dev/null
-@@ -1,24 +0,0 @@
--// Pointer-capture drag helper, from tournament (pages/studio/layout-state.ts).
--export const setDragEvents = (
--  ref: HTMLElement,
--  cursor: string,
--  onMove: (e: PointerEvent) => void,
--) => {
--  ref.addEventListener('pointerdown', (e) => {
--    ref.setPointerCapture(e.pointerId)
--    document.body.style.cursor = cursor
--    document.body.style.userSelect = 'none'
--  })
--  ref.addEventListener('pointermove', (e) => {
--    if (!ref.hasPointerCapture(e.pointerId)) return
--    onMove(e)
--  })
--  const release = (e: PointerEvent) => {
--    if (!ref.hasPointerCapture(e.pointerId)) return
--    ref.releasePointerCapture(e.pointerId)
--    document.body.style.cursor = ''
--    document.body.style.userSelect = ''
--  }
--  ref.addEventListener('pointerup', release)
--  ref.addEventListener('pointercancel', release)
--}
-diff --git a/web/lib/events.ts b/web/lib/events.ts
-deleted file mode 100644
-index df75f2e..0000000
---- a/web/lib/events.ts
-+++ /dev/null
-@@ -1,85 +0,0 @@
--// Server events (GET/api/events), like tournament's web/lib/session.ts: the
--// server only sends [at, type, id] of new entries, pages refetch what they
--// show. The followed assessment or candidate depends on the current page.
--import { computed, effect, signal } from '@preact/signals'
--import { url } from '/web/lib/router-signal.ts'
--import { isCandidatePath, paths } from '/web/paths.ts'
--import { entries } from '/api/entries.ts'
--
--type EntryRecord = typeof entries
--type EntryKey = keyof EntryRecord
--type EntryType = EntryRecord[EntryKey]
--type Handler = (entry: { at: number; type: EntryType; id: number }) => void
--
--export const sourceDisconnectedAt = signal(Date.now())
--
--/** set by the candidate store once the session exists (cookie) */
--export const candidateSessionId = signal(0)
--
--const listeners = new Set<{ type: EntryType; handler: Handler }>()
--
--export const onEvent = (
--  entryTypes: EntryKey | EntryKey[],
--  handler: Handler,
--) => {
--  const disposable: { type: EntryType; handler: Handler }[] = []
--  for (const key of Array.isArray(entryTypes) ? entryTypes : [entryTypes]) {
--    const listener = { type: entries[key], handler }
--    disposable.push(listener)
--    listeners.add(listener)
--  }
--  return () => {
--    for (const listener of disposable) listeners.delete(listener)
--  }
--}
--
--const follow = computed((): Record<string, string> => {
--  if (isCandidatePath(url.path)) {
--    return candidateSessionId.value
--      ? { candidate: 'me', session: String(candidateSessionId.value) }
--      : {}
--  }
--  if (url.path === paths.report && url.params.candidate) {
--    return { candidate: url.params.candidate }
--  }
--  return url.params.id ? { assessment: url.params.id } : {}
--})
--
--let source: EventSource | undefined
--const setDisconnected = () =>
--  sourceDisconnectedAt.peek() || (sourceDisconnectedAt.value = Date.now())
--
--effect(() => {
--  const params = follow.value
--  const sourceUrl = `api/events?${new URLSearchParams(params)}`
--  if (source) {
--    if (source.url.endsWith(sourceUrl)) return
--    source.close()
--    source = undefined
--  }
--  if (!Object.keys(params).length) return
--  setDisconnected()
--  source = new EventSource(sourceUrl)
--  source.addEventListener('message', (event) => {
--    const [at, type, id] = JSON.parse(event.data)
--    for (const listener of listeners) {
--      if (listener.type !== type) continue
--      try {
--        listener.handler({ at, type, id })
--      } catch (err) {
--        console.error(err)
--      }
--    }
--  })
--
--  let timeout = setTimeout(setDisconnected, 20_000)
--  source.addEventListener('ack', () => {
--    sourceDisconnectedAt.peek() && (sourceDisconnectedAt.value = 0)
--    clearTimeout(timeout)
--    timeout = setTimeout(setDisconnected, 20_000)
--  })
--  source.addEventListener('open', () => {
--    sourceDisconnectedAt.value = 0
--  })
--  source.addEventListener('error', setDisconnected)
--})
 diff --git a/web/lib/format.test.js b/web/lib/format.test.js
 index bc90fc2..3716f66 100644
 --- a/web/lib/format.test.js
@@ -11085,68 +10889,15 @@ index d8af0ba..3d05a98 100644
  import type { LinkProps as RouterLinkProps } from '@01edu/signal-router'
  
 diff --git a/web/lib/scroll-spy.ts b/web/lib/scroll-spy.ts
-deleted file mode 100644
-index e40de91..0000000
+index e40de91..e67bdc4 100644
 --- a/web/lib/scroll-spy.ts
-+++ /dev/null
-@@ -1,57 +0,0 @@
++++ b/web/lib/scroll-spy.ts
+@@ -1,4 +1,4 @@
 -import { useEffect, useState } from 'npm:preact/hooks'
--
--// a section is "current" once its top passes below the sticky top bar
--const OFFSET = 96
--const ANCHOR_EVENT = 'dfd-anchor'
--
--/** Called by AnchorLink: the clicked section wins over the scroll position */
--export const announceAnchor = (id: string) =>
--  dispatchEvent(new CustomEvent(ANCHOR_EVENT, { detail: id }))
--
--/**
-- * Id of the section being read, for the anchor menus of R4 and R6.
-- * The last section whose top is above the offset wins; at the very bottom of
-- * the page the last section is current even if it is short. After a click in
-- * the menu, the clicked section stays current until the user scrolls by
-- * himself (short sections at the end of the page cannot reach the top).
-- */
--export const useActiveSection = (ids: readonly string[]) => {
--  const [active, setActive] = useState(ids[0])
--  useEffect(() => {
--    let pinned = false
--    const update = () => {
--      if (pinned) return
--      const bottom = innerHeight + scrollY >= document.body.scrollHeight - 2
--      if (bottom) return setActive(ids.at(-1)!)
--      let current = ids[0]
--      for (const id of ids) {
--        const el = document.getElementById(id)
--        if (el && el.getBoundingClientRect().top <= OFFSET) current = id
--      }
--      setActive(current)
--    }
--    const onAnchor = (e: Event) => {
--      const id = (e as CustomEvent<string>).detail
--      if (!ids.includes(id)) return
--      pinned = true
--      setActive(id)
--    }
--    const release = () => pinned = false
--    update()
--    addEventListener('scroll', update, { passive: true })
--    addEventListener('resize', update, { passive: true })
--    addEventListener(ANCHOR_EVENT, onAnchor)
--    for (const type of ['wheel', 'touchmove', 'keydown']) {
--      addEventListener(type, release, { passive: true })
--    }
--    return () => {
--      removeEventListener('scroll', update)
--      removeEventListener('resize', update)
--      removeEventListener(ANCHOR_EVENT, onAnchor)
--      for (const type of ['wheel', 'touchmove', 'keydown']) {
--        removeEventListener(type, release)
--      }
--    }
--  }, [ids.join()])
--  return active
--}
++import { useEffect, useState } from 'preact/hooks'
+ 
+ // a section is "current" once its top passes below the sticky top bar
+ const OFFSET = 96
 diff --git a/web/lib/section-scroll.ts b/web/lib/section-scroll.ts
 index 1e172ed..bd48c52 100644
 --- a/web/lib/section-scroll.ts
@@ -11164,35 +10915,11 @@ index 1e172ed..bd48c52 100644
    ['faq', paths.faq],
  ] as const
  
-diff --git a/web/lib/viewport.ts b/web/lib/viewport.ts
-deleted file mode 100644
-index d1e347f..0000000
---- a/web/lib/viewport.ts
-+++ /dev/null
-@@ -1,17 +0,0 @@
--import { Signal } from 'npm:@preact/signals'
--
--// Breakpoints of Twind (Tailwind defaults), in px
--export const BREAKPOINTS = { sm: 640, md: 768, lg: 1024, xl: 1280 } as const
--
--// Workspace and questions are desktop only (brief §1: 1280 px minimum)
--export const DESKTOP_MIN_WIDTH = BREAKPOINTS.md
--
--export const viewportWidth = new Signal(
--  typeof window === 'undefined' ? DESKTOP_MIN_WIDTH : innerWidth,
--)
--
--if (typeof window !== 'undefined') {
--  addEventListener('resize', () => viewportWidth.value = innerWidth, {
--    passive: true,
--  })
--}
 diff --git a/web/lib/workspace-runner.ts b/web/lib/workspace-runner.ts
-deleted file mode 100644
-index 72efd34..0000000
+index 72efd34..2f088a5 100644
 --- a/web/lib/workspace-runner.ts
-+++ /dev/null
-@@ -1,126 +0,0 @@
++++ b/web/lib/workspace-runner.ts
+@@ -1,12 +1,5 @@
 -// Console output states of the prototype, replayed by `?sortie=` (C2); real
 -// runs come from the Deno sandbox (api/sandbox.ts, workspace-state.ts).
 -
@@ -11202,22 +10929,19 @@ index 72efd34..0000000
 -  | 'tronquee'
 -  | 'import'
 -  | 'erreur'
--
--export type OutputLine = {
--  text: string
--  tone?: 'muted' | 'error' | 'ok' | 'warn' | 'indent-error'
--}
--
--export type RunOutput = {
--  command: string
--  lines: OutputLine[]
--  status: { tone: 'ok' | 'warn' | 'error'; text: string; icon: string }
--}
--
++// What the console shows of a run (built from the sandbox's answer in
++// workspace-state.ts).
+ 
+ export type OutputLine = {
+   text: string
+@@ -19,108 +12,5 @@ export type RunOutput = {
+   status: { tone: 'ok' | 'warn' | 'error'; text: string; icon: string }
+ }
+ 
 -import { t } from '/web/lib/i18n.ts'
 -
--export const OUTPUT_LIMIT_KB = 64
--export const RUN_TIMEOUT_S = 10
+ export const OUTPUT_LIMIT_KB = 64
+ export const RUN_TIMEOUT_S = 10
 -
 -export const runPlayground = (variant: OutputVariant): RunOutput => {
 -  const command = '$ deno run playground.ts'
@@ -11533,186 +11257,133 @@ index 71c7b4d..0b58748 100644
        </p>
      </Card>
 diff --git a/web/pages/candidate/consent-page.tsx b/web/pages/candidate/consent-page.tsx
-deleted file mode 100644
-index a8ac71c..0000000
+index a8ac71c..4981097 100644
 --- a/web/pages/candidate/consent-page.tsx
-+++ /dev/null
-@@ -1,342 +0,0 @@
--import { paths } from '/web/paths.ts'
--import { signal } from '@preact/signals'
--import { navigate } from '/web/lib/router-signal.ts'
--import {
--  invitation,
--  invitationError,
--  me,
--  startBuild,
--} from '/web/lib/candidate-store.ts'
--import { notify } from '/web/ui/notifications.tsx'
--import { Spinner } from '/web/ui/spinner.tsx'
++++ b/web/pages/candidate/consent-page.tsx
+@@ -9,21 +9,19 @@ import {
+ } from '/web/lib/candidate-store.ts'
+ import { notify } from '/web/ui/notifications.tsx'
+ import { Spinner } from '/web/ui/spinner.tsx'
 -import { demoMode } from '/web/lib/demo.ts'
--import {
--  Accessibility,
--  Building2,
--  CalendarClock,
--  Clock,
--  Database,
--  Play,
--  Server,
--  Timer,
--  UserCheck,
--  UserX,
+ import {
+   Accessibility,
+   Building2,
+   CalendarClock,
+   Clock,
+   Database,
++  Mic,
+   Play,
+   Server,
+   Timer,
+   UserCheck,
+   UserX,
 -  VideoOff,
--} from '/web/assets/icons.tsx'
+ } from '/web/assets/icons.tsx'
 -import { t } from '/web/lib/i18n.ts'
--
--const understood = signal(false)
--const accepted = signal(false)
--
--const DATA = () =>
--  [
--    [
--      Database,
+ 
+ const understood = signal(false)
+ const accepted = signal(false)
+@@ -32,33 +30,24 @@ const DATA = () =>
+   [
+     [
+       Database,
 -      t(
 -        'Collectés : code, résultats d’exécution, réponses, échanges avec l’assistant, sorties de page.',
 -        'Collected: code, run results, answers, exchanges with the assistant, page leaves.',
 -      ),
--    ],
--    [
--      Server,
++      'Collected: your code, its run results, and the transcript of the interview.',
+     ],
+     [
+       Server,
 -      t(
 -        'Analysés par des modèles d’IA (NVIDIA Nemotron, Google Gemini) : seuls votre code et vos réponses leur sont transmis.',
 -        'Analysed by AI models (NVIDIA Nemotron, Google Gemini): only your code and your answers are sent to them.',
 -      ),
--    ],
--    [
--      UserX,
++      'Analysed by Meta AI models: only your code and what you say in the interview are sent to them.',
+     ],
+     [
+       UserX,
 -      t(
 -        'Aucune donnée d’identité envoyée au modèle.',
 -        'No identity data sent to the model.',
 -      ),
--    ],
++      'No identity data sent to the model.',
+     ],
 -    [VideoOff, t('Ni webcam ni micro.', 'No webcam, no microphone.')],
 -    [CalendarClock, t('Conservation 30 jours.', 'Kept for 30 days.')],
--    [
--      UserCheck,
++    [
++      Mic,
++      'The microphone is used only during the interview. The audio is not stored, only its transcript. No webcam.',
++    ],
++    [CalendarClock, 'Kept for 30 days.'],
+     [
+       UserCheck,
 -      t(
 -        'Décision finale prise par une personne.',
 -        'Final decision made by a person.',
 -      ),
--    ],
--  ] as const
--
--const Step = (
--  { n, title, text, current }: {
--    n: number
--    title: string
--    text: string
--    current?: boolean
--  },
--) => (
--  <li tw='p-3.5 rounded-[10px] border border-border-primary bg-surface-page flex flex-col gap-1.5'>
--    <span tw='flex items-center gap-2'>
--      <span
--        tw={[
--          'w-6 h-6 flex-none rounded-full text-[12px] font-semibold inline-flex items-center justify-center',
--          current
--            ? 'bg-accent text-on-accent'
--            : 'bg-surface-sunken border border-border-strong',
--        ]}
--      >
--        {n}
--      </span>
--      <strong tw='text-[13.5px] font-semibold'>{title}</strong>
--    </span>
--    <span tw='text-[13px] text-content-secondary'>{text}</span>
--  </li>
--)
--
--const Check = (
--  { value, label, test }: {
--    value: typeof understood
--    label: string
--    test: string
--  },
--) => (
--  <label tw='flex items-center gap-2.5 text-[13.5px] cursor-pointer'>
--    <input
--      type='checkbox'
--      data-test={test}
--      checked={value.value}
--      onChange={() => value.value = !value.value}
--      tw='w-[17px] h-[17px] m-0 flex-none'
--      style={{ accentColor: 'var(--color-accent)' }}
--    />
--    {label}
--  </label>
--)
--
++      'Final decision made by a person.',
+     ],
+   ] as const
+ 
+@@ -108,22 +97,20 @@ const Check = (
+   </label>
+ )
+ 
 -/** "Commencer la phase de construction", also the demo's next step */
--const starting = signal(false)
--
--export const beginBuild = async () => {
--  if (starting.peek()) return
--  starting.value = true
--  try {
++/** "Start the building phase" */
+ const starting = signal(false)
+ 
+ export const beginBuild = async () => {
+   if (starting.peek()) return
+   starting.value = true
+   try {
 -    await startBuild(demoMode.peek())
 -    // U4: the personal link also resumes, on another device, where it was
--    const view = me.peek()
--    const href = view?.finishedAt
--      ? paths.done
++    await startBuild()
++    // the personal link also resumes, on another device, where it was
+     const view = me.peek()
+     const href = view?.finishedAt
+       ? paths.done
 -      : view?.questionsStartedAt
 -      ? paths.questions
--      : view?.submittedAt
+       : view?.submittedAt
 -      ? paths.rules
--      : paths.workspace
--    navigate({ href, params: { invitation: null } })
--  } catch (err) {
--    notify({ status: 'failure', description: (err as Error).message })
--  } finally {
--    starting.value = false
--  }
--}
--
++      ? paths.interview
+       : paths.workspace
+     navigate({ href, params: { invitation: null } })
+   } catch (err) {
+@@ -133,7 +120,7 @@ export const beginBuild = async () => {
+   }
+ }
+ 
 -/** C1 — candidate welcome and consent */
--export const ConsentPage = () => {
--  const ok = understood.value && accepted.value
--  const info = invitation.value
--  if (!info) {
--    return (
--      <main tw='flex-1 flex items-center justify-center px-4 py-16'>
--        {invitationError.value
--          ? (
--            <p tw='m-0 card px-5 py-4 text-[14px] text-content-secondary'>
++/** Candidate welcome and consent */
+ export const ConsentPage = () => {
+   const ok = understood.value && accepted.value
+   const info = invitation.value
+@@ -143,10 +130,7 @@ export const ConsentPage = () => {
+         {invitationError.value
+           ? (
+             <p tw='m-0 card px-5 py-4 text-[14px] text-content-secondary'>
 -              {t(
 -                'Ce lien d’évaluation n’est pas valide. Vérifiez le lien reçu.',
 -                'This assessment link is not valid. Check the link you received.',
 -              )}
--            </p>
--          )
--          : <Spinner tw='w-5 h-5 text-content-tertiary' />}
--      </main>
--    )
--  }
--  const { title, company, durationMin, firstName, state } = info
--  if (state !== 'invited') {
--    const closed = state === 'expired' || state === 'revoked'
--    return (
--      <main tw='flex-1 flex items-center justify-center px-4 py-16'>
--        <article
--          data-test='invitation-state'
--          tw='card w-[520px] max-w-full px-6 py-5 flex flex-col gap-3'
--        >
--          <span tw='text-[12.5px] text-content-tertiary inline-flex items-center gap-1.5'>
--            <Building2 tw='w-3.5 h-3.5' />
--            {company} · {title}
--          </span>
--          <p tw='m-0 text-[15px] font-medium'>
--            {closed
++              {'This assessment link is not valid. Check the link you received.'}
+             </p>
+           )
+           : <Spinner tw='w-5 h-5 text-content-tertiary' />}
+@@ -168,27 +152,14 @@ export const ConsentPage = () => {
+           </span>
+           <p tw='m-0 text-[15px] font-medium'>
+             {closed
 -              ? t(
 -                `Ce lien n’est plus valable. Demandez un nouveau lien à ${company}.`,
 -                `This link is no longer valid. Ask ${company} for a new one.`,
 -              )
--              : state === 'finished'
++              ? `This link is no longer valid. Ask ${company} for a new one.`
+               : state === 'finished'
 -              ? t(
 -                `Vous avez terminé cette épreuve${
 -                  firstName ? `, ${firstName}` : ''
@@ -11729,54 +11400,52 @@ index a8ac71c..0000000
 -                  firstName ? `, ${firstName}` : ''
 -                }. Pick up where you left off: the timer keeps running.`,
 -              )}
--          </p>
--          {state === 'started' && (
--            <button
--              type='button'
--              tw='btn btn-primary h-[38px] px-4 self-start'
--              data-test='resume-btn'
--              disabled={starting.value}
--              onClick={beginBuild}
--            >
--              <Play tw='w-[15px] h-[15px]' />
++              ? `You have finished this assessment${
++                firstName ? `, ${firstName}` : ''
++              }. Thank you! ${company} will get back to you.`
++              : `Your assessment is in progress${
++                firstName ? `, ${firstName}` : ''
++              }. Pick up where you left off: the timer keeps running.`}
+           </p>
+           {state === 'started' && (
+             <button
+@@ -199,7 +170,7 @@ export const ConsentPage = () => {
+               onClick={beginBuild}
+             >
+               <Play tw='w-[15px] h-[15px]' />
 -              {t('Reprendre l’épreuve', 'Resume the assessment')}
--            </button>
--          )}
--        </article>
--      </main>
--    )
--  }
--  return (
--    <main tw='px-4 sm:px-6 pt-8 sm:pt-10 pb-16 flex justify-center'>
--      <article tw='w-[720px] max-w-full card rounded-[14px] shadow-[var(--shadow)] overflow-hidden'>
--        <header tw='px-5 sm:px-7 pt-6 pb-5 border-b border-border-primary flex flex-col gap-1.5'>
--          <span tw='text-[12.5px] text-content-tertiary inline-flex items-center gap-1.5'>
--            <Building2 tw='w-3.5 h-3.5' />
--            {company}
--          </span>
--          {firstName && (
--            <span tw='text-[14px] text-content-secondary'>
++              {'Resume the assessment'}
+             </button>
+           )}
+         </article>
+@@ -216,64 +187,43 @@ export const ConsentPage = () => {
+           </span>
+           {firstName && (
+             <span tw='text-[14px] text-content-secondary'>
 -              {t(`Bonjour ${firstName},`, `Hello ${firstName},`)}
--            </span>
--          )}
--          <h1 tw='m-0 text-[20px] sm:text-[22px] font-semibold'>{title}</h1>
--          <span tw='text-[13.5px] text-content-secondary inline-flex items-center gap-1.5'>
--            <Clock tw='w-3.5 h-3.5' />
++              {`Hello ${firstName},`}
+             </span>
+           )}
+           <h1 tw='m-0 text-[20px] sm:text-[22px] font-semibold'>{title}</h1>
+           <span tw='text-[13.5px] text-content-secondary inline-flex items-center gap-1.5'>
+             <Clock tw='w-3.5 h-3.5' />
 -            {durationMin} {t(
 -              'min + environ 20 min de questions',
 -              'min + about 20 min of questions',
 -            )}
--          </span>
--        </header>
--        <div tw='px-5 sm:px-7 py-[22px] flex flex-col gap-5'>
--          <section tw='flex flex-col gap-2.5'>
--            <h2 tw='m-0 font-main text-[14px] font-semibold tracking-normal'>
++            {durationMin} {'min + a short spoken interview'}
+           </span>
+         </header>
+         <div tw='px-5 sm:px-7 py-[22px] flex flex-col gap-5'>
+           <section tw='flex flex-col gap-2.5'>
+             <h2 tw='m-0 font-main text-[14px] font-semibold tracking-normal'>
 -              {t('Comment se déroule l’évaluation', 'How the assessment works')}
--            </h2>
--            <ol tw='list-none m-0 p-0 grid grid-cols-1 sm:grid-cols-2 gap-2.5'>
--              <Step
--                n={1}
--                current
++              {'How the assessment works'}
+             </h2>
+             <ol tw='list-none m-0 p-0 grid grid-cols-1 sm:grid-cols-2 gap-2.5'>
+               <Step
+                 n={1}
+                 current
 -                title={t(
 -                  `Phase de construction (${durationMin} min)`,
 -                  `Building phase (${durationMin} min)`,
@@ -11785,9 +11454,11 @@ index a8ac71c..0000000
 -                  'Vous codez dans un éditeur en ligne. Vous pouvez utiliser librement l’IA (ChatGPT, Claude, Copilot…), la documentation et Internet.',
 -                  'You code in an online editor. You may freely use AI (ChatGPT, Claude, Copilot…), documentation and the Internet.',
 -                )}
--              />
--              <Step
--                n={2}
++                title={`Building phase (${durationMin} min)`}
++                text='You code in an online editor. You may freely use AI (ChatGPT, Claude, Copilot…), documentation and the Internet.'
+               />
+               <Step
+                 n={2}
 -                title={t(
 -                  'Phase de questions (environ 20 min)',
 -                  'Question phase (about 20 min)',
@@ -11796,135 +11467,131 @@ index a8ac71c..0000000
 -                  '10 questions sur votre propre code, 6 QCM et 4 réponses libres, chronométrées. Copier-coller désactivé, sorties de la page enregistrées. Un assistant documentation est disponible pour les réponses libres.',
 -                  '10 timed questions on your own code, 6 multiple-choice and 4 open answers. Copy-paste disabled, page leaves recorded. A documentation assistant is available for open answers.',
 -                )}
--              />
--            </ol>
--          </section>
--          <p tw='m-0 px-4 py-3.5 rounded-[10px] border border-accent bg-accent-soft text-[15px] font-medium leading-[1.45]'>
++                title='Interview (about 10 min)'
++                text='An AI interviewer asks you about your own code, out loud. Use headphones and a quiet place. Nothing to prepare: you either know your code or you do not.'
+               />
+             </ol>
+           </section>
+           <p tw='m-0 px-4 py-3.5 rounded-[10px] border border-accent bg-accent-soft text-[15px] font-medium leading-[1.45]'>
 -            {t(
 -              'L’IA peut vous aider à construire et à réfléchir. Elle ne peut pas expliquer à votre place.',
 -              'AI can help you build and think. It cannot explain for you.',
 -            )}
--          </p>
--          <section tw='flex flex-col gap-2.5'>
--            <h2 tw='m-0 font-main text-[14px] font-semibold tracking-normal'>
++            {'AI can help you build and think. It cannot explain for you.'}
+           </p>
+           <section tw='flex flex-col gap-2.5'>
+             <h2 tw='m-0 font-main text-[14px] font-semibold tracking-normal'>
 -              {t('Vos données', 'Your data')}
--            </h2>
--            <p tw='m-0 text-[13px] text-content-secondary'>
++              {'Your data'}
+             </h2>
+             <p tw='m-0 text-[13px] text-content-secondary'>
 -              {t(
 -                `${company} nous a transmis votre nom et votre e-mail pour rattacher cette épreuve à votre candidature. Ils ne sont jamais envoyés aux modèles d’IA.`,
 -                `${company} gave us your name and e-mail to link this assessment to your application. They are never sent to the AI models.`,
 -              )}
--            </p>
--            <ul tw='list-none m-0 p-0 grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2 text-[13px] text-content-secondary'>
--              {DATA().map(([Icon, text]) => (
--                <li key={text} tw='flex gap-2'>
--                  <Icon tw='w-[15px] h-[15px] flex-none mt-0.5 text-content-tertiary' />
--                  <span>{text}</span>
--                </li>
--              ))}
--            </ul>
--          </section>
--          <div tw='flex flex-col gap-2 pt-3 border-t border-border-primary'>
--            <Check
--              value={understood}
++              {`${company} gave us your name and e-mail to link this assessment to your application. They are never sent to the AI models.`}
+             </p>
+             <ul tw='list-none m-0 p-0 grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2 text-[13px] text-content-secondary'>
+               {DATA().map(([Icon, text]) => (
+@@ -287,19 +237,13 @@ export const ConsentPage = () => {
+           <div tw='flex flex-col gap-2 pt-3 border-t border-border-primary'>
+             <Check
+               value={understood}
 -              label={t(
 -                'J’ai compris le déroulement',
 -                'I understand how it works',
 -              )}
--              test='understood-check'
--            />
--            <Check
--              value={accepted}
--              test='consent-check'
++              label='I understand how it works'
+               test='understood-check'
+             />
+             <Check
+               value={accepted}
+               test='consent-check'
 -              label={t(
 -                'J’accepte le traitement de mes données décrit ci-dessus',
 -                'I accept the processing of my data described above',
 -              )}
--            />
--          </div>
--        </div>
--        <footer tw='px-5 sm:px-7 py-4 border-t border-border-primary bg-surface-sunken flex items-center gap-4 flex-wrap'>
--          <a
--            href='#'
--            onClick={(e) => e.preventDefault()}
--            tw='text-[13px] inline-flex items-center gap-[5px]'
--          >
--            <Accessibility tw='w-3.5 h-3.5' />
++              label='I accept the processing of my data described above'
+             />
+           </div>
+         </div>
+@@ -310,15 +254,12 @@ export const ConsentPage = () => {
+             tw='text-[13px] inline-flex items-center gap-[5px]'
+           >
+             <Accessibility tw='w-3.5 h-3.5' />
 -            {t(
 -              'Besoin d’un aménagement (accessibilité) ?',
 -              'Need an adjustment (accessibility)?',
 -            )}
--          </a>
--          <span tw='flex-1' />
--          <span tw='text-[12.5px] text-content-tertiary inline-flex items-center gap-[5px]'>
--            <Timer tw='w-[13px] h-[13px]' />
++            {'Need an adjustment (accessibility)? Tell the recruiter.'}
+           </a>
+           <span tw='flex-1' />
+           <span tw='text-[12.5px] text-content-tertiary inline-flex items-center gap-[5px]'>
+             <Timer tw='w-[13px] h-[13px]' />
 -            {t('Le chrono démarre au clic.', 'The timer starts on click.')}
--          </span>
--          <button
--            type='button'
--            tw='btn btn-primary h-[38px] px-4'
--            data-test='start-build-btn'
--            disabled={!ok || starting.value}
--            onClick={() => {
--              ok && beginBuild()
--            }}
--          >
--            <Play tw='w-[15px] h-[15px]' />
++            {'The timer starts on click.'}
+           </span>
+           <button
+             type='button'
+@@ -330,10 +271,7 @@ export const ConsentPage = () => {
+             }}
+           >
+             <Play tw='w-[15px] h-[15px]' />
 -            {t(
 -              'Commencer la phase de construction',
 -              'Start the building phase',
 -            )}
--          </button>
--        </footer>
--      </article>
--    </main>
--  )
--}
++            {'Start the building phase'}
+           </button>
+         </footer>
+       </article>
 diff --git a/web/pages/candidate/done-page.tsx b/web/pages/candidate/done-page.tsx
-deleted file mode 100644
-index bd86fb1..0000000
+index bd86fb1..ead6195 100644
 --- a/web/pages/candidate/done-page.tsx
-+++ /dev/null
-@@ -1,63 +0,0 @@
++++ b/web/pages/candidate/done-page.tsx
+@@ -1,8 +1,7 @@
 -import { useEffect } from 'npm:preact/hooks'
--import { elapsedBuildSeconds, loadMe, me } from '/web/lib/candidate-store.ts'
--import { formatMinutes } from '/web/lib/format.ts'
--import { Check } from '/web/assets/icons.tsx'
++import { useEffect } from 'preact/hooks'
+ import { elapsedBuildSeconds, loadMe, me } from '/web/lib/candidate-store.ts'
+ import { formatMinutes } from '/web/lib/format.ts'
+ import { Check } from '/web/assets/icons.tsx'
 -import { t } from '/web/lib/i18n.ts'
--
--const Stat = ({ label, value }: { label: string; value: string }) => (
--  <div tw='px-3.5 py-3 rounded-[10px] border border-border-primary bg-surface-page'>
--    <dt tw='text-[12px] text-content-tertiary'>{label}</dt>
--    <dd tw='mt-0.5 mb-0 font-mono font-bold text-[18px]'>{value}</dd>
--  </div>
--)
--
+ 
+ const Stat = ({ label, value }: { label: string; value: string }) => (
+   <div tw='px-3.5 py-3 rounded-[10px] border border-border-primary bg-surface-page'>
+@@ -11,18 +10,16 @@ const Stat = ({ label, value }: { label: string; value: string }) => (
+   </div>
+ )
+ 
 -/** C7 — end. No result is shown to the candidate. */
--export const DonePage = () => {
--  useEffect(() => {
++/** End. No result is shown to the candidate. */
+ export const DonePage = () => {
+   useEffect(() => {
 -    document.fullscreenElement && document.exitFullscreen().catch(() => {})
 -    loadMe() // finishedAt is set by the last answer
--  }, [])
--  const s = me.value
--  const buildMin = Math.round(elapsedBuildSeconds() / 60)
++    loadMe() // finishedAt is set when the interview ends
+   }, [])
+   const s = me.value
+   const buildMin = Math.round(elapsedBuildSeconds() / 60)
 -  const questionsMin = s?.questionsStartedAt && s.finishedAt
 -    ? Math.max(1, Math.round((s.finishedAt - s.questionsStartedAt) / 60000))
--    : 0
++  const interviewMin = s?.interviewStartedAt && s.finishedAt
++    ? Math.max(1, Math.round((s.finishedAt - s.interviewStartedAt) / 60000))
+     : 0
 -  const count = s?.answeredCount ?? 10
--  return (
--    <main tw='flex-1 flex items-center justify-center px-4 sm:px-6 py-12'>
--      <article tw='w-[560px] max-w-full p-6 sm:p-8 card rounded-[14px] shadow-[var(--shadow)] flex flex-col gap-[18px]'>
--        <span tw='w-11 h-11 rounded-full bg-ok-soft text-ok inline-flex items-center justify-center'>
--          <Check tw='w-[22px] h-[22px]' stroke-width={2.25} />
--        </span>
--        <h1
--          data-test='done-title'
--          tw='m-0 text-[22px] sm:text-[24px] font-semibold'
--        >
+   return (
+     <main tw='flex-1 flex items-center justify-center px-4 sm:px-6 py-12'>
+       <article tw='w-[560px] max-w-full p-6 sm:p-8 card rounded-[14px] shadow-[var(--shadow)] flex flex-col gap-[18px]'>
+@@ -33,29 +30,21 @@ export const DonePage = () => {
+           data-test='done-title'
+           tw='m-0 text-[22px] sm:text-[24px] font-semibold'
+         >
 -          {t('Évaluation terminée. Merci.', 'Assessment finished. Thank you.')}
--        </h1>
--        <dl tw='m-0 grid grid-cols-1 sm:grid-cols-2 gap-2.5'>
--          <Stat
++          Assessment finished. Thank you.
+         </h1>
+         <dl tw='m-0 grid grid-cols-1 sm:grid-cols-2 gap-2.5'>
++          <Stat label='Building' value={formatMinutes(buildMin)} />
+           <Stat
 -            label={t('Construction', 'Building')}
 -            value={formatMinutes(buildMin)}
 -          />
@@ -11934,21 +11601,24 @@ index bd86fb1..0000000
 -              `${count} en ${questionsMin} min`,
 -              `${count} in ${questionsMin} min`,
 -            )}
--          />
--        </dl>
--        <p tw='m-0 text-[14px] text-content-secondary'>
++            label='Interview'
++            value={interviewMin ? formatMinutes(interviewMin) : '–'}
+           />
+         </dl>
+         <p tw='m-0 text-[14px] text-content-secondary'>
 -          {t(
 -            'Le recruteur reçoit un rapport. La décision finale est prise par une personne, pas par l’IA.',
 -            'The recruiter receives a report. The final decision is made by a person, not by AI.',
 -          )}
--        </p>
--        <p tw='m-0 text-[12.5px] text-content-tertiary'>
++          The recruiter receives a report. The final decision is made by a
++          person, not by AI.
+         </p>
+         <p tw='m-0 text-[12.5px] text-content-tertiary'>
 -          {t('Vous pouvez fermer cette page.', 'You can close this page.')}
--        </p>
--      </article>
--    </main>
--  )
--}
++          You can close this page.
+         </p>
+       </article>
+     </main>
 diff --git a/web/pages/landing/landing-page.tsx b/web/pages/landing/landing-page.tsx
 index 08078d9..7d19a4e 100644
 --- a/web/pages/landing/landing-page.tsx
@@ -15772,928 +15442,394 @@ index 6370463..0000000
 -  )
 -}
 diff --git a/web/pages/workspace/console-panel.tsx b/web/pages/workspace/console-panel.tsx
-deleted file mode 100644
-index 4d32287..0000000
+index 4d32287..4130a96 100644
 --- a/web/pages/workspace/console-panel.tsx
-+++ /dev/null
-@@ -1,246 +0,0 @@
--import {
--  bottomTab,
--  output,
--  ownTests,
--  panelHeight,
--  rawOpen,
--  setPanelResizer,
--} from '/web/pages/workspace/workspace-state.ts'
--import {
--  ChevronDown,
--  ChevronRight,
--  CircleCheck,
--  CircleX,
--  FlaskConical,
--  PackageX,
--  Scissors,
--  Terminal,
--  TimerOff,
--} from '/web/assets/icons.tsx'
++++ b/web/pages/workspace/console-panel.tsx
+@@ -17,7 +17,6 @@ import {
+   Terminal,
+   TimerOff,
+ } from '/web/assets/icons.tsx'
 -import { t } from '/web/lib/i18n.ts'
--
--// dark terminal in both themes (fixed values of the prototype)
--const C = {
--  bg: 'oklch(0.17 0.018 278)',
--  line: 'oklch(0.26 0.02 278)',
--  text: 'oklch(0.88 0.01 278)',
--  muted: 'oklch(0.62 0.015 278)',
--  ok: 'oklch(0.78 0.14 150)',
--  warn: 'oklch(0.83 0.13 80)',
--  err: 'oklch(0.73 0.16 25)',
--  str: 'oklch(0.8 0.1 55)',
--  link: 'oklch(0.78 0.12 268)',
--  raw: 'oklch(0.14 0.015 278)',
--}
--
--const statusIcons = {
--  'circle-check': CircleCheck,
--  'timer-off': TimerOff,
--  'scissors': Scissors,
--  'package-x': PackageX,
--  'circle-x': CircleX,
--} as const
--
--const toneColor = { ok: C.ok, warn: C.warn, error: C.err }
--
--/** "201 { alias: "promo" }" with string literals colored */
--const Colored = ({ text }: { text: string }) => (
--  <>
--    {text.split(/("(?:[^"\\]|\\.)*")/).map((part, i) =>
--      part.startsWith('"')
--        ? <span key={i} style={{ color: C.str }}>{part}</span>
--        : part
--    )}
--  </>
--)
--
--const Empty = ({ children }: { children: preact.ComponentChildren }) => (
--  <div tw='font-main text-[12.5px]' style={{ color: C.muted }}>
--    {children}
--  </div>
--)
--
--const Output = () => {
--  if (!output.value) {
--    return (
--      <Empty>
+ 
+ // dark terminal in both themes (fixed values of the prototype)
+ const C = {
+@@ -64,10 +63,7 @@ const Output = () => {
+   if (!output.value) {
+     return (
+       <Empty>
 -        {t(
 -          '« Exécuter » lance playground.ts dans un bac à sable : 10 s maximum, sans réseau.',
 -          '“Run” starts playground.ts in a sandbox: 10 s at most, no network.',
 -        )}
--      </Empty>
--    )
--  }
--  const { command, lines, status } = output.value
--  const Icon = statusIcons[status.icon as keyof typeof statusIcons] ||
--    CircleCheck
--  return (
--    <>
--      <div style={{ color: C.muted }}>{command}</div>
--      {lines.map((l, i) => (
--        <div
--          key={i}
--          style={{
--            color: l.tone === 'muted'
--              ? C.muted
--              : l.tone === 'error' || l.tone === 'indent-error'
--              ? C.err
--              : undefined,
--            paddingLeft: l.tone === 'indent-error' ? '24px' : undefined,
--          }}
--        >
--          <Colored text={l.text} />
--        </div>
--      ))}
--      <div
--        tw='mt-1.5 flex items-start gap-1.5 font-main text-[12.5px]'
--        style={{ color: toneColor[status.tone] }}
--      >
--        <Icon tw='w-3.5 h-3.5 flex-none mt-0.5' />
--        {status.text}
--      </div>
--    </>
--  )
--}
--
--const OwnTests = () => {
--  const own = ownTests.value
--  if (!own) {
--    return (
--      <Empty>
++        {'“Run” starts playground.ts in a sandbox: 10 s at most, no network.'}
+       </Empty>
+     )
+   }
+@@ -108,19 +104,14 @@ const OwnTests = () => {
+   if (!own) {
+     return (
+       <Empty>
 -        {t(
 -          '« Mes tests » lance deno test src/.',
 -          '“My tests” runs deno test src/.',
 -        )}
--      </Empty>
--    )
--  }
--  return (
--    <>
--      <div tw='mb-1' style={{ color: C.muted }}>
++        {'“My tests” runs deno test src/.'}
+       </Empty>
+     )
+   }
+   return (
+     <>
+       <div tw='mb-1' style={{ color: C.muted }}>
 -        $ deno test src/ · {own.passed}{' '}
 -        {t(`réussi${own.passed > 1 ? 's' : ''}`, 'passed')} · {own.failed}{' '}
 -        {t(`échoué${own.failed > 1 ? 's' : ''}`, 'failed')}
--      </div>
--      {own.tests.map((test) => {
--        const Icon = test.ok ? CircleCheck : CircleX
--        const color = test.ok ? C.ok : C.err
--        return (
--          <div key={test.name} tw='flex items-center gap-2'>
--            <Icon tw='w-[13px] h-[13px] flex-none' style={{ color }} />
--            <span tw='w-[52px] font-main text-[11.5px]' style={{ color }}>
++        $ deno test src/ · {own.passed} passed · {own.failed} {'failed'}
+       </div>
+       {own.tests.map((test) => {
+         const Icon = test.ok ? CircleCheck : CircleX
+@@ -129,7 +120,7 @@ const OwnTests = () => {
+           <div key={test.name} tw='flex items-center gap-2'>
+             <Icon tw='w-[13px] h-[13px] flex-none' style={{ color }} />
+             <span tw='w-[52px] font-main text-[11.5px]' style={{ color }}>
 -              {test.ok ? t('Réussi', 'Passed') : t('Échoué', 'Failed')}
--            </span>
--            <span tw='flex-1'>{test.name}</span>
--            <span style={{ color: C.muted }}>{test.duration}</span>
--          </div>
--        )
--      })}
--      <button
--        type='button'
--        onClick={() => rawOpen.value = !rawOpen.value}
--        aria-expanded={rawOpen.value}
--        tw='mt-2 inline-flex items-center gap-1 font-main font-medium text-[12px] cursor-pointer'
--        style={{ color: C.link }}
--      >
--        {rawOpen.value
--          ? <ChevronDown tw='w-[13px] h-[13px]' />
--          : <ChevronRight tw='w-[13px] h-[13px]' />}
++              {test.ok ? 'Passed' : 'Failed'}
+             </span>
+             <span tw='flex-1'>{test.name}</span>
+             <span style={{ color: C.muted }}>{test.duration}</span>
+@@ -146,7 +137,7 @@ const OwnTests = () => {
+         {rawOpen.value
+           ? <ChevronDown tw='w-[13px] h-[13px]' />
+           : <ChevronRight tw='w-[13px] h-[13px]' />}
 -        {t('Sortie brute', 'Raw output')}
--      </button>
--      {rawOpen.value && (
--        <pre
--          tw='mt-1.5 mb-0 px-2.5 py-2 rounded-md whitespace-pre-wrap font-mono'
--          style={{ background: C.raw, color: 'oklch(0.75 0.015 278)' }}
--        >
--          {own.raw}
--        </pre>
--      )}
--    </>
--  )
--}
--
--const TabButton = (
--  { on, onClick, children }: {
--    on: boolean
--    onClick: () => void
--    children: preact.ComponentChildren
--  },
--) => (
--  <button
--    type='button'
--    role='tab'
--    aria-selected={on}
--    onClick={onClick}
--    tw='inline-flex items-center gap-1.5 h-[26px] px-2.5 rounded-md font-main text-[12.5px] font-medium cursor-pointer'
--    style={{
--      background: on ? C.line : 'transparent',
--      color: on ? 'oklch(0.93 0.008 278)' : 'oklch(0.65 0.015 278)',
--    }}
--  >
--    {children}
--  </button>
--)
--
--/** Bottom panel of C2: read-only terminal, no input possible */
--export const ConsolePanel = () => (
--  <>
--    <div
--      ref={setPanelResizer}
--      role='separator'
--      aria-orientation='horizontal'
++        {'Raw output'}
+       </button>
+       {rawOpen.value && (
+         <pre
+@@ -189,7 +180,7 @@ export const ConsolePanel = () => (
+       ref={setPanelResizer}
+       role='separator'
+       aria-orientation='horizontal'
 -      aria-label={t('Redimensionner le panneau', 'Resize the panel')}
--      tw='h-[5px] flex-none cursor-row-resize border-t border-border-primary'
--      style={{ background: C.bg, touchAction: 'none' }}
--    />
--    <section
--      aria-label='Console'
--      tw='flex-none flex flex-col'
--      style={{
--        height: `${panelHeight.value}px`,
--        background: C.bg,
--        color: C.text,
--      }}
--    >
--      <div
--        role='tablist'
--        tw='h-[34px] flex-none flex items-center gap-0.5 px-2.5'
--        style={{ borderBottom: `1px solid ${C.line}` }}
--      >
--        <TabButton
--          on={bottomTab.value === 'out'}
--          onClick={() => bottomTab.value = 'out'}
--        >
--          <Terminal tw='w-[13px] h-[13px]' />
++      aria-label='Resize the panel'
+       tw='h-[5px] flex-none cursor-row-resize border-t border-border-primary'
+       style={{ background: C.bg, touchAction: 'none' }}
+     />
+@@ -212,14 +203,14 @@ export const ConsolePanel = () => (
+           onClick={() => bottomTab.value = 'out'}
+         >
+           <Terminal tw='w-[13px] h-[13px]' />
 -          {t('Sortie', 'Output')}
--        </TabButton>
--        <TabButton
--          on={bottomTab.value === 'mine'}
--          onClick={() => bottomTab.value = 'mine'}
--        >
--          <FlaskConical tw='w-[13px] h-[13px]' />
++          {'Output'}
+         </TabButton>
+         <TabButton
+           on={bottomTab.value === 'mine'}
+           onClick={() => bottomTab.value = 'mine'}
+         >
+           <FlaskConical tw='w-[13px] h-[13px]' />
 -          {t('Mes tests', 'My tests')}
--          {ownTests.value && (
--            <span
--              tw='font-mono text-[11px]'
--              style={{ color: ownTests.value.failed ? C.err : C.ok }}
--            >
--              {ownTests.value.passed}/
--              {ownTests.value.passed + ownTests.value.failed}
--            </span>
--          )}
--        </TabButton>
--        <span tw='flex-1' />
--        <span tw='font-main text-[11.5px]' style={{ color: C.muted }}>
++          {'My tests'}
+           {ownTests.value && (
+             <span
+               tw='font-mono text-[11px]'
+@@ -232,7 +223,7 @@ export const ConsolePanel = () => (
+         </TabButton>
+         <span tw='flex-1' />
+         <span tw='font-main text-[11.5px]' style={{ color: C.muted }}>
 -          {t('Lecture seule', 'Read only')}
--        </span>
--      </div>
--      <div
--        role='log'
--        tw='flex-1 min-h-0 overflow-auto px-4 py-2.5 font-mono text-[12.5px] leading-[1.65]'
--      >
--        {bottomTab.value === 'out' ? <Output /> : <OwnTests />}
--      </div>
--    </section>
--  </>
--)
++          {'Read only'}
+         </span>
+       </div>
+       <div
 diff --git a/web/pages/workspace/editor-panel.tsx b/web/pages/workspace/editor-panel.tsx
-deleted file mode 100644
-index 2e01fc4..0000000
+index 2e01fc4..232ab38 100644
 --- a/web/pages/workspace/editor-panel.tsx
-+++ /dev/null
-@@ -1,223 +0,0 @@
--import { computed, effect, signal } from '@preact/signals'
--import { CodeJar } from '/web/vendor/codejar/codejar.js'
--import {
--  highlightCode,
--  highlightProblems,
--  setupTokenHighlights,
--} from '/web/lib/code-highlight.ts'
--import {
--  activeFile,
--  closeTab,
--  files,
--  isDirty,
--  openFile,
--  openTabs,
--  problemsOf,
--  updateFile,
--} from '/web/pages/workspace/workspace-state.ts'
--import { FileIcon } from '/web/pages/workspace/file-explorer.tsx'
--import { CircleX, X } from '/web/assets/icons.tsx'
++++ b/web/pages/workspace/editor-panel.tsx
+@@ -17,7 +17,6 @@ import {
+ } from '/web/pages/workspace/workspace-state.ts'
+ import { FileIcon } from '/web/pages/workspace/file-explorer.tsx'
+ import { CircleX, X } from '/web/assets/icons.tsx'
 -import { t } from '/web/lib/i18n.ts'
--
--/* ---------- CodeJar, wired like tournament's editor-state.ts ---------- */
--
--const editorElem = signal<HTMLDivElement | null>(null)
--const setEditorElem = (elem: HTMLDivElement | null) => {
--  editorElem.value = elem
--}
--
--const highlight = (el: HTMLElement) => {
--  const file = activeFile.peek() ?? ''
--  const code = el.textContent ?? ''
--  highlightCode(el, code, file)
--  // last deno check of the server, refreshed shortly after typing
--  highlightProblems(el, code, problemsOf(file))
--}
--
--const editor = computed(() => {
--  if (editorElem.value === null) return null
--  setupTokenHighlights()
--  const jar = CodeJar(editorElem.value, highlight, {
--    tab: '  ',
--    indentOn: /[(\[{]$/,
--    spellcheck: false,
--    catchTab: true,
--    preserveIdent: true,
--    addClosing: true,
--    history: true,
--  })
--  // CodeJar sets overflow-y: auto; the parent already scrolls with the
--  // line numbers, so a second scrollbar would appear inside the editor
--  editorElem.value.style.overflowY = 'visible'
--  jar.onUpdate((code: string) => {
--    const file = activeFile.peek()
--    file && updateFile(file, code)
--  })
--  return jar
--})
--
--effect(() => {
--  const current = editor.value
--  return () => current?.destroy()
--})
--
--// switching tabs, or files replaced from outside (the example solution of the
--// guided demo), loads the file in the editor; typing leaves it as it is
--effect(() => {
--  const jar = editor.value
--  const file = activeFile.value
--  if (!jar || !file) return
--  const code = files.value[file] ?? ''
--  if (jar.toString() !== code) jar.updateCode(code)
--})
--
--// a new deno check result: underline the problems of the open file
--effect(() => {
--  const el = editorElem.value
--  const found = problemsOf(activeFile.value)
--  if (el && editor.value) highlightProblems(el, el.textContent ?? '', found)
--})
--
--const lineCount = computed(() =>
--  (files.value[activeFile.value ?? ''] ?? '').split('\n').length
--)
--
--const problemOpen = signal(true)
--
--/* ---------- UI ---------- */
--
--const Tabs = () => (
--  <div
--    class='no-scrollbar'
--    tw='h-9 flex-none flex bg-surface-sunken border-b border-border-primary overflow-x-auto overflow-y-hidden'
--  >
--    {openTabs.value.map((path) => {
--      const on = path === activeFile.value
--      const name = path.split('/').pop()
--      return (
--        <div
--          key={path}
--          tw={[
--            'flex items-center gap-2 pl-3 pr-2 text-[12.5px] whitespace-nowrap border-r border-border-primary',
--            on
--              ? 'bg-code-bg text-content-primary shadow-[inset_0_2px_0_var(--color-accent)] -mb-px'
--              : 'text-content-secondary',
--          ]}
--        >
--          <button
--            type='button'
--            onClick={() => openFile(path)}
--            tw='flex items-center gap-1.5 cursor-pointer'
--          >
--            <FileIcon path={path} />
--            {name}
--          </button>
--          {isDirty(path) && (
--            <span
+ 
+ /* ---------- CodeJar, wired like tournament's editor-state.ts ---------- */
+ 
+@@ -114,13 +113,13 @@ const Tabs = () => (
+           </button>
+           {isDirty(path) && (
+             <span
 -              title={t('Modification non enregistrée', 'Unsaved change')}
--              tw='w-[7px] h-[7px] rounded-full bg-content-secondary'
--            />
--          )}
--          <button
--            type='button'
++              title='Unsaved change'
+               tw='w-[7px] h-[7px] rounded-full bg-content-secondary'
+             />
+           )}
+           <button
+             type='button'
 -            aria-label={t(`Fermer l’onglet ${name}`, `Close the ${name} tab`)}
--            onClick={() => closeTab(path)}
--            tw='w-[18px] h-[18px] rounded inline-flex items-center justify-center text-content-tertiary hover:bg-surface-hover hover:text-content-primary cursor-pointer'
--          >
--            <X tw='w-3 h-3' />
--          </button>
--        </div>
--      )
--    })}
--  </div>
--)
--
--const ProblemButton = () => {
--  const list = problemsOf(activeFile.value)
--  if (!list.length) return null
--  return (
--    <button
--      type='button'
--      onClick={() => problemOpen.value = !problemOpen.value}
--      aria-expanded={problemOpen.value}
--      tw='inline-flex items-center gap-1 font-main font-medium text-[11.5px] text-err cursor-pointer'
--    >
--      <CircleX tw='w-[13px] h-[13px]' />
++            aria-label={`Close the ${name} tab`}
+             onClick={() => closeTab(path)}
+             tw='w-[18px] h-[18px] rounded inline-flex items-center justify-center text-content-tertiary hover:bg-surface-hover hover:text-content-primary cursor-pointer'
+           >
+@@ -143,10 +142,7 @@ const ProblemButton = () => {
+       tw='inline-flex items-center gap-1 font-main font-medium text-[11.5px] text-err cursor-pointer'
+     >
+       <CircleX tw='w-[13px] h-[13px]' />
 -      {list.length} {t(
 -        `problème${list.length > 1 ? 's' : ''}`,
 -        `problem${list.length > 1 ? 's' : ''}`,
 -      )}
--    </button>
--  )
--}
--
--const ProblemTooltip = () => {
--  const file = activeFile.value
--  const [p] = problemsOf(file)
--  if (!p || !problemOpen.value) return null
--  return (
--    <div
--      role='tooltip'
--      tw='absolute right-4 top-2 w-[470px] max-w-[calc(100%-32px)] bg-surface-elevated border border-border-strong rounded-md shadow-[var(--shadow-lg)] text-[12.5px] z-10'
--    >
--      <div tw='flex gap-2 px-3 py-[9px] border-b border-border-primary'>
--        <CircleX tw='w-[15px] h-[15px] flex-none mt-px text-err' />
--        <div tw='font-mono text-[12px] leading-[1.5]'>
--          {p.message}
--          <span tw='block text-content-tertiary'>
--            {file?.split('/').pop()}({p.line},{p.column}) · {p.code}
--          </span>
--        </div>
--      </div>
--    </div>
--  )
--}
--
--/** Center of C2: tabs, breadcrumb, CodeJar editor with line numbers */
--export const EditorPanel = () => {
--  const file = activeFile.value
--  return (
--    <section tw='flex-1 min-w-0 flex flex-col bg-code-bg'>
--      <Tabs />
--      {file
--        ? (
--          <>
--            <div tw='h-[26px] flex-none flex items-center gap-1.5 px-4 font-mono text-[12px] text-content-tertiary'>
--              {file.split('/').join('  ›  ')}
--              <span tw='flex-1' />
--              <ProblemButton />
--            </div>
--            <div tw='relative flex-1 min-h-0'>
--              <div tw='absolute inset-0 overflow-auto flex font-mono text-[12.5px] leading-[20px]'>
--                <div
--                  aria-hidden
--                  tw='flex-none w-[52px] pr-[18px] pt-1.5 text-right text-code-ln select-none'
--                >
--                  {Array.from(
--                    { length: lineCount.value },
--                    (_, i) => <div key={i}>{i + 1}</div>,
--                  )}
--                </div>
--                <div
--                  ref={setEditorElem}
++      {list.length} {`problem${list.length > 1 ? 's' : ''}`}
+     </button>
+   )
+ }
+@@ -200,7 +196,7 @@ export const EditorPanel = () => {
+                 </div>
+                 <div
+                   ref={setEditorElem}
 -                  aria-label={t(`Éditeur : ${file}`, `Editor: ${file}`)}
--                  tw='flex-1 min-w-0 pt-1.5 pr-4 text-code-text focus:outline-none'
--                  style={{
--                    whiteSpace: 'pre',
--                    tabSize: 2,
--                    caretColor: 'var(--color-accent)',
--                  }}
--                />
--              </div>
--              <ProblemTooltip />
--            </div>
--          </>
--        )
--        : (
--          <div tw='flex-1 flex items-center justify-center text-content-tertiary text-[13px]'>
--            Ouvrez un fichier depuis la colonne Fichiers.
--          </div>
--        )}
--    </section>
--  )
--}
++                  aria-label={`Editor: ${file}`}
+                   tw='flex-1 min-w-0 pt-1.5 pr-4 text-code-text focus:outline-none'
+                   style={{
+                     whiteSpace: 'pre',
 diff --git a/web/pages/workspace/file-explorer.tsx b/web/pages/workspace/file-explorer.tsx
-deleted file mode 100644
-index b182d8f..0000000
+index b182d8f..cdb5e52 100644
 --- a/web/pages/workspace/file-explorer.tsx
-+++ /dev/null
-@@ -1,155 +0,0 @@
++++ b/web/pages/workspace/file-explorer.tsx
+@@ -1,4 +1,4 @@
 -import { useEffect, useRef } from 'npm:preact/hooks'
--import { signal } from '@preact/signals'
--import {
--  activeFile,
--  createFile,
--  isDirty,
--  openFile,
--  rootFiles,
--  srcFiles,
--} from '/web/pages/workspace/workspace-state.ts'
--import {
--  Braces,
--  ChevronDown,
--  ChevronRight,
--  FileCode,
--  FileText,
--  FlaskConical,
--  Folder,
--  FolderOpen,
--  Plus,
--} from '/web/assets/icons.tsx'
++import { useEffect, useRef } from 'preact/hooks'
+ import { signal } from '@preact/signals'
+ import {
+   activeFile,
+@@ -19,7 +19,6 @@ import {
+   FolderOpen,
+   Plus,
+ } from '/web/assets/icons.tsx'
 -import { t } from '/web/lib/i18n.ts'
--
--/** Icon by file type: json, markdown, test, code */
--export const FileIcon = ({ path }: { path: string }) => {
--  if (path.endsWith('.json')) {
--    return <Braces tw='w-[15px] h-[15px] flex-none text-code-fn' />
--  }
--  if (path.endsWith('.md')) {
--    return <FileText tw='w-[15px] h-[15px] flex-none text-content-tertiary' />
--  }
--  if (path.endsWith('_test.ts')) {
--    return <FlaskConical tw='w-[15px] h-[15px] flex-none text-code-kw' />
--  }
--  return <FileCode tw='w-[15px] h-[15px] flex-none text-code-kw' />
--}
--
--const creating = signal(false)
--const newName = signal('')
--
--const FileRow = ({ path, indent }: { path: string; indent: number }) => {
--  const on = path === activeFile.value
--  return (
--    <button
--      type='button'
--      onClick={() => openFile(path)}
--      aria-current={on ? 'true' : undefined}
--      tw={[
--        'w-full flex items-center gap-[7px] h-7 pr-2 rounded-md text-[13px] cursor-pointer',
--        on
--          ? 'bg-accent-soft text-accent-text font-medium'
--          : 'text-content-primary hover:bg-surface-hover',
--      ]}
--      style={{ paddingLeft: `${indent}px` }}
--    >
--      <FileIcon path={path} />
--      <span tw='flex-1 text-left truncate'>{path.split('/').pop()}</span>
--      {isDirty(path) && (
--        <span
+ 
+ /** Icon by file type: json, markdown, test, code */
+ export const FileIcon = ({ path }: { path: string }) => {
+@@ -57,8 +56,8 @@ const FileRow = ({ path, indent }: { path: string; indent: number }) => {
+       <span tw='flex-1 text-left truncate'>{path.split('/').pop()}</span>
+       {isDirty(path) && (
+         <span
 -          title={t('Modification non enregistrée', 'Unsaved change')}
 -          aria-label={t('Modification non enregistrée', 'Unsaved change')}
--          tw='w-[7px] h-[7px] flex-none rounded-full bg-content-secondary'
--        />
--      )}
--    </button>
--  )
--}
--
--const srcOpen = signal(true)
--
--const NewFileInput = () => {
--  const root = useRef<HTMLDivElement>(null)
--  const input = useRef<HTMLInputElement>(null)
--  useEffect(() => {
--    input.current?.focus()
--    // any click outside cancels the creation, like in VS Code
--    const onDown = (e: PointerEvent) =>
--      root.current?.contains(e.target as Node) || (creating.value = false)
--    document.addEventListener('pointerdown', onDown, true)
--    return () => document.removeEventListener('pointerdown', onDown, true)
--  }, [])
--  return (
--    <div ref={root} tw='flex items-center gap-1 h-7 pl-[30px] pr-1.5'>
--      <FileCode tw='w-[15px] h-[15px] flex-none text-code-kw' />
--      <div tw='flex-1 flex items-center h-6 px-1.5 rounded-[5px] border border-accent bg-code-bg font-mono text-[12px]'>
--        <input
--          ref={input}
--          value={newName.value}
++          title='Unsaved change'
++          aria-label='Unsaved change'
+           tw='w-[7px] h-[7px] flex-none rounded-full bg-content-secondary'
+         />
+       )}
+@@ -86,8 +85,8 @@ const NewFileInput = () => {
+         <input
+           ref={input}
+           value={newName.value}
 -          placeholder={t('nom', 'name')}
 -          aria-label={t('Nom du nouveau fichier', 'Name of the new file')}
--          onInput={(e) =>
--            newName.value = e.currentTarget.value.replace(/[^\w-]/g, '')}
--          onKeyDown={(e) => {
--            if (e.key === 'Escape') creating.value = false
--            if (e.key !== 'Enter') return
--            if (createFile(newName.value)) creating.value = false
--          }}
--          tw='flex-1 min-w-0 bg-transparent border-0 p-0 font-mono text-[12px] focus:outline-none'
--        />
--        <span tw='text-content-tertiary'>.ts</span>
--      </div>
--    </div>
--  )
--}
--
--/** Left column of C2: no folders, no rename, no delete */
--export const FileExplorer = () => (
--  <aside
++          placeholder='name'
++          aria-label='Name of the new file'
+           onInput={(e) =>
+             newName.value = e.currentTarget.value.replace(/[^\w-]/g, '')}
+           onKeyDown={(e) => {
+@@ -106,11 +105,11 @@ const NewFileInput = () => {
+ /** Left column of C2: no folders, no rename, no delete */
+ export const FileExplorer = () => (
+   <aside
 -    aria-label={t('Fichiers', 'Files')}
--    tw='w-60 flex-none border-r border-border-primary bg-surface-elevated flex flex-col'
--  >
--    <div tw='h-9 flex items-center justify-between pl-3.5 pr-2 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-content-tertiary'>
++    aria-label='Files'
+     tw='w-60 flex-none border-r border-border-primary bg-surface-elevated flex flex-col'
+   >
+     <div tw='h-9 flex items-center justify-between pl-3.5 pr-2 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-content-tertiary'>
 -      {t('Fichiers', 'Files')}
--      <button
--        type='button'
--        onClick={() => {
--          newName.value = ''
--          srcOpen.value = true // new files go to src/
--          creating.value = true
--        }}
--        tw='inline-flex items-center gap-1 h-6 px-2 rounded-md font-main font-medium normal-case tracking-normal text-[12px] text-content-secondary hover:bg-surface-hover hover:text-content-primary cursor-pointer'
--      >
--        <Plus tw='w-[13px] h-[13px]' />
++      {'Files'}
+       <button
+         type='button'
+         onClick={() => {
+@@ -121,7 +120,7 @@ export const FileExplorer = () => (
+         tw='inline-flex items-center gap-1 h-6 px-2 rounded-md font-main font-medium normal-case tracking-normal text-[12px] text-content-secondary hover:bg-surface-hover hover:text-content-primary cursor-pointer'
+       >
+         <Plus tw='w-[13px] h-[13px]' />
 -        {t('Nouveau fichier', 'New file')}
--      </button>
--    </div>
--    <div tw='px-1.5 py-0.5 flex flex-col gap-px'>
--      <button
--        type='button'
--        aria-expanded={srcOpen.value}
--        onClick={() => srcOpen.value = !srcOpen.value}
--        tw='w-full flex items-center gap-1.5 h-[26px] px-2 rounded-md text-[13px] text-content-secondary hover:bg-surface-hover cursor-pointer'
--      >
--        {srcOpen.value
--          ? <ChevronDown tw='w-[13px] h-[13px]' />
--          : <ChevronRight tw='w-[13px] h-[13px]' />}
--        {srcOpen.value
--          ? <FolderOpen tw='w-[15px] h-[15px] text-content-tertiary' />
--          : <Folder tw='w-[15px] h-[15px] text-content-tertiary' />}
--        src
--      </button>
--      {srcOpen.value && creating.value && <NewFileInput />}
--      {srcOpen.value &&
--        srcFiles.value.map((p) => <FileRow key={p} path={p} indent={30} />)}
--      {rootFiles.value.map((p) => <FileRow key={p} path={p} indent={12} />)}
--    </div>
--    <span tw='flex-1' />
--    <p tw='m-0 px-3.5 py-2.5 text-[11.5px] text-content-tertiary border-t border-border-primary'>
++        {'New file'}
+       </button>
+     </div>
+     <div tw='px-1.5 py-0.5 flex flex-col gap-px'>
+@@ -146,10 +145,7 @@ export const FileExplorer = () => (
+     </div>
+     <span tw='flex-1' />
+     <p tw='m-0 px-3.5 py-2.5 text-[11.5px] text-content-tertiary border-t border-border-primary'>
 -      {t(
 -        'Nouveaux fichiers créés dans src/, en .ts.',
 -        'New files are created in src/, as .ts.',
 -      )}
--    </p>
--  </aside>
--)
++      {'New files are created in src/, as .ts.'}
+     </p>
+   </aside>
+ )
 diff --git a/web/pages/workspace/side-panel.tsx b/web/pages/workspace/side-panel.tsx
-deleted file mode 100644
-index 6f4bd1a..0000000
+index 6f4bd1a..985b93a 100644
 --- a/web/pages/workspace/side-panel.tsx
-+++ /dev/null
-@@ -1,256 +0,0 @@
--import { me } from '/web/lib/candidate-store.ts'
--import {
--  evalResults,
--  lastEvalAgo,
--  rightOpen,
--  rightTab,
--  rightWidth,
--  running,
--  setSideResizer,
--} from '/web/pages/workspace/workspace-state.ts'
--import { TestResultList, TestResultRow } from '/web/ui/test-result.tsx'
--import {
--  CircleCheck,
--  CircleX,
--  EyeOff,
--  ListChecks,
--  PanelRightClose,
--  PanelRightOpen,
--} from '/web/assets/icons.tsx'
++++ b/web/pages/workspace/side-panel.tsx
+@@ -17,7 +17,6 @@ import {
+   PanelRightClose,
+   PanelRightOpen,
+ } from '/web/assets/icons.tsx'
 -import { t } from '/web/lib/i18n.ts'
--
--const methodColor = {
--  GET: 'text-code-kw',
--  POST: 'text-code-str',
--  DELETE: 'text-err',
--} as const
--
--const Heading = ({ children }: { children: string }) => (
--  <h3 tw='m-0 mb-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-content-tertiary'>
--    {children}
--  </h3>
--)
--
--/** "Énoncé": the requirements without their "Pourquoi" (the statement
-- * holds the rules the tests check: status codes, business rules) */
--const Brief = () => {
--  const spec = me.value?.assessment
--  if (!spec) return null
--  return (
--    <div tw='px-[18px] pt-4 pb-6 flex flex-col gap-[18px] text-[13px] leading-[1.55]'>
--      <div tw='flex gap-2 px-[11px] py-[9px] rounded-lg bg-accent-soft text-accent-text text-[12.5px] font-medium'>
--        <CircleCheck tw='w-[15px] h-[15px] flex-none mt-px' />
+ 
+ const methodColor = {
+   GET: 'text-code-kw',
+@@ -40,21 +39,18 @@ const Brief = () => {
+     <div tw='px-[18px] pt-4 pb-6 flex flex-col gap-[18px] text-[13px] leading-[1.55]'>
+       <div tw='flex gap-2 px-[11px] py-[9px] rounded-lg bg-accent-soft text-accent-text text-[12.5px] font-medium'>
+         <CircleCheck tw='w-[15px] h-[15px] flex-none mt-px' />
 -        {t(
 -          'IA autorisée pendant cette phase : assistants, documentation et Internet.',
 -          'AI allowed during this phase: assistants, documentation and the Internet.',
 -        )}
--      </div>
--      <div>
++        {'AI allowed during this phase: assistants, documentation and the Internet.'}
+       </div>
+       <div>
 -        <Heading>{t('Contexte', 'Context')}</Heading>
--        <p tw='m-0 text-content-secondary'>{spec.candidateBrief.context}</p>
--      </div>
--      <div>
++        <Heading>Context</Heading>
+         <p tw='m-0 text-content-secondary'>{spec.candidateBrief.context}</p>
+       </div>
+       <div>
 -        <Heading>{t('Mission', 'Task')}</Heading>
--        <p tw='m-0 text-content-secondary'>{spec.candidateBrief.mission}</p>
--      </div>
--      <div>
++        <Heading>Task</Heading>
+         <p tw='m-0 text-content-secondary'>{spec.candidateBrief.mission}</p>
+       </div>
+       <div>
 -        <Heading>{t('Exigences', 'Requirements')}</Heading>
--        <ol tw='list-none m-0 p-0 flex flex-col gap-1.5'>
--          {spec.requirements.map((r) => (
--            <li key={r.id} tw='flex gap-2.5'>
--              <span tw='w-[22px] flex-none pt-px font-mono font-bold text-[12px] text-content-tertiary'>
--                {r.id}
--              </span>
--              <span>
--                <span tw='font-medium'>{r.title}.</span>{' '}
--                <span tw='text-content-secondary'>{r.statement}</span>
--              </span>
--            </li>
--          ))}
--        </ol>
--      </div>
--      <div>
++        <Heading>Requirements</Heading>
+         <ol tw='list-none m-0 p-0 flex flex-col gap-1.5'>
+           {spec.requirements.map((r) => (
+             <li key={r.id} tw='flex gap-2.5'>
+@@ -70,7 +66,7 @@ const Brief = () => {
+         </ol>
+       </div>
+       <div>
 -        <Heading>{t('Contrat d’API', 'API contract')}</Heading>
--        <div tw='border border-border-primary rounded-lg overflow-hidden'>
--          {spec.routes.map((r) => (
--            <div
--              key={r.method + r.path}
--              tw='grid gap-x-2 gap-y-1 px-2.5 py-2 border-b border-border-primary last:border-b-0'
--              style={{ gridTemplateColumns: '62px 1fr' }}
--            >
--              <span
--                tw={[
--                  'font-mono font-bold text-[11.5px]',
--                  methodColor[r.method],
--                ]}
--              >
--                {r.method}
--              </span>
--              <span tw='font-mono text-[12px]'>{r.path}</span>
--              <span />
--              <span tw='text-[12px] text-content-secondary'>
--                {r.description} ·{' '}
--                <span tw='font-mono'>{r.codes.join(' · ')}</span>
--              </span>
--            </div>
--          ))}
--        </div>
--      </div>
--      <div>
++        <Heading>API contract</Heading>
+         <div tw='border border-border-primary rounded-lg overflow-hidden'>
+           {spec.routes.map((r) => (
+             <div
+@@ -97,7 +93,7 @@ const Brief = () => {
+         </div>
+       </div>
+       <div>
 -        <Heading>{t('Contraintes', 'Constraints')}</Heading>
--        <ul tw='m-0 pl-[18px] text-content-secondary flex flex-col gap-[3px]'>
--          {spec.constraints.map((c) => <li key={c}>{c}</li>)}
--        </ul>
--      </div>
--    </div>
--  )
--}
--
--/** "Tests d'évaluation": the public tests, the hidden ones run later */
--const EvalTests = () => {
--  const spec = me.value?.assessment
--  if (!spec) return null
--  const tests = spec.publicTests
--  const results = evalResults.value
--  const byId = new Map(results?.map((r) => [r.id, r]))
--  const passed = results?.filter((r) => r.passed).length ?? 0
--  return (
--    <div tw='px-3.5 pt-3.5 pb-6 flex flex-col gap-2.5'>
--      <div tw='flex items-center gap-2 text-[13px] flex-wrap'>
--        {!results
--          ? (
--            <>
--              <ListChecks tw='w-4 h-4 text-content-tertiary' />
--              <span tw='text-content-secondary'>
--                {running.value === 'eval'
++        <Heading>Constraints</Heading>
+         <ul tw='m-0 pl-[18px] text-content-secondary flex flex-col gap-[3px]'>
+           {spec.constraints.map((c) => <li key={c}>{c}</li>)}
+         </ul>
+@@ -123,11 +119,8 @@ const EvalTests = () => {
+               <ListChecks tw='w-4 h-4 text-content-tertiary' />
+               <span tw='text-content-secondary'>
+                 {running.value === 'eval'
 -                  ? t('Exécution des tests…', 'Running the tests…')
 -                  : t(
 -                    'Pas encore lancés : « Tests d’évaluation » dans la barre.',
 -                    'Not run yet: “Evaluation tests” in the bar.',
 -                  )}
--              </span>
--            </>
--          )
--          : (
--            <>
--              {passed === tests.length
--                ? <CircleCheck tw='w-4 h-4 text-ok' />
--                : <CircleX tw='w-4 h-4 text-err' />}
--              <span tw='font-semibold'>
++                  ? 'Running the tests…'
++                  : 'Not run yet: “Evaluation tests” in the bar.'}
+               </span>
+             </>
+           )
+@@ -137,10 +130,10 @@ const EvalTests = () => {
+                 ? <CircleCheck tw='w-4 h-4 text-ok' />
+                 : <CircleX tw='w-4 h-4 text-err' />}
+               <span tw='font-semibold'>
 -                {passed}/{tests.length} {t('réussis', 'passed')}
--              </span>
--              <span tw='text-content-tertiary'>
++                {passed}/{tests.length} {'passed'}
+               </span>
+               <span tw='text-content-tertiary'>
 -                · {t('dernier lancement', 'last run')} {lastEvalAgo.value}
--              </span>
--            </>
--          )}
--      </div>
--      <TestResultList>
--        {tests.map((t) => {
--          const r = byId.get(t.id)
--          return (
--            <TestResultRow
--              key={t.id}
--              id={t.id}
--              title={t.title}
--              visibility={t.visibility}
--              passed={r?.passed}
--              durationMs={r?.durationMs}
--              expected={r?.expected}
--              received={r?.received}
--              request={r?.request}
--            />
--          )
--        })}
--      </TestResultList>
--      <div tw='flex gap-2 px-[11px] py-[9px] rounded-lg bg-surface-sunken border border-border-primary text-content-secondary text-[12.5px]'>
--        <EyeOff tw='w-[15px] h-[15px] flex-none mt-px' />
++                · last run {lastEvalAgo.value}
+               </span>
+             </>
+           )}
+@@ -165,10 +158,7 @@ const EvalTests = () => {
+       </TestResultList>
+       <div tw='flex gap-2 px-[11px] py-[9px] rounded-lg bg-surface-sunken border border-border-primary text-content-secondary text-[12.5px]'>
+         <EyeOff tw='w-[15px] h-[15px] flex-none mt-px' />
 -        {t(
 -          `${spec.hiddenCount} tests cachés seront exécutés à la soumission.`,
 -          `${spec.hiddenCount} hidden tests will run on submission.`,
 -        )}
--      </div>
--    </div>
--  )
--}
--
--const tabTw = (on: boolean) => [
--  'h-10 px-2.5 -mb-px border-b-2 text-[13px] cursor-pointer',
--  on
--    ? 'border-accent text-content-primary font-semibold'
--    : 'border-transparent text-content-secondary font-medium hover:text-content-primary',
--]
--
--/** Right column of C2 (360 px, collapsible) */
--export const SidePanel = () => {
--  if (!rightOpen.value) {
--    return (
--      <aside tw='w-10 flex-none border-l border-border-primary bg-surface-elevated flex flex-col items-center pt-1.5'>
--        <button
--          type='button'
--          onClick={() => rightOpen.value = true}
++        {`${spec.hiddenCount} hidden tests will run on submission.`}
+       </div>
+     </div>
+   )
+@@ -189,8 +179,8 @@ export const SidePanel = () => {
+         <button
+           type='button'
+           onClick={() => rightOpen.value = true}
 -          aria-label={t('Déplier le panneau Énoncé', 'Open the Brief panel')}
 -          title={t('Énoncé et tests', 'Brief and tests')}
--          tw='btn btn-ghost w-7 h-7 px-0'
--        >
--          <PanelRightOpen tw='w-[15px] h-[15px]' />
--        </button>
--      </aside>
--    )
--  }
--  return (
--    <aside
--      tw='relative flex-none border-l border-border-primary bg-surface-elevated flex flex-col min-h-0'
--      style={{ width: `${rightWidth.value}px` }}
--    >
--      <div
--        ref={setSideResizer}
--        role='separator'
--        aria-orientation='vertical'
++          aria-label='Open the Brief panel'
++          title='Brief and tests'
+           tw='btn btn-ghost w-7 h-7 px-0'
+         >
+           <PanelRightOpen tw='w-[15px] h-[15px]' />
+@@ -207,11 +197,8 @@ export const SidePanel = () => {
+         ref={setSideResizer}
+         role='separator'
+         aria-orientation='vertical'
 -        aria-label={t(
 -          'Redimensionner le panneau Énoncé',
 -          'Resize the Brief panel',
 -        )}
 -        title={t('Redimensionner', 'Resize')}
--        tw='absolute -left-[3px] top-0 bottom-0 w-[6px] z-10 cursor-col-resize hover:bg-accent-soft'
--        style={{ touchAction: 'none' }}
--      />
--      <div
--        role='tablist'
--        tw='h-10 flex-none flex items-end gap-1 pl-3 pr-2 border-b border-border-primary'
--      >
--        <button
--          type='button'
--          role='tab'
--          aria-selected={rightTab.value === 'brief'}
--          onClick={() => rightTab.value = 'brief'}
--          tw={tabTw(rightTab.value === 'brief')}
--        >
++        aria-label='Resize the Brief panel'
++        title='Resize'
+         tw='absolute -left-[3px] top-0 bottom-0 w-[6px] z-10 cursor-col-resize hover:bg-accent-soft'
+         style={{ touchAction: 'none' }}
+       />
+@@ -226,7 +213,7 @@ export const SidePanel = () => {
+           onClick={() => rightTab.value = 'brief'}
+           tw={tabTw(rightTab.value === 'brief')}
+         >
 -          {t('Énoncé', 'Brief')}
--        </button>
--        <button
--          type='button'
--          role='tab'
--          aria-selected={rightTab.value === 'tests'}
--          onClick={() => rightTab.value = 'tests'}
--          tw={tabTw(rightTab.value === 'tests')}
--        >
++          {'Brief'}
+         </button>
+         <button
+           type='button'
+@@ -235,14 +222,14 @@ export const SidePanel = () => {
+           onClick={() => rightTab.value = 'tests'}
+           tw={tabTw(rightTab.value === 'tests')}
+         >
 -          {t('Tests d’évaluation', 'Evaluation tests')}
--        </button>
--        <span tw='flex-1' />
--        <button
--          type='button'
--          onClick={() => rightOpen.value = false}
++          {'Evaluation tests'}
+         </button>
+         <span tw='flex-1' />
+         <button
+           type='button'
+           onClick={() => rightOpen.value = false}
 -          aria-label={t('Replier le panneau', 'Collapse the panel')}
 -          title={t('Replier', 'Collapse')}
--          tw='btn btn-ghost w-7 h-7 px-0 self-center'
--        >
--          <PanelRightClose tw='w-[15px] h-[15px]' />
--        </button>
--      </div>
--      <div tw='flex-1 min-h-0 overflow-auto'>
--        {rightTab.value === 'brief' ? <Brief /> : <EvalTests />}
--      </div>
--    </aside>
--  )
--}
++          aria-label='Collapse the panel'
++          title='Collapse'
+           tw='btn btn-ghost w-7 h-7 px-0 self-center'
+         >
+           <PanelRightClose tw='w-[15px] h-[15px]' />
 diff --git a/web/pages/workspace/submit-dialog.tsx b/web/pages/workspace/submit-dialog.tsx
-deleted file mode 100644
-index df9fc76..0000000
+index df9fc76..112f5ec 100644
 --- a/web/pages/workspace/submit-dialog.tsx
-+++ /dev/null
-@@ -1,279 +0,0 @@
--import { paths } from '/web/paths.ts'
--import { signal } from '@preact/signals'
--import { A, navigate } from '/web/lib/router-signal.ts'
++++ b/web/pages/workspace/submit-dialog.tsx
+@@ -1,26 +1,16 @@
+ import { paths } from '/web/paths.ts'
+ import { signal } from '@preact/signals'
+ import { A, navigate } from '/web/lib/router-signal.ts'
 -import { submitBuild } from '/web/lib/candidate-store.ts'
--import {
--  evalResults,
--  files,
--  ownTests,
--} from '/web/pages/workspace/workspace-state.ts'
--import { notify } from '/web/ui/notifications.tsx'
++import { me, submitBuild } from '/web/lib/candidate-store.ts'
+ import {
+   evalResults,
+   files,
+   ownTests,
+ } from '/web/pages/workspace/workspace-state.ts'
+ import { notify } from '/web/ui/notifications.tsx'
 -import { demoCandidate } from '/fixtures/demo.ts'
--import { formatClock } from '/web/lib/format.ts'
--import { CloseButton, ModalDialog } from '/web/ui/dialog.tsx'
+ import { formatClock } from '/web/lib/format.ts'
+ import { CloseButton, ModalDialog } from '/web/ui/dialog.tsx'
 -import {
 -  ArrowRight,
 -  CircleCheck,
@@ -16704,47 +15840,55 @@ index df9fc76..0000000
 -} from '/web/assets/icons.tsx'
 -import { t, tv } from '/web/lib/i18n.ts'
 -import { demoMode } from '/web/lib/demo.ts'
--
--const TOOLS = [
--  'ChatGPT',
--  'Claude',
--  'GitHub Copilot',
--  'Gemini',
--  'Cursor',
++import { CircleCheck, Send, Timer, TimerOff } from '/web/assets/icons.tsx'
+ 
+ const TOOLS = [
+   'ChatGPT',
+@@ -28,19 +18,19 @@ const TOOLS = [
+   'GitHub Copilot',
+   'Gemini',
+   'Cursor',
 -  'Autre',
 -  'Aucun',
--] as const
--
--const tools = signal<string[]>([])
--const otherTool = signal('')
--
--const toggle = (tool: string) => {
++  'Other',
++  'None',
+ ] as const
+ 
+ const tools = signal<string[]>([])
+ const otherTool = signal('')
+ 
+ const toggle = (tool: string) => {
 -  if (tool === 'Aucun') {
 -    tools.value = tools.value.includes('Aucun') ? [] : ['Aucun']
--    return
--  }
++  if (tool === 'None') {
++    tools.value = tools.value.includes('None') ? [] : ['None']
+     return
+   }
 -  const list = tools.value.filter((name) => name !== 'Aucun')
--  tools.value = list.includes(tool)
--    ? list.filter((name) => name !== tool)
--    : [...list, tool]
--}
--
--const submitting = signal(false)
--
++  const list = tools.value.filter((name) => name !== 'None')
+   tools.value = list.includes(tool)
+     ? list.filter((name) => name !== tool)
+     : [...list, tool]
+@@ -48,13 +38,13 @@ const toggle = (tool: string) => {
+ 
+ const submitting = signal(false)
+ 
 -/** "Soumettre définitivement": the code is frozen, then C4 */
--export const submitDeclaration = async () => {
--  if (!tools.peek().length || submitting.peek()) return
--  submitting.value = true
--  try {
--    await submitBuild(tools.peek(), otherTool.peek() || undefined, files.peek())
++/** "Submit for good": the code is frozen, the interview is prepared */
+ export const submitDeclaration = async () => {
+   if (!tools.peek().length || submitting.peek()) return
+   submitting.value = true
+   try {
+     await submitBuild(tools.peek(), otherTool.peek() || undefined, files.peek())
 -    navigate({ href: paths.rules, params: { dialog: null } })
--  } catch (err) {
--    notify({ status: 'failure', description: (err as Error).message })
--  } finally {
--    submitting.value = false
--  }
--}
--
++    navigate({ href: paths.interview, params: { dialog: null } })
+   } catch (err) {
+     notify({ status: 'failure', description: (err as Error).message })
+   } finally {
+@@ -62,20 +52,6 @@ export const submitDeclaration = async () => {
+   }
+ }
+ 
 -/** guided demo: the AI tools of the demo candidate */
 -export const fillExampleTools = () =>
 -  tools.peek().length || (tools.value = [...demoCandidate.declaredAiTools])
@@ -16759,68 +15903,40 @@ index df9fc76..0000000
 -  submitDeclaration()
 -}
 -
--const Stat = (
--  { label, children, ok }: {
--    label: string
--    children: preact.ComponentChildren
--    ok?: boolean
--  },
--) => (
--  <div tw='px-3 py-2.5 border-r border-border-primary last:border-r-0'>
--    <div tw='text-[12px] text-content-tertiary'>{label}</div>
--    <div
--      tw={[
--        'flex items-center gap-1.5 font-mono font-bold text-[15px]',
--        ok ? 'text-ok' : 'text-content-primary',
--      ]}
--    >
--      {children}
--    </div>
--  </div>
--)
--
--/**
+ const Stat = (
+   { label, children, ok }: {
+     label: string
+@@ -97,7 +73,7 @@ const Stat = (
+ )
+ 
+ /**
 - * C3 — submission. When the time is up it opens by itself and cannot be
-- * closed: the code is already submitted, only the AI declaration remains.
-- */
--export const SubmitDialog = (
--  { remainingSec, expired }: { remainingSec: number; expired: boolean },
--) => {
--  const canSubmit = tools.value.length > 0 && !submitting.value
--  const results = evalResults.value
--  const evalPassed = results?.filter((r) => r.passed).length ?? 0
--  const own = ownTests.value
--  return (
--    <ModalDialog
--      id='submit'
--      closable={!expired}
--      bare
--      tw='w-[580px]'
--    >
--      <div tw='px-6 pt-5 flex gap-3 items-start'>
--        <span
--          tw={[
--            'w-9 h-9 flex-none rounded-[9px] inline-flex items-center justify-center',
--            expired
--              ? 'bg-warn-soft text-warn'
--              : 'bg-accent-soft text-accent-text',
--          ]}
--        >
--          {expired
--            ? <TimerOff tw='w-[18px] h-[18px]' />
--            : <Send tw='w-[18px] h-[18px]' />}
--        </span>
--        <div tw='flex-1'>
--          <h2 tw='m-0 font-main text-[17px] font-semibold tracking-[-0.01em]'>
--            {expired
++ * Submission. When the time is up it opens by itself and cannot be
+  * closed: the code is already submitted, only the AI declaration remains.
+  */
+ export const SubmitDialog = (
+@@ -107,6 +83,7 @@ export const SubmitDialog = (
+   const results = evalResults.value
+   const evalPassed = results?.filter((r) => r.passed).length ?? 0
+   const own = ownTests.value
++  const hidden = me.value?.assessment.hiddenCount ?? 0
+   return (
+     <ModalDialog
+       id='submit'
+@@ -130,29 +107,20 @@ export const SubmitDialog = (
+         <div tw='flex-1'>
+           <h2 tw='m-0 font-main text-[17px] font-semibold tracking-[-0.01em]'>
+             {expired
 -              ? t(
 -                'Temps écoulé : votre code a été soumis automatiquement.',
 -                'Time is up: your code was submitted automatically.',
 -              )
 -              : t('Soumettre votre solution ?', 'Submit your solution?')}
--          </h2>
--          <p tw='mt-1.5 mb-0 text-content-secondary text-[13.5px]'>
--            {expired
++              ? 'Time is up: your code was submitted automatically.'
++              : 'Submit your solution?'}
+           </h2>
+           <p tw='mt-1.5 mb-0 text-content-secondary text-[13.5px]'>
+             {expired
 -              ? t(
 -                'Les 3 tests cachés vont être exécutés, puis votre code sera analysé pour préparer vos 10 questions. Déclarez les outils IA utilisés pour continuer.',
 -                'The 3 hidden tests will run, then your code will be analysed to prepare your 10 questions. Declare the AI tools you used to continue.',
@@ -16829,88 +15945,84 @@ index df9fc76..0000000
 -                'Votre code sera figé. Les 3 tests cachés seront exécutés, puis votre code sera analysé pour préparer vos 10 questions.',
 -                'Your code will be frozen. The 3 hidden tests will run, then your code will be analysed to prepare your 10 questions.',
 -              )}
--          </p>
--        </div>
--        {!expired && <CloseButton dataTest='submit-close-btn' />}
--      </div>
--      <div tw='mx-6 mt-[18px] grid grid-cols-3 border border-border-primary rounded-lg overflow-hidden'>
--        <Stat
++              ? `The ${hidden} hidden tests will run, then you will talk with an AI interviewer about your code. Declare the AI tools you used to continue.`
++              : `Your code will be frozen. The ${hidden} hidden tests will run, then you will talk with an AI interviewer about your code.`}
+           </p>
+         </div>
+         {!expired && <CloseButton dataTest='submit-close-btn' />}
+       </div>
+       <div tw='mx-6 mt-[18px] grid grid-cols-3 border border-border-primary rounded-lg overflow-hidden'>
+         <Stat
 -          label={t('Tests d’évaluation', 'Evaluation tests')}
--          ok={!!results && evalPassed === results.length}
--        >
--          {results
--            ? (
--              <>
--                <CircleCheck tw='w-[15px] h-[15px]' />
--                {evalPassed}/{results.length}
--              </>
--            )
++          label='Evaluation tests'
+           ok={!!results && evalPassed === results.length}
+         >
+           {results
+@@ -162,9 +130,9 @@ export const SubmitDialog = (
+                 {evalPassed}/{results.length}
+               </>
+             )
 -            : t('non lancés', 'not run')}
--        </Stat>
++            : 'not run'}
+         </Stat>
 -        <Stat label={t('Mes tests', 'My tests')} ok={!!own && !own.failed}>
--          {own
--            ? (
--              <>
--                <CircleCheck tw='w-[15px] h-[15px]' />
--                {own.passed}/{own.passed + own.failed}
--              </>
--            )
++        <Stat label='My tests' ok={!!own && !own.failed}>
+           {own
+             ? (
+               <>
+@@ -172,25 +140,19 @@ export const SubmitDialog = (
+                 {own.passed}/{own.passed + own.failed}
+               </>
+             )
 -            : t('non lancés', 'not run')}
--        </Stat>
++            : 'not run'}
+         </Stat>
 -        <Stat label={t('Temps restant', 'Time left')}>
--          <Timer tw='w-[15px] h-[15px] text-content-tertiary' />
--          {formatClock(expired ? 0 : remainingSec, false)}
--        </Stat>
--      </div>
--      <fieldset tw='mx-6 mt-[18px] p-0 border-0'>
--        <legend tw='text-[13.5px] font-semibold p-0 mb-0.5'>
++        <Stat label='Time left'>
+           <Timer tw='w-[15px] h-[15px] text-content-tertiary' />
+           {formatClock(expired ? 0 : remainingSec, false)}
+         </Stat>
+       </div>
+       <fieldset tw='mx-6 mt-[18px] p-0 border-0'>
+         <legend tw='text-[13.5px] font-semibold p-0 mb-0.5'>
 -          {t(
 -            'Quels outils IA avez-vous utilisés ?',
 -            'Which AI tools did you use?',
 -          )} <span tw='text-err font-medium'>*</span>
--        </legend>
--        <p tw='m-0 mb-2.5 text-[12.5px] text-content-tertiary'>
++          Which AI tools did you use? <span tw='text-err font-medium'>*</span>
+         </legend>
+         <p tw='m-0 mb-2.5 text-[12.5px] text-content-tertiary'>
 -          {t(
 -            'Obligatoire. Cette déclaration n’est pas pénalisante.',
 -            'Required. This declaration carries no penalty.',
 -          )}
--        </p>
--        <div tw='grid grid-cols-2 sm:grid-cols-3 gap-1.5'>
--          {TOOLS.map((tool) => {
--            const on = tools.value.includes(tool)
--            return (
--              <label
--                key={tool}
--                tw={[
--                  'flex items-center gap-2 h-9 px-2.5 rounded-lg border text-[13px] cursor-pointer',
--                  on
--                    ? 'border-accent bg-accent-soft'
--                    : 'border-border-primary bg-surface-elevated',
--                ]}
--              >
--                <input
--                  type='checkbox'
--                  data-test={`tool-${tool}`}
--                  checked={on}
--                  onChange={() => toggle(tool)}
--                  tw='w-[15px] h-[15px] m-0'
--                  style={{ accentColor: 'var(--color-accent)' }}
--                />
++          {'Required. This declaration carries no penalty.'}
+         </p>
+         <div tw='grid grid-cols-2 sm:grid-cols-3 gap-1.5'>
+           {TOOLS.map((tool) => {
+@@ -213,51 +175,30 @@ export const SubmitDialog = (
+                   tw='w-[15px] h-[15px] m-0'
+                   style={{ accentColor: 'var(--color-accent)' }}
+                 />
 -                {tv(tool)}
--              </label>
--            )
--          })}
--        </div>
++                {tool}
+               </label>
+             )
+           })}
+         </div>
 -        {tools.value.includes('Autre') && (
--          <input
--            value={otherTool.value}
--            onInput={(e) => otherTool.value = e.currentTarget.value}
++        {tools.value.includes('Other') && (
+           <input
+             value={otherTool.value}
+             onInput={(e) => otherTool.value = e.currentTarget.value}
 -            placeholder={t('Précisez l’outil', 'Name the tool')}
 -            aria-label={t('Autre outil', 'Other tool')}
--            tw='input mt-2 h-8 py-0 text-[13px]'
--          />
--        )}
--      </fieldset>
++            placeholder='Name the tool'
++            aria-label='Other tool'
+             tw='input mt-2 h-8 py-0 text-[13px]'
+           />
+         )}
+       </fieldset>
 -      {demoMode.value && !expired && (
 -        <div
 -          data-test='demo-submit-step'
@@ -16932,390 +16044,236 @@ index df9fc76..0000000
 -          </button>
 -        </div>
 -      )}
--      <div tw='mt-5 px-6 py-3.5 border-t border-border-primary bg-surface-sunken flex items-center justify-end gap-2 flex-wrap'>
--        {!tools.value.length && (
--          <span tw='mr-auto text-[12.5px] text-content-tertiary'>
+       <div tw='mt-5 px-6 py-3.5 border-t border-border-primary bg-surface-sunken flex items-center justify-end gap-2 flex-wrap'>
+         {!tools.value.length && (
+           <span tw='mr-auto text-[12.5px] text-content-tertiary'>
 -            {t('Cochez au moins une réponse.', 'Tick at least one answer.')}
--          </span>
--        )}
--        {!expired && (
--          <A params={{ dialog: null }} tw='btn btn-secondary h-8 text-[13px]'>
++            {'Tick at least one answer.'}
+           </span>
+         )}
+         {!expired && (
+           <A params={{ dialog: null }} tw='btn btn-secondary h-8 text-[13px]'>
 -            {t('Continuer à coder', 'Keep coding')}
--          </A>
--        )}
--        <button
--          type='button'
--          tw='btn btn-primary h-8 text-[13px]'
--          data-test='confirm-submit-btn'
--          disabled={!canSubmit}
--          onClick={() => {
--            submitDeclaration()
--          }}
--        >
++            {'Keep coding'}
+           </A>
+         )}
+         <button
+@@ -269,9 +210,7 @@ export const SubmitDialog = (
+             submitDeclaration()
+           }}
+         >
 -          {expired
 -            ? t('Continuer vers les questions', 'Continue to the questions')
 -            : t('Soumettre définitivement', 'Submit for good')}
--        </button>
--      </div>
--    </ModalDialog>
--  )
--}
++          {expired ? 'Continue to the interview' : 'Submit for good'}
+         </button>
+       </div>
+     </ModalDialog>
 diff --git a/web/pages/workspace/workspace-page.tsx b/web/pages/workspace/workspace-page.tsx
-deleted file mode 100644
-index 17f075a..0000000
+index 17f075a..6d1075b 100644
 --- a/web/pages/workspace/workspace-page.tsx
-+++ /dev/null
-@@ -1,202 +0,0 @@
--import { paths } from '/web/paths.ts'
--import { effect } from '@preact/signals'
++++ b/web/pages/workspace/workspace-page.tsx
+@@ -1,6 +1,6 @@
+ import { paths } from '/web/paths.ts'
+ import { effect } from '@preact/signals'
 -import { useEffect } from 'npm:preact/hooks'
--import { navigate, url } from '/web/lib/router-signal.ts'
--import { eachSec } from '/web/lib/signals.ts'
--import { formatClock } from '/web/lib/format.ts'
--import {
--  buildSeconds,
--  elapsedBuildSeconds,
--  loadMe,
--  me,
--  meStatus,
--} from '/web/lib/candidate-store.ts'
--import { Spinner } from '/web/ui/spinner.tsx'
--import {
--  run,
--  type RunKind,
--  running,
--  savedAgo,
--  saveState,
--} from '/web/pages/workspace/workspace-state.ts'
--import { FileExplorer } from '/web/pages/workspace/file-explorer.tsx'
--import { EditorPanel } from '/web/pages/workspace/editor-panel.tsx'
--import { SidePanel } from '/web/pages/workspace/side-panel.tsx'
--import { ConsolePanel } from '/web/pages/workspace/console-panel.tsx'
--import { SubmitDialog } from '/web/pages/workspace/submit-dialog.tsx'
--import { SaveIndicator } from '/web/ui/timer.tsx'
++import { useEffect } from 'preact/hooks'
+ import { navigate, url } from '/web/lib/router-signal.ts'
+ import { eachSec } from '/web/lib/signals.ts'
+ import { formatClock } from '/web/lib/format.ts'
+@@ -25,7 +25,6 @@ import { SidePanel } from '/web/pages/workspace/side-panel.tsx'
+ import { ConsolePanel } from '/web/pages/workspace/console-panel.tsx'
+ import { SubmitDialog } from '/web/pages/workspace/submit-dialog.tsx'
+ import { SaveIndicator } from '/web/ui/timer.tsx'
 -import { t } from '/web/lib/i18n.ts'
--import {
--  FlaskConical,
--  Hammer,
--  ListChecks,
--  LoaderCircle,
--  Play,
--  Send,
--  Timer,
--} from '/web/assets/icons.tsx'
--
+ import {
+   FlaskConical,
+   Hammer,
+@@ -36,7 +35,7 @@ import {
+   Timer,
+ } from '/web/assets/icons.tsx'
+ 
 -// Ctrl+Entrée runs playground.ts, like the "Exécuter" button
--addEventListener('keydown', (e) => {
--  if (!(e.ctrlKey || e.metaKey) || e.key !== 'Enter') return
--  if (url.peek().pathname !== paths.workspace) return
--  e.preventDefault()
--  run('run')
--})
--
--const RunButton = (
--  { kind, icon: Icon, children }: {
--    kind: RunKind
--    icon: typeof Play
--    children: preact.ComponentChildren
--  },
--) => {
--  const busy = running.value
--  const mine = busy === kind
--  return (
--    <button
--      type='button'
--      data-test={`run-${kind}-btn`}
--      onClick={() => run(kind)}
--      disabled={!!busy && !mine}
--      aria-busy={mine}
--      tw='btn btn-secondary h-[30px] px-2.5 text-[13px]'
--    >
--      {mine
--        ? <LoaderCircle tw='w-3.5 h-3.5 animate-spin text-accent-text' />
--        : <Icon tw='w-3.5 h-3.5' />}
--      {children}
--    </button>
--  )
--}
--
--/** elapsed time, with the remaining time: amber under 20 %, red under 30 s */
--const Clock = ({ elapsed }: { elapsed: number }) => {
--  const total = buildSeconds()
--  const remaining = Math.max(0, total - elapsed)
--  const level = remaining < 30
--    ? 'bg-err-soft text-err'
--    : remaining < total * 0.2
--    ? 'bg-warn-soft text-warn'
--    : 'bg-surface-sunken text-content-primary'
--  return (
--    <span
--      role='timer'
++// Ctrl+Enter runs playground.ts, like the "Run" button
+ addEventListener('keydown', (e) => {
+   if (!(e.ctrlKey || e.metaKey) || e.key !== 'Enter') return
+   if (url.peek().pathname !== paths.workspace) return
+@@ -82,9 +81,7 @@ const Clock = ({ elapsed }: { elapsed: number }) => {
+   return (
+     <span
+       role='timer'
 -      title={`${t('Temps restant :', 'Time left:')} ${
 -        formatClock(remaining, false)
 -      }`}
--      tw={[
--        'inline-flex items-center gap-1.5 h-6 px-2 rounded-md font-mono font-bold text-[13px] whitespace-nowrap',
--        level,
--      ]}
--    >
--      <Timer tw='w-3.5 h-3.5' />
--      {formatClock(elapsed)}
--      <span tw='font-main font-medium text-[11.5px]'>
++      title={`${'Time left:'} ${formatClock(remaining, false)}`}
+       tw={[
+         'inline-flex items-center gap-1.5 h-6 px-2 rounded-md font-mono font-bold text-[13px] whitespace-nowrap',
+         level,
+@@ -93,7 +90,7 @@ const Clock = ({ elapsed }: { elapsed: number }) => {
+       <Timer tw='w-3.5 h-3.5' />
+       {formatClock(elapsed)}
+       <span tw='font-main font-medium text-[11.5px]'>
 -        · {formatClock(remaining, false)} {t('restantes', 'left')}
--      </span>
--    </span>
--  )
--}
--
--const WorkspaceBar = (
--  { elapsed, title }: { elapsed: number; title: string },
--) => (
--  <header tw='h-12 flex-none flex items-center gap-3 pl-4 pr-3 border-b border-border-primary bg-surface-elevated'>
--    <span
--      tw='font-semibold text-[13px] max-w-[250px] truncate'
--      title={title}
--    >
--      {title}
--    </span>
--    <span tw='badge badge-accent h-[22px] font-semibold text-[11.5px]'>
--      <Hammer tw='w-3 h-3' />
++        · {formatClock(remaining, false)} {'left'}
+       </span>
+     </span>
+   )
+@@ -111,20 +108,20 @@ const WorkspaceBar = (
+     </span>
+     <span tw='badge badge-accent h-[22px] font-semibold text-[11.5px]'>
+       <Hammer tw='w-3 h-3' />
 -      {t('Phase 1/2 · Construction', 'Phase 1/2 · Building')}
--    </span>
--    <Clock elapsed={elapsed} />
--    <SaveIndicator state={saveState.value} savedAgo={savedAgo.value} />
--    <span tw='flex-1' />
--    <RunButton kind='run' icon={Play}>
++      {'Phase 1/2 · Building'}
+     </span>
+     <Clock elapsed={elapsed} />
+     <SaveIndicator state={saveState.value} savedAgo={savedAgo.value} />
+     <span tw='flex-1' />
+     <RunButton kind='run' icon={Play}>
 -      {t('Exécuter', 'Run')}
 -      <kbd tw='kbd text-[10.5px]'>{t('Ctrl+Entrée', 'Ctrl+Enter')}</kbd>
--    </RunButton>
--    <RunButton kind='mine' icon={FlaskConical}>
++      {'Run'}
++      <kbd tw='kbd text-[10.5px]'>Ctrl+Enter</kbd>
+     </RunButton>
+     <RunButton kind='mine' icon={FlaskConical}>
 -      {t('Mes tests', 'My tests')}
--    </RunButton>
--    <RunButton kind='eval' icon={ListChecks}>
++      {'My tests'}
+     </RunButton>
+     <RunButton kind='eval' icon={ListChecks}>
 -      {t('Tests d’évaluation', 'Evaluation tests')}
--    </RunButton>
--    <span tw='w-px h-[22px] bg-border-strong mx-0.5' />
--    <button
--      type='button'
--      tw='btn btn-primary h-[30px] px-3.5 text-[13px]'
--      data-test='submit-btn'
--      onClick={() => navigate({ params: { dialog: 'submit' } })}
--    >
--      <Send tw='w-3.5 h-3.5' />
++      {'Evaluation tests'}
+     </RunButton>
+     <span tw='w-px h-[22px] bg-border-strong mx-0.5' />
+     <button
+@@ -134,19 +131,18 @@ const WorkspaceBar = (
+       onClick={() => navigate({ params: { dialog: 'submit' } })}
+     >
+       <Send tw='w-3.5 h-3.5' />
 -      {t('Soumettre', 'Submit')}
--    </button>
--  </header>
--)
--
--// time is up: the server submits the code, the declaration dialog opens
++      {'Submit'}
+     </button>
+   </header>
+ )
+ 
+ // time is up: the server submits the code, the declaration dialog opens
 -// by itself and cannot be closed (C3)
--let expiredLoaded = false
--effect(() => {
--  eachSec.value
--  if (url.value.pathname !== paths.workspace || !me.value) return
++// by itself and cannot be closed
+ let expiredLoaded = false
+ effect(() => {
+   eachSec.value
+   if (url.value.pathname !== paths.workspace || !me.value) return
 -  const expired = url.params.soumission === 'expire' ||
 -    elapsedBuildSeconds() >= buildSeconds()
--  if (!expired) return
--  if (!me.value.submittedAt && !expiredLoaded) {
--    expiredLoaded = true
--    loadMe() // the server has submitted the code in the meantime
--  }
--  if (url.params.dialog !== 'submit') {
--    navigate({ params: { dialog: 'submit' }, replace: true })
--  }
--})
--
++  const expired = elapsedBuildSeconds() >= buildSeconds()
+   if (!expired) return
+   if (!me.value.submittedAt && !expiredLoaded) {
+     expiredLoaded = true
+@@ -157,16 +153,20 @@ effect(() => {
+   }
+ })
+ 
 -/** C2 — workspace, full screen without the global top bar */
--export const WorkspacePage = () => {
--  const view = me.value
--  const status = meStatus.value
--  useEffect(() => {
++/** Workspace, full screen without the global top bar */
+ export const WorkspacePage = () => {
+   const view = me.value
+   const status = meStatus.value
+   useEffect(() => {
 -    // no session: back to the candidate link (C1)
--    if (status === 'none') navigate({ href: paths.candidate, replace: true })
++    // no session: back to the candidate link (welcome page)
+     if (status === 'none') navigate({ href: paths.candidate, replace: true })
 -    // already submitted by hand: on to the questions (C4)
--    if (view?.submittedAt && !view.autoSubmitted) {
++    // already submitted by hand: on to the interview
+     if (view?.submittedAt && !view.autoSubmitted) {
 -      navigate({ href: paths.rules, params: { dialog: null }, replace: true })
--    }
--  }, [status, view?.submittedAt])
--  eachSec.value // re-render every second for the clock
--  if (!view) {
--    return (
--      <div tw='h-screen flex items-center justify-center'>
--        <Spinner tw='w-5 h-5 text-content-tertiary' />
--      </div>
--    )
--  }
--  const total = buildSeconds()
--  const elapsed = elapsedBuildSeconds()
++      navigate({
++        href: paths.interview,
++        params: { dialog: null },
++        replace: true,
++      })
+     }
+   }, [status, view?.submittedAt])
+   eachSec.value // re-render every second for the clock
+@@ -179,7 +179,7 @@ export const WorkspacePage = () => {
+   }
+   const total = buildSeconds()
+   const elapsed = elapsedBuildSeconds()
 -  const expired = url.params.soumission === 'expire' || elapsed >= total
--  return (
--    <div tw='h-screen flex flex-col overflow-hidden bg-surface-page text-content-primary'>
--      <WorkspaceBar elapsed={elapsed} title={view.assessment.title} />
--      <div tw='flex-1 min-h-0 flex'>
--        <div tw='flex-1 min-w-0 flex flex-col'>
--          <div tw='flex-1 min-h-0 flex'>
--            <FileExplorer />
--            <EditorPanel />
--          </div>
--          <ConsolePanel />
--        </div>
--        <SidePanel />
--      </div>
--      <SubmitDialog
--        remainingSec={Math.max(0, total - elapsed)}
--        expired={expired}
--      />
--    </div>
--  )
--}
++  const expired = elapsed >= total
+   return (
+     <div tw='h-screen flex flex-col overflow-hidden bg-surface-page text-content-primary'>
+       <WorkspaceBar elapsed={elapsed} title={view.assessment.title} />
 diff --git a/web/pages/workspace/workspace-state.ts b/web/pages/workspace/workspace-state.ts
-deleted file mode 100644
-index a8ecf4b..0000000
+index a8ecf4b..8a82c89 100644
 --- a/web/pages/workspace/workspace-state.ts
-+++ /dev/null
-@@ -1,394 +0,0 @@
++++ b/web/pages/workspace/workspace-state.ts
+@@ -1,12 +1,9 @@
 -// C2 workspace state, module level signals like tournament's studio. Files
--// come from the candidate session; the API saves them, type-checks them
--// (deno check) and runs them in the Deno sandbox (api/sandbox.ts).
--import { computed, effect, signal } from '@preact/signals'
++// Workspace state, module level signals. Files
+ // come from the candidate session; the API saves them, type-checks them
+ // (deno check) and runs them in the Deno sandbox (api/sandbox.ts).
+ import { computed, effect, signal } from '@preact/signals'
 -import { url } from '/web/lib/router-signal.ts'
--import { api } from '/web/lib/api.ts'
--import { me } from '/web/lib/candidate-store.ts'
+ import { api } from '/web/lib/api.ts'
+ import { me } from '/web/lib/candidate-store.ts'
 -import { demoFileOrder } from '/fixtures/demo-files.ts'
 -import { demoOf } from '/fixtures/demos.ts'
--import type { CandidateFiles, TestResult } from '/web/types.ts'
--import type { CodeProblem, OutputChunk, SandboxRun } from '/api/sandbox.ts'
--import { eachSec } from '/web/lib/signals.ts'
--import { setDragEvents } from '/web/lib/drag.ts'
--import {
--  OUTPUT_LIMIT_KB,
--  type OutputLine,
+ import type { CandidateFiles, TestResult } from '/web/types.ts'
+ import type { CodeProblem, OutputChunk, SandboxRun } from '/api/sandbox.ts'
+ import { eachSec } from '/web/lib/signals.ts'
+@@ -14,14 +11,11 @@ import { setDragEvents } from '/web/lib/drag.ts'
+ import {
+   OUTPUT_LIMIT_KB,
+   type OutputLine,
 -  type OutputVariant,
--  RUN_TIMEOUT_S,
--  type RunOutput,
+   RUN_TIMEOUT_S,
+   type RunOutput,
 -  runPlayground,
--} from '/web/lib/workspace-runner.ts'
--import type { SaveState } from '/web/ui/timer.tsx'
--import { notify } from '/web/ui/notifications.tsx'
+ } from '/web/lib/workspace-runner.ts'
+ import type { SaveState } from '/web/ui/timer.tsx'
+ import { notify } from '/web/ui/notifications.tsx'
 -import { lang, t } from '/web/lib/i18n.ts'
--
--/* ---------- files and auto-save ---------- */
--
--export const files = signal<CandidateFiles>({})
--const savedFiles = signal<CandidateFiles>({})
--export const saveState = signal<SaveState>('saved')
--const savedAt = signal(Date.now())
--const loadedFor = signal(0)
--
--export const srcFiles = computed(() =>
--  Object.keys(files.value).filter((p) => p.startsWith('src/')).sort((a, b) =>
+ 
+ /* ---------- files and auto-save ---------- */
+ 
+@@ -33,7 +27,8 @@ const loadedFor = signal(0)
+ 
+ export const srcFiles = computed(() =>
+   Object.keys(files.value).filter((p) => p.startsWith('src/')).sort((a, b) =>
 -    (demoFileOrder.indexOf(a) + 1 || 99) - (demoFileOrder.indexOf(b) + 1 || 99)
--  )
--)
--export const rootFiles = computed(() =>
--  Object.keys(files.value).filter((p) => !p.startsWith('src/'))
--)
--
--/* ---------- tabs ---------- */
--
--export const openTabs = signal<string[]>([])
--export const activeFile = signal<string | null>(null)
--
--export const openFile = (path: string) => {
--  openTabs.value.includes(path) || (openTabs.value = [...openTabs.value, path])
--  activeFile.value = path
--}
--
--export const closeTab = (path: string) => {
--  const tabs = openTabs.value.filter((p) => p !== path)
--  openTabs.value = tabs
--  if (activeFile.value === path) activeFile.value = tabs.at(-1) ?? null
--}
--
--// the session's files, once per candidate
--effect(() => {
--  const view = me.value
--  if (!view || loadedFor.peek() === view.id) return
--  loadedFor.value = view.id
--  files.value = view.files
--  savedFiles.value = view.files
--  savedAt.value = view.savedAt ?? Date.now()
--  const tabs = srcFiles.peek().filter((p) => !p.endsWith('_test.ts'))
--    .slice(0, 3)
--  openTabs.value = tabs
++    (a === 'src/app.ts' ? 0 : 1) - (b === 'src/app.ts' ? 0 : 1) ||
++    a.localeCompare(b)
+   )
+ )
+ export const rootFiles = computed(() =>
+@@ -67,9 +62,7 @@ effect(() => {
+   const tabs = srcFiles.peek().filter((p) => !p.endsWith('_test.ts'))
+     .slice(0, 3)
+   openTabs.value = tabs
 -  // the demo draft opens on its type error (brief C2)
 -  activeFile.value = tabs.find((p) => p.includes('repository')) ?? tabs[0] ??
 -    null
--})
--
--export const isDirty = (path: string) =>
--  files.value[path] !== savedFiles.value[path]
--
--let saveTimer: ReturnType<typeof setTimeout> | undefined
--const save = async () => {
--  if (me.peek()?.submittedAt) return
--  const sent = files.peek()
--  saveState.value = 'saving'
--  try {
--    const result = await api['POST/api/candidate/files'].fetch({ files: sent })
--    savedFiles.value = sent
--    savedAt.value = result.savedAt
--    saveState.value = files.peek() === sent ? 'saved' : 'saving'
--  } catch {
++  activeFile.value = tabs[0] ?? null
+ })
+ 
+ export const isDirty = (path: string) =>
+@@ -86,7 +79,7 @@ const save = async () => {
+     savedAt.value = result.savedAt
+     saveState.value = files.peek() === sent ? 'saved' : 'saving'
+   } catch {
 -    // offline or server down: "Hors ligne, nouvelle tentative…"
--    saveState.value = 'offline'
--    clearTimeout(saveTimer)
--    saveTimer = setTimeout(save, 5000)
--  }
--}
--addEventListener('online', () => saveState.peek() === 'offline' && save())
--addEventListener('offline', () => saveState.value = 'offline')
--
--/* ---------- type errors: deno check on the server ---------- */
--
--export const problems = signal<CodeProblem[]>([])
--let checkTimer: ReturnType<typeof setTimeout> | undefined
--let checkRun = 0
--
--const check = async () => {
--  const run = ++checkRun
--  try {
--    const found = await api['POST/api/candidate/check'].fetch({
--      files: files.peek(),
--    })
--    if (run === checkRun) problems.value = found
--  } catch { /* keep the previous problems */ }
--}
--
--const scheduleCheck = (delay = 1200) => {
--  clearTimeout(checkTimer)
--  checkTimer = setTimeout(check, delay)
--}
--
--// first check once the files are loaded
--effect(() => {
--  loadedFor.value && scheduleCheck(0)
--})
--
--export const problemsOf = (file: string | null) =>
--  file ? problems.value.filter((p) => p.file === file) : []
--
--export const updateFile = (path: string, code: string) => {
--  if (files.peek()[path] === code) return
--  files.value = { ...files.peek(), [path]: code }
--  saveState.value = navigator.onLine ? 'saving' : 'offline'
--  clearTimeout(saveTimer)
--  saveTimer = setTimeout(save, 800)
--  scheduleCheck()
--}
--
--export const savedAgo = computed(() => {
--  const sec = Math.max(0, Math.round((eachSec.value - savedAt.value) / 1000))
--  return sec < 60
++    // offline or server down: "Offline, retrying…"
+     saveState.value = 'offline'
+     clearTimeout(saveTimer)
+     saveTimer = setTimeout(save, 5000)
+@@ -136,29 +129,10 @@ export const updateFile = (path: string, code: string) => {
+ export const savedAgo = computed(() => {
+   const sec = Math.max(0, Math.round((eachSec.value - savedAt.value) / 1000))
+   return sec < 60
 -    ? t(`il y a ${Math.max(sec, 1)} s`, `${Math.max(sec, 1)} s ago`)
 -    : t(`il y a ${Math.floor(sec / 60)} min`, `${Math.floor(sec / 60)} min ago`)
--})
--
++    ? `${Math.max(sec, 1)} s ago`
++    : `${Math.floor(sec / 60)} min ago`
+ })
+ 
 -/** guided demo: "Charger une solution exemple" */
 -export const loadExampleSolution = async () => {
 -  // the solution of the demo in the language of the site (guided demo)
@@ -17335,111 +16293,80 @@ index a8ecf4b..0000000
 -  })
 -}
 -
--/** "+ Nouveau fichier": always in src/, always .ts, no folders */
--export const createFile = (rawName: string) => {
--  const name = rawName.replace(/\.ts$/, '').replace(/[^\w-]/g, '')
--  if (!name) return false
--  const path = `src/${name}.ts`
--  if (path in files.peek()) {
--    openFile(path)
--    return true
--  }
--  updateFile(path, `// ${name}.ts\n`)
--  openFile(path)
--  return true
--}
--
--/* ---------- runs, in the Deno sandbox ---------- */
--
--export type RunKind = 'run' | 'mine' | 'eval'
--export const running = signal<RunKind | null>(null)
--export const bottomTab = signal<'out' | 'mine'>('out')
--export const rightTab = signal<'brief' | 'tests'>('brief')
--export const rightOpen = signal(true)
--export const rawOpen = signal(false)
--export const output = signal<RunOutput | null>(null)
--export const evalResults = signal<TestResult[] | null>(null)
--export const lastEvalAt = signal(0)
--
--export type OwnTest = { name: string; ok: boolean; duration: string }
--export const ownTests = signal<
--  { tests: OwnTest[]; passed: number; failed: number; raw: string } | null
-->(null)
--
--export const lastEvalAgo = computed(() => {
--  const min = Math.floor((eachSec.value - lastEvalAt.value) / 60_000)
+ /** "+ Nouveau fichier": always in src/, always .ts, no folders */
+ export const createFile = (rawName: string) => {
+   const name = rawName.replace(/\.ts$/, '').replace(/[^\w-]/g, '')
+@@ -192,19 +166,17 @@ export const ownTests = signal<
+ 
+ export const lastEvalAgo = computed(() => {
+   const min = Math.floor((eachSec.value - lastEvalAt.value) / 60_000)
 -  return min < 1
 -    ? t('il y a quelques secondes', 'a few seconds ago')
 -    : t(`il y a ${min} min`, `${min} min ago`)
--})
--
--const seconds = (ms: number) => {
--  const s = (ms / 1000).toFixed(1)
++  return min < 1 ? 'a few seconds ago' : `${min} min ago`
+ })
+ 
+ const seconds = (ms: number) => {
+   const s = (ms / 1000).toFixed(1)
 -  return `${lang.value === 'en' ? s : s.replace('.', ',')} s`
--}
--
--const textOf = (chunks: OutputChunk[]) => chunks.map((c) => c.text).join('')
--
++  return `${s} s`
+ }
+ 
+ const textOf = (chunks: OutputChunk[]) => chunks.map((c) => c.text).join('')
+ 
 -/** SandboxRun → lines and status of the console (brief C2 states) */
--export const toRunOutput = (run: SandboxRun): RunOutput => {
--  const lines: OutputLine[] = []
--  for (const chunk of run.chunks) {
--    for (const text of chunk.text.replace(/\n$/, '').split('\n')) {
--      lines.push({
--        text,
--        tone: chunk.stream === 'out'
--          ? undefined
--          : /^\s+at /.test(text)
--          ? 'indent-error'
--          : 'error',
--      })
--    }
--  }
--  const err = textOf(run.chunks.filter((c) => c.stream === 'err'))
--  const status: RunOutput['status'] = run.refusedImport
--    ? {
--      tone: 'warn',
--      icon: 'package-x',
++/** SandboxRun → lines and status of the console  */
+ export const toRunOutput = (run: SandboxRun): RunOutput => {
+   const lines: OutputLine[] = []
+   for (const chunk of run.chunks) {
+@@ -224,62 +196,43 @@ export const toRunOutput = (run: SandboxRun): RunOutput => {
+     ? {
+       tone: 'warn',
+       icon: 'package-x',
 -      text: t(
 -        `Import non autorisé (${run.refusedImport}) : seules les dépendances listées dans deno.json sont disponibles hors ligne. Terminé en ${
 -          seconds(run.durationMs)
 -        } · code 1`,
--        `Import not allowed (${run.refusedImport}): only the dependencies listed in deno.json are available offline. Finished in ${
--          seconds(run.durationMs)
--        } · code 1`,
++      text:
+         `Import not allowed (${run.refusedImport}): only the dependencies listed in deno.json are available offline. Finished in ${
+           seconds(run.durationMs)
+         } · code 1`,
 -      ),
--    }
--    : run.timedOut
--    ? {
--      tone: 'warn',
--      icon: 'timer-off',
+     }
+     : run.timedOut
+     ? {
+       tone: 'warn',
+       icon: 'timer-off',
 -      text: t(
 -        `Arrêté après ${RUN_TIMEOUT_S} s : le programme ne s’est pas terminé. Les serveurs et les boucles infinies sont interrompus.`,
--        `Stopped after ${RUN_TIMEOUT_S} s: the program did not end. Servers and infinite loops are interrupted.`,
++      text:
+         `Stopped after ${RUN_TIMEOUT_S} s: the program did not end. Servers and infinite loops are interrupted.`,
 -      ),
--    }
--    : run.truncated
--    ? {
--      tone: 'warn',
--      icon: 'scissors',
+     }
+     : run.truncated
+     ? {
+       tone: 'warn',
+       icon: 'scissors',
 -      text: t(
 -        `Sortie tronquée à ${OUTPUT_LIMIT_KB} Ko`,
 -        `Output cut at ${OUTPUT_LIMIT_KB} KB`,
 -      ),
--    }
--    : err.includes('Requires net access')
--    ? {
--      tone: 'warn',
--      icon: 'circle-x',
++      text: `Output cut at ${OUTPUT_LIMIT_KB} KB`,
+     }
+     : err.includes('Requires net access')
+     ? {
+       tone: 'warn',
+       icon: 'circle-x',
 -      text: t(
 -        'Réseau désactivé : un serveur ne peut pas écouter ici. Appelez handler() directement depuis playground.ts.',
--        'Network disabled: a server cannot listen here. Call handler() directly from playground.ts.',
++      text:
+         'Network disabled: a server cannot listen here. Call handler() directly from playground.ts.',
 -      ),
--    }
--    : run.exitCode !== 0
--    ? {
--      tone: 'error',
--      icon: 'circle-x',
+     }
+     : run.exitCode !== 0
+     ? {
+       tone: 'error',
+       icon: 'circle-x',
 -      text: t(
 -        `Erreur d’exécution · terminé en ${
 -          seconds(run.durationMs)
@@ -17448,33 +16375,25 @@ index a8ecf4b..0000000
 -          seconds(run.durationMs)
 -        } · code ${run.exitCode}`,
 -      ),
--    }
--    : {
--      tone: 'ok',
--      icon: 'circle-check',
++      text: `Runtime error · finished in ${
++        seconds(run.durationMs)
++      } · code ${run.exitCode}`,
+     }
+     : {
+       tone: 'ok',
+       icon: 'circle-check',
 -      text: t(
 -        `Terminé en ${seconds(run.durationMs)} · code 0`,
 -        `Finished in ${seconds(run.durationMs)} · code 0`,
 -      ),
--    }
--  return { command: `$ ${run.command}`, lines, status }
--}
--
--const OWN_TEST = /^(.+?) \.\.\. (ok|FAILED) \(([^)]+)\)$/
--
--const parseOwnTests = (
--  run: SandboxRun & { passed: number; failed: number },
--) => {
--  const raw = textOf(run.chunks)
--  const tests = raw.split('\n')
--    .map((l) => l.trim().match(OWN_TEST))
--    .filter((m): m is RegExpMatchArray => !!m)
--    .map(([, name, ok, duration]) => ({ name, ok: ok === 'ok', duration }))
--  return { tests, passed: run.passed, failed: run.failed, raw }
--}
--
--export const run = async (kind: RunKind) => {
--  if (running.peek()) return
++      text: `Finished in ${seconds(run.durationMs)} · code 0`,
+     }
+   return { command: `$ ${run.command}`, lines, status }
+ }
+@@ -299,13 +252,6 @@ const parseOwnTests = (
+ 
+ export const run = async (kind: RunKind) => {
+   if (running.peek()) return
 -  // ?sortie= replays the output states of the prototype
 -  const variant = url.params.sortie as OutputVariant | undefined
 -  if (kind === 'run' && variant) {
@@ -17482,84 +16401,22 @@ index a8ecf4b..0000000
 -    bottomTab.value = 'out'
 -    return
 -  }
--  running.value = kind
--  try {
--    const result = await api['POST/api/candidate/run'].fetch({
--      kind,
--      files: files.peek(),
--    })
--    savedFiles.value = files.peek()
--    savedAt.value = Date.now()
--    saveState.value = 'saved'
--    if (result.run) {
--      output.value = toRunOutput(result.run)
--      bottomTab.value = 'out'
--    }
--    if (result.own) {
--      ownTests.value = parseOwnTests(result.own)
--      bottomTab.value = 'mine'
--      // an import refused or a timeout is explained in the output tab
--      if (result.own.refusedImport || result.own.timedOut) {
--        output.value = toRunOutput(result.own)
--        bottomTab.value = 'out'
--      }
--    }
--    if (result.results) {
--      evalResults.value = result.results
--      lastEvalAt.value = Date.now()
--      rightTab.value = 'tests'
--      rightOpen.value = true
--    }
--  } catch (err) {
--    notify({ status: 'failure', description: (err as Error).message })
--  } finally {
--    running.value = null
--  }
--}
--
--/* ---------- bottom panel ---------- */
--
--export const panelHeight = signal(220)
--export const setPanelResizer = (ref: HTMLElement | null) => {
--  if (!ref) return
--  let startY = 0
--  let startH = 0
--  ref.addEventListener('pointerdown', (e) => {
--    startY = e.clientY
--    startH = panelHeight.peek()
--  })
--  setDragEvents(ref, 'row-resize', (e) => {
--    panelHeight.value = Math.max(
--      120,
--      Math.min(520, startH - (e.clientY - startY)),
--    )
--  })
--}
--
+   running.value = kind
+   try {
+     const result = await api['POST/api/candidate/run'].fetch({
+@@ -360,7 +306,7 @@ export const setPanelResizer = (ref: HTMLElement | null) => {
+   })
+ }
+ 
 -/* ---------- right panel (Énoncé / Tests d'évaluation) ---------- */
--
--// about a third of the window by default (≈ 630 px on a 1920 px screen)
--const MIN_RIGHT = 280
--const maxRight = () => Math.max(MIN_RIGHT, Math.round(innerWidth / 2))
--export const rightWidth = signal(
--  Math.min(720, Math.max(360, Math.round(innerWidth / 3))),
--)
--export const setSideResizer = (ref: HTMLElement | null) => {
--  if (!ref) return
--  let startX = 0
--  let startW = 0
--  ref.addEventListener('pointerdown', (e) => {
--    startX = e.clientX
--    startW = rightWidth.peek()
--  })
--  setDragEvents(ref, 'col-resize', (e) => {
--    // dragging to the left widens the panel
--    rightWidth.value = Math.max(
--      MIN_RIGHT,
--      Math.min(maxRight(), startW + startX - e.clientX),
--    )
--  })
--}
++/* ---------- right panel (Brief / Evaluation tests) ---------- */
+ 
+ // about a third of the window by default (≈ 630 px on a 1920 px screen)
+ const MIN_RIGHT = 280
+@@ -384,11 +330,3 @@ export const setSideResizer = (ref: HTMLElement | null) => {
+     )
+   })
+ }
 -
 -// initial output follows ?sortie= so the prototype states are reachable
 -effect(() => {
@@ -17569,10 +16426,10 @@ index a8ecf4b..0000000
 -  bottomTab.value = 'out'
 -})
 diff --git a/web/paths.ts b/web/paths.ts
-index 0c5de49..d3fa34e 100644
+index 0c5de49..2e91f4e 100644
 --- a/web/paths.ts
 +++ b/web/paths.ts
-@@ -1,26 +1,26 @@
+@@ -1,26 +1,25 @@
  // Every route of the app, in one place: pages never hard-code a URL.
  // Two symmetric spaces, /recruiter/… and /candidate/…; ids stay in the
 -// query string (?id=, ?q=) like tournament's signal-router routes.
@@ -17610,22 +16467,22 @@ index 0c5de49..d3fa34e 100644
 +  report: '/recruiter/report', // report of a candidate, ?id=
 +  candidate: '/candidate', // welcome and consent
 +  workspace: '/candidate/workspace', // code editor and submission
-+  rules: '/candidate/rules', // rules before the questions
-+  questions: '/candidate/questions', // the questions, ?q=
++  interview: '/candidate/interview', // the voice interview
 +  done: '/candidate/done', // end of the assessment
 +  voiceLab: '/dev/voice', // test page of the voice interview
  } as const
  
  export const isCandidatePath = (path: string) =>
 diff --git a/web/screens.ts b/web/screens.ts
-index 2d61787..3520189 100644
+index 2d61787..b729a69 100644
 --- a/web/screens.ts
 +++ b/web/screens.ts
-@@ -1,114 +1,38 @@
+@@ -1,114 +1,32 @@
  import { paths } from '/web/paths.ts'
 -// Screens of the brief (§4), in the order of the clickable journey (§7.5).
+-// `fullscreen` screens hide the global top bar (workspace and questions).
 +// Screens of the app, with the space they belong to (it picks the top bar).
- // `fullscreen` screens hide the global top bar (workspace and questions).
++// `fullscreen` screens hide the global top bar (workspace and interview).
  export type Screen = {
    space: 'public' | 'recruiter' | 'candidate'
 -  code: string
@@ -17677,6 +16534,14 @@ index 2d61787..3520189 100644
 -    prototype: 'R5-Epreuve-approuvee.dc.html',
 -    task: 'T2.10',
 -  },
+-  {
+-    space: 'candidate',
+-    code: 'C1',
+-    title: 'Accueil candidat et consentement',
+-    path: paths.candidate,
+-    prototype: 'C1-Consentement.dc.html',
+-    task: 'T3.1',
+-  },
 +  { space: 'public', title: 'Home', path: paths.home },
 +  { space: 'recruiter', title: 'My assessments', path: paths.recruiter },
 +  { space: 'recruiter', title: 'New assessment', path: paths.newAssessment },
@@ -17685,28 +16550,19 @@ index 2d61787..3520189 100644
 +  { space: 'candidate', title: 'Welcome and consent', path: paths.candidate },
    {
      space: 'candidate',
--    code: 'C1',
--    title: 'Accueil candidat et consentement',
--    path: paths.candidate,
--    prototype: 'C1-Consentement.dc.html',
--    task: 'T3.1',
--  },
--  {
--    space: 'candidate',
 -    code: 'C2',
 -    title: 'Workspace',
 +    title: 'Code editor',
      path: paths.workspace,
 -    prototype: 'C2-Workspace.dc.html',
 -    task: 'T3.2',
-     fullscreen: true,
-   },
-   {
-     space: 'candidate',
+-    fullscreen: true,
+-  },
+-  {
+-    space: 'candidate',
 -    code: 'C4',
 -    title: 'Règles de la phase de questions',
-+    title: 'Rules of the questions',
-     path: paths.rules,
+-    path: paths.rules,
 -    prototype: 'C4-Regles-questions.dc.html',
 -    task: 'T3.8',
      fullscreen: true,
@@ -17714,10 +16570,12 @@ index 2d61787..3520189 100644
    {
      space: 'candidate',
 -    code: 'C5',
-     title: 'Questions',
-     path: paths.questions,
+-    title: 'Questions',
+-    path: paths.questions,
 -    prototype: 'C5-QCM.dc.html',
 -    task: 'T3.9',
++    title: 'Interview',
++    path: paths.interview,
      fullscreen: true,
    },
 -  {
@@ -17783,7 +16641,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..a579766 100644
+index 83f3535..7547961 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,11 @@
@@ -18027,11 +16885,19 @@ index 83f3535..a579766 100644
  export type Invitation = {
    invitation: string
    title: string
-@@ -210,11 +210,10 @@ export type Invitation = {
+@@ -210,11 +210,18 @@ export type Invitation = {
    state: InvitationState
  }
  
 -/** the candidate's own session: never the hidden tests nor answer keys */
++/** one turn of the spoken interview, as kept for the report */
++export type InterviewLine = {
++  who: 'ai' | 'candidate'
++  text: string
++  /** the candidate spoke over the interviewer, who stopped here */
++  interrupted?: boolean
++}
++
 +/** the candidate's own session: never the hidden tests nor their results */
  export type CandidateView = {
    id: number
@@ -18040,7 +16906,7 @@ index 83f3535..a579766 100644
    /** server clock, to align the timers */
    now: number
    assessment: {
-@@ -233,157 +232,10 @@ export type CandidateView = {
+@@ -233,157 +240,10 @@ export type CandidateView = {
    submittedAt?: number
    autoSubmitted?: boolean
    declaredTools: string[]
@@ -18359,630 +17225,133 @@ index e9f7c70..0000000
 -    </span>
 -  )
 -}
-diff --git a/web/ui/badge.tsx b/web/ui/badge.tsx
-deleted file mode 100644
-index 0385f27..0000000
---- a/web/ui/badge.tsx
-+++ /dev/null
-@@ -1,36 +0,0 @@
--import type { Token } from 'npm:@twind/preact'
--
--/** Predefined badge style variants (classes live in web/theme.ts) */
--const variantStyles = {
--  neutral: 'badge-neutral',
--  accent: 'badge-accent',
--  success: 'badge-ok',
--  warning: 'badge-warn',
--  error: 'badge-err',
--  ai: 'badge-ai', // reserved to what the AI produces or interprets
--} as const
--
--/** Possible type of variants */
--export type BadgeVariants = keyof typeof variantStyles
--
--/**
-- * Props type for the Badge component
-- * Extends the standard span element props with additional styling options
-- */
--type BadgeProps = {
--  variant?: BadgeVariants
--  tw?: Token
--} & preact.JSX.IntrinsicElements['span']
--
--/**
-- * Badge component with variant-based styling.
-- * A status badge must always carry an icon and a label, never only a color.
-- *
-- * @example
-- * <Badge>Brouillon</Badge>
-- * <Badge variant="success"><Check /> Approuvée</Badge>
-- * <Badge variant="ai"><Sparkles /> Interprétation IA</Badge>
-- */
--export function Badge({ variant = 'neutral', tw, ...props }: BadgeProps) {
--  return <span tw={['badge', variantStyles[variant], tw]} {...props} />
--}
-diff --git a/web/ui/button.tsx b/web/ui/button.tsx
-deleted file mode 100644
-index 890992a..0000000
---- a/web/ui/button.tsx
-+++ /dev/null
-@@ -1,41 +0,0 @@
--import type { Token } from 'npm:@twind/preact'
--import { A, type LinkProps } from '/web/lib/router-signal.ts'
--/**
-- * Props type for the Button component
-- * Extends both button element props and LinkProps for routing capabilities
-- */
--export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger'
--
--type ButtonProps =
--  & {
--    tw?: Token
--    variant?: ButtonVariant
--    size?: 'md' | 'sm' | 'icon'
--  }
--  & preact.JSX.IntrinsicElements['button']
--  & Partial<LinkProps>
--
--/**
-- * A customizable button component with variant-based styling
-- * @example
-- * <Button variant="primary">Générer l'épreuve</Button>
-- * <Button variant="secondary" size="sm">Copier</Button>
-- * <Button variant="ghost" size="icon" aria-label="Fermer"><X /></Button>
-- */
--export function Button(
--  { tw, variant = 'primary', size = 'md', ...props }: ButtonProps,
--) {
--  const styles = [
--    'btn',
--    `btn-${variant}`,
--    size === 'sm' && 'btn-sm',
--    size === 'icon' && 'btn-icon',
--    tw,
--  ]
--
--  if (props.href || props.hash || props.params) {
--    return <A tw={styles} {...props} />
--  }
--
--  return <button tw={styles} type='button' {...props} />
--}
 diff --git a/web/ui/code-view.tsx b/web/ui/code-view.tsx
-deleted file mode 100644
-index a49321e..0000000
+index a49321e..046a74e 100644
 --- a/web/ui/code-view.tsx
-+++ /dev/null
-@@ -1,246 +0,0 @@
++++ b/web/ui/code-view.tsx
+@@ -1,4 +1,4 @@
 -import { useEffect, useRef } from 'npm:preact/hooks'
--import type { Token } from 'npm:@twind/preact'
--import { A, url } from '/web/lib/router-signal.ts'
--import { tokenizeLine, type TokenKind } from '/web/lib/code-tokens.ts'
--import { formatLines } from '/web/lib/format.ts'
--import { DrawerDialog } from '/web/ui/dialog.tsx'
--import { Check, FileCode } from '/web/assets/icons.tsx'
--import type { CandidateFiles } from '/web/types.ts'
++import { useEffect, useRef } from 'preact/hooks'
+ import type { Token } from 'npm:@twind/preact'
+ import { A, url } from '/web/lib/router-signal.ts'
+ import { tokenizeLine, type TokenKind } from '/web/lib/code-tokens.ts'
+@@ -6,7 +6,6 @@ import { formatLines } from '/web/lib/format.ts'
+ import { DrawerDialog } from '/web/ui/dialog.tsx'
+ import { Check, FileCode } from '/web/assets/icons.tsx'
+ import type { CandidateFiles } from '/web/types.ts'
 -import { t } from '/web/lib/i18n.ts'
--
--const tokenColor: Record<TokenKind, string> = {
--  kw: 'text-code-kw',
--  str: 'text-code-str',
--  type: 'text-code-type',
--  fn: 'text-code-fn',
--  num: 'text-code-num',
--  com: 'text-code-com',
--  txt: 'text-code-text',
--}
--
--// type error underline (Twind has no decoration-wavy utilities)
--const squiggleStyle = {
--  textDecoration: 'underline wavy var(--color-err)',
--  textDecorationSkipInk: 'none',
--  textUnderlineOffset: '3px',
--}
--
--export type LineRange = [from: number, to: number]
--
--/** "22-30" | "23" → [22, 30] | [23, 23] */
--export const parseRange = (value?: string | null): LineRange | undefined => {
--  if (!value) return
--  const [from, to] = value.split(/[-–]/).map(Number)
--  return from ? [from, to || from] : undefined
--}
--
--type CodeViewProps = {
--  code: string
--  file: string
--  from?: number
--  to?: number
--  /** cited lines: amber background and left bar */
--  highlight?: LineRange
--  /** type error: wavy red underline on [line, fromCol, toCol] (1-based) */
--  squiggle?: [line: number, fromCol: number, toCol: number]
--  activeLine?: number
--  size?: number
--  /** scroll so the highlighted lines are centered */
--  center?: boolean
--  /** read-only excerpt that cannot be selected nor copied */
--  noSelect?: boolean
--  tw?: Token
--}
--
--/** Read-only code, VS Code look: line numbers and TypeScript colors */
--export const CodeView = ({
--  code,
--  file,
--  from = 1,
--  to,
--  highlight,
--  squiggle,
--  activeLine,
--  size = 13,
--  center,
--  noSelect,
--  tw,
--}: CodeViewProps) => {
--  const lines = code.split('\n')
--  const last = Math.min(lines.length, to ?? lines.length)
--  const lineHeight = Math.round(size * 1.6)
--  const scroller = useRef<HTMLDivElement>(null)
--
--  useEffect(() => {
--    const el = scroller.current
--    if (!el || !center || !highlight) return
--    const top = (highlight[0] - from) * lineHeight
--    const height = (highlight[1] - highlight[0] + 1) * lineHeight
--    el.scrollTop = Math.max(0, top - (el.clientHeight - height) / 2)
--  }, [center, highlight?.[0], highlight?.[1], file])
--
--  const rows = []
--  for (let n = from; n <= last; n++) {
--    const isHl = highlight && n >= highlight[0] && n <= highlight[1]
--    let col = 1
--    const parts = tokenizeLine(lines[n - 1] ?? '', file).flatMap(
--      ([text, kind]) => {
--        const start = col
--        col += text.length
--        if (!squiggle || squiggle[0] !== n) return [[text, kind, false]]
--        // split the token around the squiggle columns
--        const a = Math.max(0, squiggle[1] - start)
--        const b = Math.max(0, squiggle[2] - start + 1)
--        return [
--          [text.slice(0, a), kind, false],
--          [text.slice(a, b), kind, true],
--          [text.slice(b), kind, false],
--        ].filter(([t]) => t) as [string, TokenKind, boolean][]
--      },
--    ) as [string, TokenKind, boolean][]
--
--    rows.push(
--      <div
--        key={n}
--        tw={[
--          'flex min-w-max pr-4',
--          isHl
--            ? 'bg-hl shadow-[inset_3px_0_0_var(--color-hl-bar)]'
--            : n === activeLine && 'bg-code-active',
--        ]}
--      >
--        <span
--          tw={[
--            'flex-none w-[52px] pr-[18px] text-right select-none',
--            isHl || n === activeLine ? 'text-code-text' : 'text-code-ln',
--          ]}
--        >
--          {n}
--        </span>
--        <span tw='whitespace-pre' style={{ tabSize: 2 }}>
--          {parts.length
--            ? parts.map(([text, kind, squiggly], i) => (
--              <span
--                key={i}
--                tw={tokenColor[kind]}
--                style={squiggly ? squiggleStyle : undefined}
--              >
--                {text}
--              </span>
--            ))
--            : ' '}
--        </span>
--      </div>,
--    )
--  }
--
--  return (
--    <div
--      ref={scroller}
--      tw={[
--        'bg-code-bg text-code-text overflow-auto py-1.5 font-mono',
--        noSelect && 'select-none',
--        tw,
--      ]}
--      style={{ fontSize: `${size}px`, lineHeight: `${lineHeight}px` }}
--      onCopy={noSelect ? (e) => e.preventDefault() : undefined}
--    >
--      {rows}
--    </div>
--  )
--}
--
--/** Amber tag showing the cited lines, e.g. "l. 22–30" */
--export const LinesTag = ({ range }: { range: LineRange }) => (
--  <span tw='inline-flex flex-none items-center whitespace-nowrap h-5 px-[7px] rounded-[5px] bg-hl shadow-[inset_2px_0_0_var(--color-hl-bar)] font-mono text-[11.5px] text-content-primary'>
--    {formatLines(...range)}
--  </span>
--)
--
--const basename = (path: string) => path.split('/').pop() || path
--
--/**
-- * Citation chip (brief §2.5): "links_repository.ts · l. 22–30 ✓ vérifiée".
-- * A verified citation opens the code viewer; an unverified one is struck out.
-- */
--export const CitationChip = (
--  { file, range, verified = true }: {
--    file: string
--    range: LineRange
--    verified?: boolean
--  },
--) => {
--  const text = `${basename(file)} · ${formatLines(...range)}`
--  if (!verified) {
--    return (
--      <span tw='inline-flex items-center gap-1.5 h-6 px-2 rounded-md border border-dashed border-border-strong font-mono text-[12px] text-content-tertiary'>
--        <span tw='line-through'>{text}</span>
--        <span tw='font-main text-[11.5px] line-through'>
+ 
+ const tokenColor: Record<TokenKind, string> = {
+   kw: 'text-code-kw',
+@@ -176,7 +175,7 @@ export const CitationChip = (
+       <span tw='inline-flex items-center gap-1.5 h-6 px-2 rounded-md border border-dashed border-border-strong font-mono text-[12px] text-content-tertiary'>
+         <span tw='line-through'>{text}</span>
+         <span tw='font-main text-[11.5px] line-through'>
 -          {t('non vérifiée', 'not verified')}
--        </span>
--      </span>
--    )
--  }
--  return (
--    <A
--      params={{ dialog: 'code', file, lines: range.join('-') }}
--      tw='inline-flex items-center gap-1.5 h-6 px-2 rounded-md border border-border-strong bg-surface-sunken font-mono text-[12px] text-content-primary no-underline hover:border-accent'
++          {'not verified'}
+         </span>
+       </span>
+     )
+@@ -185,13 +184,13 @@ export const CitationChip = (
+     <A
+       params={{ dialog: 'code', file, lines: range.join('-') }}
+       tw='inline-flex items-center gap-1.5 h-6 px-2 rounded-md border border-border-strong bg-surface-sunken font-mono text-[12px] text-content-primary no-underline hover:border-accent'
 -      title={t('Ouvrir le code cité', 'Open the cited code')}
--    >
--      <FileCode tw='w-[13px] h-[13px] text-content-tertiary' />
--      {text}
--      <span tw='font-main font-medium text-[11.5px] text-ok inline-flex items-center gap-0.5'>
--        <Check tw='w-[11px] h-[11px]' stroke-width={2.5} />
++      title='Open the cited code'
+     >
+       <FileCode tw='w-[13px] h-[13px] text-content-tertiary' />
+       {text}
+       <span tw='font-main font-medium text-[11.5px] text-ok inline-flex items-center gap-0.5'>
+         <Check tw='w-[11px] h-[11px]' stroke-width={2.5} />
 -        {t('vérifiée', 'verified')}
--      </span>
--    </A>
--  )
--}
--
--/**
-- * Code viewer (brief §2.6): 640 px drawer on the right, read-only,
-- * cited lines highlighted and centered. Opened by `?dialog=code&file=&lines=`.
-- */
--export const CodeDrawer = ({ files }: { files: CandidateFiles }) => {
--  const file = url.params.file || ''
--  const range = parseRange(url.params.lines)
--  return (
--    <DrawerDialog
--      id='code'
--      width='w-[640px]'
--      closeParams={['file', 'lines']}
--      tw='bg-code-bg'
--      heading={
--        <>
--          <FileCode tw='w-4 h-4 text-code-kw flex-none' />
--          <span tw='font-mono text-[13px] font-medium truncate min-w-0'>
--            {file}
--          </span>
--          {range && <LinesTag range={range} />}
--          <span tw='hidden sm:inline text-[12px] text-content-tertiary whitespace-nowrap'>
++        {'verified'}
+       </span>
+     </A>
+   )
+@@ -218,7 +217,7 @@ export const CodeDrawer = ({ files }: { files: CandidateFiles }) => {
+           </span>
+           {range && <LinesTag range={range} />}
+           <span tw='hidden sm:inline text-[12px] text-content-tertiary whitespace-nowrap'>
 -            {t('Lecture seule', 'Read only')}
--          </span>
--        </>
--      }
--    >
--      {files[file] !== undefined
--        ? (
--          <CodeView
--            code={files[file]}
--            file={file}
--            highlight={range}
--            center
--            tw='h-full'
--          />
--        )
--        : (
--          <p tw='p-6 m-0 text-content-secondary'>
++            {'Read only'}
+           </span>
+         </>
+       }
+@@ -235,10 +234,7 @@ export const CodeDrawer = ({ files }: { files: CandidateFiles }) => {
+         )
+         : (
+           <p tw='p-6 m-0 text-content-secondary'>
 -            {t(
 -              'Fichier introuvable dans la soumission.',
 -              'File not found in the submission.',
 -            )}
--          </p>
--        )}
--    </DrawerDialog>
--  )
--}
++            {'File not found in the submission.'}
+           </p>
+         )}
+     </DrawerDialog>
 diff --git a/web/ui/desktop-only.tsx b/web/ui/desktop-only.tsx
-deleted file mode 100644
-index d25266c..0000000
+index d25266c..7fb69d5 100644
 --- a/web/ui/desktop-only.tsx
-+++ /dev/null
-@@ -1,38 +0,0 @@
--import { paths } from '/web/paths.ts'
++++ b/web/ui/desktop-only.tsx
+@@ -1,10 +1,9 @@
+ import { paths } from '/web/paths.ts'
 -import type { ComponentChildren } from 'npm:preact'
--import { DESKTOP_MIN_WIDTH, viewportWidth } from '/web/lib/viewport.ts'
--import { Logo } from '/web/ui/topbar.tsx'
--import { A } from '/web/lib/router-signal.ts'
--import { Info } from '/web/assets/icons.tsx'
++import type { ComponentChildren } from 'preact'
+ import { DESKTOP_MIN_WIDTH, viewportWidth } from '/web/lib/viewport.ts'
+ import { Logo } from '/web/ui/topbar.tsx'
+ import { A } from '/web/lib/router-signal.ts'
+ import { Info } from '/web/assets/icons.tsx'
 -import { t } from '/web/lib/i18n.ts'
--
--/**
-- * Workspace and questions are desktop only (1280 px minimum): below that,
-- * the screen is not mounted and a short explanation is shown instead.
-- */
--export const DesktopOnly = ({ children }: { children: ComponentChildren }) => {
--  if (viewportWidth.value >= DESKTOP_MIN_WIDTH) return <>{children}</>
--  return (
--    <main tw='flex-1 flex flex-col items-center justify-center gap-5 px-4 py-12 text-center'>
--      <Logo />
--      <div tw='card max-w-[440px] w-full p-6 flex flex-col items-center gap-3'>
--        <Info tw='w-6 h-6 text-content-tertiary' />
--        <h1 tw='m-0 text-[18px] font-semibold'>
+ 
+ /**
+  * Workspace and questions are desktop only (1280 px minimum): below that,
+@@ -18,19 +17,16 @@ export const DesktopOnly = ({ children }: { children: ComponentChildren }) => {
+       <div tw='card max-w-[440px] w-full p-6 flex flex-col items-center gap-3'>
+         <Info tw='w-6 h-6 text-content-tertiary' />
+         <h1 tw='m-0 text-[18px] font-semibold'>
 -          {t('Écran trop étroit', 'Screen too narrow')}
--        </h1>
--        <p tw='m-0 text-content-secondary text-[14px]'>
++          {'Screen too narrow'}
+         </h1>
+         <p tw='m-0 text-content-secondary text-[14px]'>
 -          {t(
 -            `Cette étape de l’évaluation se passe sur un ordinateur, avec une fenêtre d’au moins ${DESKTOP_MIN_WIDTH} px de large. Agrandissez la fenêtre pour continuer.`,
 -            `This step of the assessment takes place on a computer, in a window at least ${DESKTOP_MIN_WIDTH} px wide. Widen the window to continue.`,
 -          )}
--        </p>
--        <p tw='m-0 font-mono text-[12px] text-content-tertiary'>
++          {`This step of the assessment takes place on a computer, in a window at least ${DESKTOP_MIN_WIDTH} px wide. Widen the window to continue.`}
+         </p>
+         <p tw='m-0 font-mono text-[12px] text-content-tertiary'>
 -          {t('Largeur actuelle :', 'Current width:')} {viewportWidth.value} px
--        </p>
--        <A href={paths.home} tw='btn btn-secondary btn-sm mt-1'>
++          Current width: {viewportWidth.value} px
+         </p>
+         <A href={paths.home} tw='btn btn-secondary btn-sm mt-1'>
 -          {t('Retour à l’accueil', 'Back to home')}
--        </A>
--      </div>
--    </main>
--  )
--}
++          {'Back to home'}
+         </A>
+       </div>
+     </main>
 diff --git a/web/ui/dialog.tsx b/web/ui/dialog.tsx
-deleted file mode 100644
-index 72004a7..0000000
+index 72004a7..0987c87 100644
 --- a/web/ui/dialog.tsx
-+++ /dev/null
-@@ -1,204 +0,0 @@
++++ b/web/ui/dialog.tsx
+@@ -1,6 +1,6 @@
 -import type { JSX, VNode } from 'npm:preact'
--import type { Token } from 'npm:@twind/preact'
++import type { JSX, VNode } from 'preact'
+ import type { Token } from 'npm:@twind/preact'
 -import { useState } from 'npm:preact/hooks'
--import { navigate, url } from '/web/lib/router-signal.ts'
--import { Button, type ButtonVariant } from '/web/ui/button.tsx'
--import { X } from '/web/assets/icons.tsx'
--
--type DialogProps = {
--  id: string
--  tw?: Token
--  children: preact.ComponentChildren
--  /** false: no close button, no Escape, no backdrop click (e.g. time is up) */
--  closable?: boolean
--  /** extra URL params cleared with `dialog` when closing (e.g. file, lines) */
--  closeParams?: string[]
--} & JSX.HTMLAttributes<HTMLDialogElement>
--
--/** Native <dialog>, opened when `?dialog=<id>` is in the URL (like tournament) */
--export const Dialog = ({
--  id,
--  tw,
--  children,
--  closable = true,
--  closeParams = [],
--  onPointerDown,
--  onClose,
--  ...props
--}: DialogProps) => {
--  const [dialogElem, setRef] = useState<HTMLDialogElement | null>(null)
--
--  const isOpen = url.params.dialog === id
--  if (dialogElem) {
--    if (!isOpen && dialogElem.open) {
--      dialogElem.close()
--    } else if (isOpen && !dialogElem.open) {
--      dialogElem.showModal()
--    }
--  }
--
--  return (
--    <dialog
--      {...props}
--      tw={['z-50 bg-transparent p-0', tw]}
--      onPointerDown={(event) => {
--        closable && dialogElem === event.target && dialogElem?.close()
--        typeof onPointerDown === 'function' && onPointerDown(event)
--      }}
--      onCancel={(event) => closable || event.preventDefault()}
--      onClose={(event) => {
--        typeof onClose === 'function' && onClose(event)
--        if (!isOpen) return
--        navigate({ params: closingParams(closeParams) })
--      }}
--      ref={setRef}
--    >
--      {isOpen ? children : null}
--    </dialog>
--  )
--}
--
--export const closingParams = (keys: string[] = []) =>
--  Object.fromEntries(['dialog', ...keys].map((k) => [k, null]))
--
--export const CloseButton = (
--  { dataTest, closeParams }: { dataTest: string; closeParams?: string[] },
--) => (
--  <Button
--    variant='ghost'
--    size='icon'
--    params={closingParams(closeParams)}
--    aria-label='Fermer'
--    title='Fermer'
--    data-test={dataTest}
--  >
--    <X tw='w-4 h-4' />
--  </Button>
--)
--
--export const ModalDialog = (
--  {
--    children,
--    tw,
--    id,
--    heading,
--    bare,
--    closable = true,
--    trigger,
--    triggerTw,
--    triggerVariant,
--    'data-test': dataTest,
--    onClose,
--  }:
--    & DialogProps
--    & {
--      heading?: preact.ComponentChildren
--      /** no padding, no title row: the children lay out the whole modal */
--      bare?: boolean
--      trigger?: VNode<unknown> | string
--      triggerTw?: Token
--      triggerVariant?: ButtonVariant
--      'data-test'?: string
--    },
--) => (
--  <>
--    {trigger && (
--      <Button
--        variant={triggerVariant}
--        tw={[triggerTw]}
--        params={{ dialog: id }}
--        data-test={dataTest}
--      >
--        {trigger}
--      </Button>
--    )}
--    <Dialog id={id} data-variant='modal' closable={closable} onClose={onClose}>
--      <div
--        tw={[
--          'relative rounded-xl border border-border-primary bg-surface-elevated text-content-primary shadow-[var(--shadow-lg)] w-[520px] max-w-[calc(100vw-32px)] max-h-[calc(100dvh-32px)] overflow-y-auto',
--          !bare && 'p-5 sm:p-6 flex flex-col gap-4',
--          tw,
--        ]}
--      >
--        {!bare && (heading || closable) && (
--          <div tw='flex items-start gap-3'>
--            {heading && (
--              <h2 tw='m-0 flex-1 text-[17px] font-semibold leading-snug'>
--                {heading}
--              </h2>
--            )}
--            {closable && (
--              <span tw='ml-auto -mt-1 -mr-2'>
--                <CloseButton dataTest='dialog-close-btn' />
--              </span>
--            )}
--          </div>
--        )}
--        {children}
--      </div>
--    </Dialog>
--  </>
--)
--
--export const DrawerDialog = (
--  {
--    children,
--    tw,
--    id,
--    trigger,
--    triggerTw,
--    'data-test': dataTest,
--    position = 'right',
--    width = 'w-80',
--    closeParams,
--    heading,
--  }:
--    & DialogProps
--    & {
--      position?: 'right' | 'left'
--      width?: string
--      heading?: preact.ComponentChildren
--      trigger?: VNode<unknown> | string
--      triggerTw?: Token
--      'data-test'?: string
--    },
--) => (
--  <>
--    {trigger && (
--      <Button
--        variant='secondary'
--        tw={triggerTw}
--        params={{ dialog: id }}
--        data-test={dataTest}
--      >
--        {trigger}
--      </Button>
--    )}
--    <Dialog id={id} data-variant='drawer' closeParams={closeParams}>
--      <div
--        tw={[
--          `fixed top-0 ${position}-0 border-${position[0]}`,
--          width,
--          'h-full max-w-[100vw] bg-surface-elevated shadow-[var(--shadow-lg)] border-border-primary text-content-primary z-50 flex flex-col',
--          tw,
--        ]}
--      >
--        <div tw='h-[52px] flex-none flex items-center gap-2.5 pl-[18px] pr-3 border-b border-border-primary bg-surface-elevated'>
--          {heading && (
--            <div tw='flex-1 min-w-0 flex items-center gap-2.5'>{heading}</div>
--          )}
--          <span tw='ml-auto'>
--            <CloseButton
--              dataTest='drawer-close-btn'
--              closeParams={closeParams}
--            />
--          </span>
--        </div>
--
--        <div tw='flex-1 min-h-0 overflow-y-auto'>
--          {children}
--        </div>
--      </div>
--    </Dialog>
--  </>
--)
++import { useState } from 'preact/hooks'
+ import { navigate, url } from '/web/lib/router-signal.ts'
+ import { Button, type ButtonVariant } from '/web/ui/button.tsx'
+ import { X } from '/web/assets/icons.tsx'
 diff --git a/web/ui/empty-state.tsx b/web/ui/empty-state.tsx
-deleted file mode 100644
-index 8ec7898..0000000
+index 8ec7898..fbb9c29 100644
 --- a/web/ui/empty-state.tsx
-+++ /dev/null
-@@ -1,23 +0,0 @@
++++ b/web/ui/empty-state.tsx
+@@ -1,4 +1,4 @@
 -import type { ComponentChildren } from 'npm:preact'
--import { FileSearch } from '/web/assets/icons.tsx'
--
--export function EmptyState(
--  { title, description, children }: {
--    title: string
--    description?: string
--    children?: ComponentChildren
--  },
--) {
--  return (
--    <div tw='flex flex-col items-center justify-center gap-2 px-8 py-12 text-center card-sunken'>
--      <FileSearch tw='w-8 h-8 text-content-tertiary mb-2' />
--      <h3 tw='m-0 text-[15px] font-semibold text-content-primary'>{title}</h3>
--      {description && (
--        <p tw='m-0 text-content-secondary text-[13.5px] max-w-[420px]'>
--          {description}
--        </p>
--      )}
--      {children && <div tw='mt-3'>{children}</div>}
--    </div>
--  )
--}
++import type { ComponentChildren } from 'preact'
+ import { FileSearch } from '/web/assets/icons.tsx'
+ 
+ export function EmptyState(
 diff --git a/web/ui/evidence.tsx b/web/ui/evidence.tsx
 deleted file mode 100644
 index be1301a..0000000
@@ -19164,192 +17533,33 @@ index f584e6c..bb6a02b 100644
          </button>
        </div>
 diff --git a/web/ui/page.tsx b/web/ui/page.tsx
-deleted file mode 100644
-index b5f3197..0000000
+index b5f3197..4877e99 100644
 --- a/web/ui/page.tsx
-+++ /dev/null
-@@ -1,161 +0,0 @@
--// Small building blocks shared by the recruiter pages.
++++ b/web/ui/page.tsx
+@@ -1,5 +1,5 @@
+ // Small building blocks shared by the recruiter pages.
 -import type { ComponentChildren } from 'npm:preact'
--import type { Token } from 'npm:@twind/preact'
--import { A } from '/web/lib/router-signal.ts'
--import { announceAnchor } from '/web/lib/scroll-spy.ts'
--import { ChevronLeft, ChevronRight } from '/web/assets/icons.tsx'
--
--/** "‹ Mes épreuves" */
--export const BackLink = (
--  { href, children }: { href: string; children: ComponentChildren },
--) => (
--  <A
--    href={href}
--    tw='inline-flex items-center gap-1 text-[12.5px] text-content-tertiary no-underline hover:text-content-primary self-start'
--  >
--    <ChevronLeft tw='w-3.5 h-3.5' />
--    {children}
--  </A>
--)
--
--/**
-- * In-page anchor. `<base href="/">` (index.html) makes a bare `#id` resolve
-- * to `/#id`, i.e. the home page: scroll to the section instead.
-- */
--export const AnchorLink = (
--  { to, children, tw, ...props }:
--    & { to: string; tw?: Token }
--    & Omit<preact.JSX.IntrinsicElements['a'], 'href'>,
--) => (
--  <a
--    {...props}
--    href={`${location.pathname}${location.search}#${to}`}
--    onClick={(e) => {
--      e.preventDefault()
--      announceAnchor(to)
--      document.getElementById(to)?.scrollIntoView({ behavior: 'smooth' })
--    }}
--    tw={tw}
--  >
--    {children}
--  </a>
--)
--
--/** Link of an anchor menu (R4, R6): the current section is highlighted */
--export const navLinkTw = (active: boolean) => [
--  'flex items-center gap-2 px-2.5 py-1.5 rounded-md no-underline border-l-2',
--  active
--    ? 'bg-surface-hover text-content-primary font-medium border-accent'
--    : 'text-content-secondary border-transparent hover:bg-surface-hover hover:text-content-primary',
--]
--
--/** Outlined metadata tag: level, duration, format… */
--export const MetaTag = (
--  { icon: Icon, children, tw }: {
--    icon?: (props: { tw?: string }) => preact.JSX.Element
--    children: ComponentChildren
--    tw?: Token
--  },
--) => (
--  <span
--    tw={[
--      'inline-flex items-center gap-[5px] h-[22px] px-2 rounded-md border border-border-strong bg-surface-elevated text-[12px] whitespace-nowrap',
--      tw,
--    ]}
--  >
--    {Icon && <Icon tw='w-3 h-3 text-content-tertiary' />}
--    {children}
--  </span>
--)
--
--/** Card with a title, used for the side-by-side blocks */
--export const Panel = (
--  { title, children, tw, aside }: {
--    title?: ComponentChildren
--    aside?: ComponentChildren
--    children: ComponentChildren
--    tw?: Token
--  },
--) => (
--  <section
--    tw={[
--      'card px-[18px] py-4 flex flex-col gap-3 min-w-0',
--      tw,
--    ]}
--  >
--    {(title || aside) && (
--      <div tw='flex items-center justify-between gap-3'>
--        {title && <h2 tw='m-0 text-[15px] font-semibold'>{title}</h2>}
--        {aside}
--      </div>
--    )}
--    {children}
--  </section>
--)
--
--/** Uppercase small caption above a list */
--export const Caption = ({ children }: { children: ComponentChildren }) => (
--  <span tw='font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-content-tertiary'>
--    {children}
--  </span>
--)
--
--/**
-- * Collapsible section (R4 body): open by default, native <details>.
-- * The id is the anchor of the side navigation.
-- */
--export const Collapsible = (
--  { id, title, count, children, open = true, alert }: {
--    id: string
--    title: string
--    count?: ComponentChildren
--    children: ComponentChildren
--    open?: boolean
--    alert?: boolean
--  },
--) => (
--  <details
--    id={id}
--    open={open}
--    tw={['group card rounded-[10px]', alert && 'border-err']}
--    // anchor below the sticky top bar (no scroll-mt-* in Twind)
--    style={{ scrollMarginTop: '72px' }}
--  >
--    <summary tw='list-none flex items-center gap-2 px-4 py-3 cursor-pointer select-none'>
--      <ChevronRight tw='w-[15px] h-[15px] text-content-tertiary transition-transform group-open:rotate-90' />
--      <h2 tw='m-0 text-[15px] font-semibold'>{title}</h2>
--      {count !== undefined && (
--        <span tw='text-[12.5px] text-content-tertiary'>{count}</span>
--      )}
--    </summary>
--    {children}
--  </details>
--)
--
--/** Table header / cell classes, shared by R1, R4 and R5 tables */
--export const th = 'px-2.5 py-[9px] font-medium text-left'
--export const td = 'px-2.5 py-3 align-middle'
--
--export const TableWrap = (
--  { children, minWidth = 720 }: {
--    children: ComponentChildren
--    minWidth?: number
--  },
--) => (
--  <div tw='relative rounded-[10px] border border-border-primary bg-surface-elevated overflow-auto'>
--    <table
--      tw='w-full border-collapse text-[13px]'
--      style={{ minWidth: `${minWidth}px` }}
--    >
--      {children}
--    </table>
--  </div>
--)
--
--export const THead = ({ children }: { children: ComponentChildren }) => (
--  <thead>
--    <tr tw='bg-surface-sunken text-content-tertiary text-[12px]'>
--      {children}
--    </tr>
--  </thead>
--)
++import type { ComponentChildren } from 'preact'
+ import type { Token } from 'npm:@twind/preact'
+ import { A } from '/web/lib/router-signal.ts'
+ import { announceAnchor } from '/web/lib/scroll-spy.ts'
 diff --git a/web/ui/spinner.tsx b/web/ui/spinner.tsx
-deleted file mode 100644
-index 5be1e77..0000000
+index 5be1e77..25d8ab1 100644
 --- a/web/ui/spinner.tsx
-+++ /dev/null
-@@ -1,14 +0,0 @@
--import type { Token } from 'npm:@twind/preact'
++++ b/web/ui/spinner.tsx
+@@ -1,11 +1,10 @@
+ import type { Token } from 'npm:@twind/preact'
 -import { t } from '/web/lib/i18n.ts'
--
--/** Small ring spinner used for running operations */
--export const Spinner = ({ tw }: { tw?: Token }) => (
--  <span
--    role='status'
+ 
+ /** Small ring spinner used for running operations */
+ export const Spinner = ({ tw }: { tw?: Token }) => (
+   <span
+     role='status'
 -    aria-label={t('En cours', 'In progress')}
--    tw={[
--      'inline-block w-3 h-3 flex-none rounded-full border-2 border-accent-soft border-t-accent animate-spin',
--      tw,
--    ]}
--  />
--)
++    aria-label='In progress'
+     tw={[
+       'inline-block w-3 h-3 flex-none rounded-full border-2 border-accent-soft border-t-accent animate-spin',
+       tw,
 diff --git a/web/ui/stepper.tsx b/web/ui/stepper.tsx
 deleted file mode 100644
 index 97267e0..0000000
@@ -19536,171 +17746,62 @@ index 97267e0..0000000
 -    'Nouvelle tentative (modèle de repli)…',
 -    'Trying again (fallback model)…',
 -  )
-diff --git a/web/ui/tab.tsx b/web/ui/tab.tsx
-deleted file mode 100644
-index 7817d73..0000000
---- a/web/ui/tab.tsx
-+++ /dev/null
-@@ -1,57 +0,0 @@
--import { url } from '/web/lib/router-signal.ts'
--import { navigate } from '/web/lib/router-signal.ts'
--import { A } from '/web/lib/router-signal.ts'
--
--type TabsProps = {
--  tabs: Record<string, preact.FunctionComponent>
--  paramName?: string
--  /** Optional content shown on the right of the tab bar for a given tab. */
--  actions?: Record<string, preact.ComponentChildren>
--}
--
--/** Underlined tabs, the active one is stored in the URL (like tournament) */
--export function Tabs({ tabs, paramName = 'tab', actions }: TabsProps) {
--  const keys = Object.keys(tabs)
--  const first = keys[0]
--  const slug = (key: string) => key.toLowerCase().replace(/\s+/g, '-')
--  const param = url.params[paramName]?.toLowerCase()
--  if (param && !keys.map(slug).includes(param)) {
--    navigate({ params: { [paramName]: null }, replace: true })
--    return null
--  }
--  const active = keys.find((k) => slug(k) === param) || first
--  const Content = tabs[active]
--  return (
--    <div tw='w-full flex flex-col min-h-0'>
--      <div
--        role='tablist'
--        tw='flex-none flex items-center gap-1 px-2 border-b border-border-primary'
--      >
--        {keys.map((key) => (
--          <A
--            key={key}
--            role='tab'
--            aria-selected={active === key}
--            params={{ [paramName]: key === first ? null : slug(key) }}
--            replace
--            data-test={`tab-${slug(key)}`}
--            tw={[
--              'h-10 px-2.5 -mb-px flex items-center text-[13px] no-underline border-b-2',
--              active === key
--                ? 'border-accent text-content-primary font-semibold'
--                : 'border-transparent text-content-secondary font-medium hover:text-content-primary',
--            ]}
--          >
--            {key}
--          </A>
--        ))}
--        {actions?.[active] && <div tw='ml-auto'>{actions[active]}</div>}
--      </div>
--      {Content && (
--        <div tw='flex-1 min-h-0'>
--          <Content />
--        </div>
--      )}
--    </div>
--  )
--}
 diff --git a/web/ui/test-result.tsx b/web/ui/test-result.tsx
-deleted file mode 100644
-index f452db5..0000000
+index f452db5..f9060ec 100644
 --- a/web/ui/test-result.tsx
-+++ /dev/null
-@@ -1,96 +0,0 @@
--import type { Visibility } from '/web/types.ts'
--import { CircleCheck, CircleX, EyeOff, Minus } from '/web/assets/icons.tsx'
++++ b/web/ui/test-result.tsx
+@@ -1,11 +1,10 @@
+ import type { Visibility } from '/web/types.ts'
+ import { CircleCheck, CircleX, EyeOff, Minus } from '/web/assets/icons.tsx'
 -import { t, tv } from '/web/lib/i18n.ts'
--
--export const VisibilityBadge = ({ visibility }: { visibility: Visibility }) => (
--  <span tw='inline-flex items-center gap-1 h-[18px] px-1.5 rounded-[5px] border border-border-strong text-content-secondary text-[11px]'>
+ 
+ export const VisibilityBadge = ({ visibility }: { visibility: Visibility }) => (
+   <span tw='inline-flex items-center gap-1 h-[18px] px-1.5 rounded-[5px] border border-border-strong text-content-secondary text-[11px]'>
 -    {visibility === 'caché' && <EyeOff tw='w-[11px] h-[11px]' />}
 -    {tv(visibility)}
--  </span>
--)
--
--type TestResultRowProps = {
--  id: string
--  title: string
--  visibility: Visibility
--  /** undefined: not run yet */
--  passed?: boolean
--  durationMs?: number
--  expected?: string
--  received?: string
--  request?: string
--}
--
--/**
-- * Test result line (brief §2.8): icon, id, title, public/hidden, duration.
-- * A failed test is unfolded with "Attendu : 400 · Reçu : 201" and the request.
-- */
--export const TestResultRow = (
--  { id, title, visibility, passed, durationMs, expected, received, request }:
--    TestResultRowProps,
--) => (
--  <div tw='border-t border-border-primary first:border-t-0'>
--    <div tw='flex items-center gap-2.5 h-9 px-3.5 text-[13px]'>
--      {passed === undefined
--        ? (
--          <Minus
--            tw='w-4 h-4 flex-none text-content-tertiary'
++    {visibility === 'hidden' && <EyeOff tw='w-[11px] h-[11px]' />}
++    {visibility}
+   </span>
+ )
+ 
+@@ -35,20 +34,20 @@ export const TestResultRow = (
+         ? (
+           <Minus
+             tw='w-4 h-4 flex-none text-content-tertiary'
 -            aria-label={t('Pas encore lancé', 'Not run yet')}
--          />
--        )
--        : passed
--        ? (
--          <CircleCheck
--            tw='w-4 h-4 flex-none text-ok'
++            aria-label='Not run yet'
+           />
+         )
+         : passed
+         ? (
+           <CircleCheck
+             tw='w-4 h-4 flex-none text-ok'
 -            aria-label={t('Réussi', 'Passed')}
--          />
--        )
--        : (
--          <CircleX
--            tw='w-4 h-4 flex-none text-err'
++            aria-label='Passed'
+           />
+         )
+         : (
+           <CircleX
+             tw='w-4 h-4 flex-none text-err'
 -            aria-label={t('Échoué', 'Failed')}
--          />
--        )}
--      <span tw='w-7 flex-none font-mono font-semibold text-[12px] text-content-secondary'>
--        {id}
--      </span>
--      <span tw='flex-1 min-w-0 truncate'>{title}</span>
--      <VisibilityBadge visibility={visibility} />
--      <span tw='w-10 flex-none text-right font-mono text-[11.5px] text-content-tertiary'>
--        {durationMs !== undefined ? `${durationMs} ms` : ''}
--      </span>
--    </div>
--    {passed === false && (expected || request || received) && (
--      <div tw='pl-[52px] pr-3.5 pt-2 pb-2.5 bg-err-soft text-[12.5px]'>
--        {!expected && received && (
--          <div tw='font-semibold text-err'>{received}</div>
--        )}
--        {expected && (
--          <div tw='font-semibold text-err'>
++            aria-label='Failed'
+           />
+         )}
+       <span tw='w-7 flex-none font-mono font-semibold text-[12px] text-content-secondary'>
+@@ -67,11 +66,10 @@ export const TestResultRow = (
+         )}
+         {expected && (
+           <div tw='font-semibold text-err'>
 -            {t('Attendu :', 'Expected:')} <span tw='font-mono'>{expected}</span>
--            {received && (
--              <>
++            Expected: <span tw='font-mono'>{expected}</span>
+             {received && (
+               <>
 -                {' '}· {t('Reçu :', 'Received:')}{' '}
 -                <span tw='font-mono'>{received}</span>
--              </>
--            )}
--          </div>
--        )}
--        {request && (
--          <div tw='mt-[3px] font-mono text-[12px] text-content-secondary break-all'>
--            {request}
--          </div>
--        )}
--      </div>
--    )}
--  </div>
--)
--
--/** Bordered list of TestResultRow */
--export const TestResultList = (
--  { children }: { children: preact.ComponentChildren },
--) => (
--  <div tw='rounded-[10px] border border-border-primary bg-surface-elevated overflow-hidden'>
--    {children}
--  </div>
--)
++                {' '}· {'Received:'} <span tw='font-mono'>{received}</span>
+               </>
+             )}
+           </div>
 diff --git a/web/ui/themetoggle.tsx b/web/ui/themetoggle.tsx
 index 2f75763..6c4cfd6 100644
 --- a/web/ui/themetoggle.tsx
@@ -19728,170 +17829,63 @@ index 2f75763..6c4cfd6 100644
      >
        {isDark ? <Sun tw='w-4 h-4' /> : <Moon tw='w-4 h-4' />}
 diff --git a/web/ui/timer.tsx b/web/ui/timer.tsx
-deleted file mode 100644
-index 77909b4..0000000
+index 77909b4..3771206 100644
 --- a/web/ui/timer.tsx
-+++ /dev/null
-@@ -1,74 +0,0 @@
--import { CloudCheck, CloudOff, Timer as TimerIcon } from '/web/assets/icons.tsx'
--import { formatClock } from '/web/lib/format.ts'
--import { Spinner } from '/web/ui/spinner.tsx'
++++ b/web/ui/timer.tsx
+@@ -1,7 +1,6 @@
+ import { CloudCheck, CloudOff, Timer as TimerIcon } from '/web/assets/icons.tsx'
+ import { formatClock } from '/web/lib/format.ts'
+ import { Spinner } from '/web/ui/spinner.tsx'
 -import { t } from '/web/lib/i18n.ts'
--
--/**
-- * Countdown (brief §2.10): hh:mm:ss (global) or mm:ss (per question).
-- * Amber under 20 % of the total time, red under 30 seconds.
-- */
--export const Timer = (
--  { remainingSec, totalSec, withHours = true }: {
--    remainingSec: number
--    totalSec: number
--    withHours?: boolean
--  },
--) => {
--  const level = remainingSec < 30
--    ? 'danger'
--    : remainingSec < totalSec * 0.2
--    ? 'warn'
--    : 'normal'
--  return (
--    <span
--      role='timer'
--      aria-label={level === 'danger'
+ 
+ /**
+  * Countdown (brief §2.10): hh:mm:ss (global) or mm:ss (per question).
+@@ -23,8 +22,8 @@ export const Timer = (
+     <span
+       role='timer'
+       aria-label={level === 'danger'
 -        ? t('Moins de 30 secondes restantes', 'Less than 30 seconds left')
 -        : t('Temps restant', 'Time left')}
--      tw={[
--        'inline-flex items-center gap-[5px] h-7 px-[9px] rounded-lg border font-mono font-semibold text-[13.5px] tabular-nums',
--        level === 'danger'
--          ? 'bg-err-soft text-err border-err'
--          : level === 'warn'
--          ? 'bg-warn-soft text-warn border-border-primary'
--          : 'bg-surface-sunken text-content-primary border-border-primary',
--      ]}
--    >
--      <TimerIcon tw='w-3.5 h-3.5' />
--      {formatClock(remainingSec, withHours)}
--    </span>
--  )
--}
--
--export type SaveState = 'saved' | 'saving' | 'offline'
--
--/** Save indicator (brief §2.11) */
--export const SaveIndicator = (
++        ? 'Less than 30 seconds left'
++        : 'Time left'}
+       tw={[
+         'inline-flex items-center gap-[5px] h-7 px-[9px] rounded-lg border font-mono font-semibold text-[13.5px] tabular-nums',
+         level === 'danger'
+@@ -44,7 +43,7 @@ export type SaveState = 'saved' | 'saving' | 'offline'
+ 
+ /** Save indicator (brief §2.11) */
+ export const SaveIndicator = (
 -  { state, savedAgo = t('il y a 2 s', '2 s ago') }: {
--    state: SaveState
--    savedAgo?: string
--  },
--) => {
--  if (state === 'saving') {
--    return (
--      <span tw='inline-flex items-center gap-1.5 text-[12.5px] text-content-tertiary whitespace-nowrap'>
--        <Spinner />
++  { state, savedAgo = '2 s ago' }: {
+     state: SaveState
+     savedAgo?: string
+   },
+@@ -53,7 +52,7 @@ export const SaveIndicator = (
+     return (
+       <span tw='inline-flex items-center gap-1.5 text-[12.5px] text-content-tertiary whitespace-nowrap'>
+         <Spinner />
 -        {t('Enregistrement…', 'Saving…')}
--      </span>
--    )
--  }
--  if (state === 'offline') {
--    return (
--      <span tw='inline-flex items-center gap-[5px] h-6 px-2 rounded-md bg-warn-soft text-warn font-medium text-[12.5px] whitespace-nowrap'>
--        <CloudOff tw='w-3.5 h-3.5' />
++        {'Saving…'}
+       </span>
+     )
+   }
+@@ -61,14 +60,14 @@ export const SaveIndicator = (
+     return (
+       <span tw='inline-flex items-center gap-[5px] h-6 px-2 rounded-md bg-warn-soft text-warn font-medium text-[12.5px] whitespace-nowrap'>
+         <CloudOff tw='w-3.5 h-3.5' />
 -        {t('Hors ligne, nouvelle tentative…', 'Offline, retrying…')}
--      </span>
--    )
--  }
--  return (
--    <span tw='inline-flex items-center gap-[5px] text-[12.5px] text-content-tertiary whitespace-nowrap'>
--      <CloudCheck tw='w-3.5 h-3.5' />
++        {'Offline, retrying…'}
+       </span>
+     )
+   }
+   return (
+     <span tw='inline-flex items-center gap-[5px] text-[12.5px] text-content-tertiary whitespace-nowrap'>
+       <CloudCheck tw='w-3.5 h-3.5' />
 -      {t('Enregistré', 'Saved')} {savedAgo}
--    </span>
--  )
--}
-diff --git a/web/ui/tooltip.tsx b/web/ui/tooltip.tsx
-deleted file mode 100644
-index 2ae2dea..0000000
---- a/web/ui/tooltip.tsx
-+++ /dev/null
-@@ -1,79 +0,0 @@
--import type { Token } from 'npm:@twind/preact'
--
--/** Predefined style variants */
--const variants = {
--  default: 'bg-content-primary text-surface-page border border-content-primary',
--  surface:
--    'bg-surface-elevated text-content-primary border border-border-strong',
--} as const
--
--const positions = {
--  top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
--  bottom: 'top-full left-1/2 -translate-x-1/2 mt-2',
--} as const
--
--/**
-- * Opens the details element on pointer enter
-- */
--const handlePointerEnter = ({ currentTarget }: PointerEvent) => {
--  currentTarget instanceof HTMLDetailsElement && (currentTarget.open = true)
--}
--
--/**
-- * Closes the details element when the pointer leaves the whole tooltip
-- */
--const handlePointerLeave = ({ currentTarget }: PointerEvent) => {
--  currentTarget instanceof HTMLDetailsElement && (currentTarget.open = false)
--}
--
--const summaryStyles = [
--  'cursor-default select-none list-none',
--]
--
--/**
-- * A <details> element that opens on hover with tooltip-style absolute positioning
-- *
-- * @example
-- * <Tooltip summary={<button disabled>PostgreSQL</button>}>
-- *   5 compétences maximum
-- * </Tooltip>
-- */
--export function Tooltip({
--  tw,
--  variant = 'default',
--  position = 'top',
--  summary,
--  children,
--  ...props
--}: {
--  tw?: Token
--  variant?: keyof typeof variants
--  position?: keyof typeof positions
--  summary: string | preact.ComponentChildren
--} & Omit<preact.JSX.IntrinsicElements['details'], 'summary'>) {
--  return (
--    <details
--      tw={['relative inline-block', tw, 'group']}
--      onPointerEnter={handlePointerEnter}
--      onPointerLeave={handlePointerLeave}
--      {...props}
--    >
--      <summary tw={summaryStyles}>
--        {summary}
--      </summary>
--      <div
--        role='tooltip'
--        tw={[
--          'absolute z-50 px-2.5 py-1.5 text-[12px] leading-snug rounded-md shadow-[var(--shadow)] whitespace-nowrap',
--          'transition-opacity duration-150',
--          positions[position],
--          'opacity-0 invisible pointer-events-none',
--          'group-open:opacity-100 group-open:visible',
--          variants[variant],
--        ]}
--      >
--        {children}
--      </div>
--    </details>
--  )
--}
++      Saved {savedAgo}
+     </span>
+   )
+ }
 diff --git a/web/ui/topbar.tsx b/web/ui/topbar.tsx
 index c575fd3..abe4e39 100644
 --- a/web/ui/topbar.tsx

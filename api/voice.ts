@@ -14,6 +14,7 @@ import { ENV } from '@01edu/api/env'
 import { converse, hasAiKey, llmConfig, type Message } from '/api/llm.ts'
 import { log } from '/api/lib/log.ts'
 import { isEcho } from '/web/lib/echo.ts'
+import type { InterviewLine } from '/web/types.ts'
 import { decodeSession } from '/api/member.ts'
 import {
   END_MARKER,
@@ -355,6 +356,14 @@ export const handleVoice = async (
   options: {
     facts: (req: Request) => Promise<InterviewFacts>
     authorize?: (req: Request) => Promise<boolean>
+    /** the interview opens */
+    onStart?: (req: Request) => void
+    /** the interview is over: what was said, and whether the interviewer closed it */
+    onFinish?: (
+      req: Request,
+      transcript: InterviewLine[],
+      completed: boolean,
+    ) => void
   },
 ): Promise<Response> => {
   if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
@@ -375,10 +384,32 @@ export const handleVoice = async (
   const facts = await options.facts(req)
   const { socket, response } = Deno.upgradeWebSocket(req)
   socket.binaryType = 'arraybuffer'
+  const transcript: InterviewLine[] = []
+  let completed = false
   const interview = new VoiceInterview(facts, (event) => {
+    if (event.type === 'heard') {
+      transcript.push({ who: 'candidate', text: event.text })
+    } else if (event.type === 'ai-done' && event.text) {
+      transcript.push({
+        who: 'ai',
+        text: event.text,
+        interrupted: event.interrupted || undefined,
+      })
+    } else if (event.type === 'end') completed = true
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event))
+    // the end is final even if the browser keeps the socket open
+    if (event.type === 'end') finish()
   })
-  socket.onopen = () => interview.start()
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    options.onFinish?.(req, transcript, completed)
+  }
+  socket.onopen = () => {
+    options.onStart?.(req)
+    interview.start()
+  }
   socket.onmessage = (e) => {
     if (typeof e.data === 'string') {
       if (e.data.includes('"stop"')) interview.close()
@@ -386,6 +417,9 @@ export const handleVoice = async (
     }
     interview.audio(new Uint8Array(e.data as ArrayBuffer))
   }
-  socket.onclose = () => interview.close()
+  socket.onclose = () => {
+    interview.close()
+    finish()
+  }
   return response
 }

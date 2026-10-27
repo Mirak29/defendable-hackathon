@@ -1,12 +1,24 @@
 // What the interviewer knows about a real candidate: the frozen code, and what
 // the server found when it ran it (api/candidate.ts, prepareInterview).
 import { json } from '/api/assessment.ts'
-import { type StoredResults } from '/api/candidate.ts'
+import {
+  findCandidate,
+  finishInterview,
+  startInterview,
+  type StoredResults,
+} from '/api/candidate.ts'
 import { candidateBriefText } from '/api/reference.ts'
 import type { InterviewFacts } from '/api/prompts.ts'
 import { Assessment, type CandidateRow } from '/api/schema.ts'
 import { voiceConfig } from '/api/voice.ts'
-import type { AssessmentSpec, CandidateFiles } from '/web/types.ts'
+import type {
+  AssessmentSpec,
+  CandidateFiles,
+  InterviewLine,
+} from '/web/types.ts'
+
+const candidateOf = (req: Request) =>
+  findCandidate(req.headers.get('cookie')?.match(/dfd_candidate=([^;]+)/)?.[1])
 
 /** undefined while the preparation of the interview is not over */
 export const factsOf = (c: CandidateRow): InterviewFacts | undefined => {
@@ -36,4 +48,30 @@ export const factsOf = (c: CandidateRow): InterviewFacts | undefined => {
       : 'none written',
     questions: voiceConfig.questions,
   }
+}
+
+/**
+ * Who may talk to the interviewer: a candidate whose code is submitted and
+ * whose preparation is over, until the interview is closed.
+ */
+export const candidateVoice = {
+  authorize: (req: Request) => {
+    try {
+      const c = candidateOf(req)
+      return Promise.resolve(!c.candidateFinishedAt && !!factsOf(c))
+    } catch {
+      return Promise.resolve(false)
+    }
+  },
+  facts: (req: Request) => Promise.resolve(factsOf(candidateOf(req))!),
+  onStart: (req: Request) => startInterview(candidateOf(req)),
+  onFinish: (
+    req: Request,
+    transcript: InterviewLine[],
+    completed: boolean,
+  ) => {
+    if (transcript.length) {
+      finishInterview(candidateOf(req), transcript, completed)
+    }
+  },
 }
