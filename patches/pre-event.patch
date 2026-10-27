@@ -315,7 +315,7 @@ index e207b60..0000000
 -VOLUME /app/data
 -CMD ["deno", "run", "-A", "--unstable-ffi", "prod-server.ts"]
 diff --git a/api/assessment.ts b/api/assessment.ts
-index 46b79c9..c8c62d6 100644
+index 46b79c9..0a89346 100644
 --- a/api/assessment.ts
 +++ b/api/assessment.ts
 @@ -1,17 +1,15 @@
@@ -374,9 +374,10 @@ index 46b79c9..c8c62d6 100644
 +    ? 'Finished'
      : c.candidateRevokedAt
 -    ? 'Révoqué'
-+    ? 'Revoked'
-     : c.candidateQuestionsStartedAt
+-    : c.candidateQuestionsStartedAt
 -    ? 'Questions en cours'
++    ? 'Revoked'
++    : c.candidateInterviewStartedAt
 +    ? 'Interview'
      : c.candidateStartedAt
 -    ? 'Construction en cours'
@@ -390,7 +391,7 @@ index 46b79c9..c8c62d6 100644
  
  const minutes = (from?: number | null, to?: number | null) =>
    from && to ? Math.max(1, Math.round((to - from) / 60_000)) : undefined
-@@ -82,13 +92,12 @@ export const toCandidateSummary = (c: CandidateRow): CandidateSummary => ({
+@@ -82,21 +92,18 @@ export const toCandidateSummary = (c: CandidateRow): CandidateSummary => ({
        email: c.candidateEmail,
        profileUrl: c.candidateProfileUrl ?? undefined,
        note: c.candidateNote ?? undefined,
@@ -401,11 +402,20 @@ index 46b79c9..c8c62d6 100644
    status: candidateStatus(c),
    buildMinutes: minutes(c.candidateStartedAt, c.candidateSubmittedAt),
 -  questionsMinutes: minutes(
+-    c.candidateQuestionsStartedAt,
 +  interviewMinutes: minutes(
-     c.candidateQuestionsStartedAt,
++    c.candidateInterviewStartedAt,
      c.candidateFinishedAt,
    ),
-@@ -118,7 +127,7 @@ const EMPTY_TRACE: AiTrace = {
+   date: iso(
+     c.candidateFinishedAt ?? c.candidateStartedAt ?? c.candidateCreatedAt,
+   ) ?? new Date().toISOString(),
+-  emailSentAt: iso(c.candidateEmailSentAt),
+-  emailError: c.candidateEmailError ?? undefined,
+ })
+ 
+ const candidatesOf = Candidate.sql`
+@@ -118,7 +125,7 @@ const EMPTY_TRACE: AiTrace = {
  
  export const toState = (row: AssessmentRow): AssessmentState => {
    const spec = json<AssessmentSpec>(row.assessmentSpec) ?? {
@@ -414,7 +424,7 @@ index 46b79c9..c8c62d6 100644
      title: row.assessmentTitle,
      tests: [],
      requirements: [],
-@@ -135,7 +144,6 @@ export const toState = (row: AssessmentRow): AssessmentState => {
+@@ -135,7 +142,6 @@ export const toState = (row: AssessmentRow): AssessmentState => {
        durationMin: row.assessmentDuration,
        skills: json<string[]>(row.assessmentSkills) ?? [],
        domain: row.assessmentDomain ?? undefined,
@@ -422,7 +432,7 @@ index 46b79c9..c8c62d6 100644
      },
      createdAt: iso(row.assessmentCreatedAt) ?? new Date().toISOString(),
      approvedAt: iso(row.assessmentApprovedAt),
-@@ -165,16 +173,22 @@ export const listCompanyAssessments = (companyId: number) =>
+@@ -165,16 +171,22 @@ export const listCompanyAssessments = (companyId: number) =>
  
  export const getAssessment = (id: number) => toState(Assessment.require(id))
  
@@ -448,7 +458,7 @@ index 46b79c9..c8c62d6 100644
      })
    }
    return row
-@@ -183,8 +197,8 @@ const requireDraft = (id: number) => {
+@@ -183,8 +195,8 @@ const requireDraft = (id: number) => {
  /* ---------- model answers ---------- */
  
  const LEVELS = ['junior', 'intermediate', 'senior'] as const
@@ -459,7 +469,7 @@ index 46b79c9..c8c62d6 100644
  const HTTP = ['GET', 'POST', 'DELETE'] as const
  
  const parseSkill = (v: unknown, p: string): Skill => {
-@@ -207,14 +221,14 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
+@@ -207,14 +219,14 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
    // "/rooms/{id}" → "/rooms/:id", without query string
    const path = str(o.path, `${p}.path`, 80).split('?')[0]
      .replace(/\{(\w+)\}/g, ':$1')
@@ -476,7 +486,7 @@ index 46b79c9..c8c62d6 100644
        return code
      }, { min: 1, max: 6 }),
    }
-@@ -223,7 +237,7 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
+@@ -223,7 +235,7 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
  const parseRequirement = (v: unknown, p: string): Requirement => {
    const o = obj(v, p)
    const id = str(o.id, `${p}.id`, 5)
@@ -485,7 +495,7 @@ index 46b79c9..c8c62d6 100644
    return {
      id,
      title: str(o.title, `${p}.title`, 100),
-@@ -236,7 +250,7 @@ const parseRequirement = (v: unknown, p: string): Requirement => {
+@@ -236,7 +248,7 @@ const parseRequirement = (v: unknown, p: string): Requirement => {
  const parseTest = (v: unknown, p: string): TestCase => {
    const o = obj(v, p)
    const id = str(o.id, `${p}.id`, 5)
@@ -494,7 +504,7 @@ index 46b79c9..c8c62d6 100644
    const steps = arr(o.steps, `${p}.steps`, (s, sp) => {
      const step = obj(s, sp)
      const parsed = {
-@@ -246,7 +260,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
+@@ -246,7 +258,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
      try {
        parseStep(parsed)
      } catch (err) {
@@ -503,7 +513,7 @@ index 46b79c9..c8c62d6 100644
      }
      return parsed
    }, { min: 1, max: 6 })
-@@ -258,7 +272,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
+@@ -258,7 +270,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
      expected: str(o.expected, `${p}.expected`, 60),
      visibility: oneOf(
        o.visibility,
@@ -512,7 +522,7 @@ index 46b79c9..c8c62d6 100644
        `${p}.visibility`,
      ),
      requirementIds: arr(o.requirementIds, `${p}.requirementIds`, strItem, {
-@@ -272,11 +286,20 @@ const parseTest = (v: unknown, p: string): TestCase => {
+@@ -272,11 +284,20 @@ const parseTest = (v: unknown, p: string): TestCase => {
  
  type NeedAnalysis = { level: Level; skills: Skill[]; domain?: string }
  
@@ -536,7 +546,7 @@ index 46b79c9..c8c62d6 100644
      domain: optStr(o.domain, 'domain', 60),
    }
  }
-@@ -293,9 +316,29 @@ type Scenario = Pick<
+@@ -293,9 +314,29 @@ type Scenario = Pick<
    | 'requirements'
  >
  
@@ -568,7 +578,7 @@ index 46b79c9..c8c62d6 100644
    return {
      title: str(o.title, 'title', 80),
      company: str(o.company, 'company', 40),
-@@ -319,101 +362,52 @@ const parseScenario = (v: unknown): Scenario => {
+@@ -319,101 +360,52 @@ const parseScenario = (v: unknown): Scenario => {
    }
  }
  
@@ -695,7 +705,7 @@ index 46b79c9..c8c62d6 100644
      { status: 501 },
    );
  }
-@@ -421,7 +415,7 @@ export async function handler(req: Request): Promise<Response> {
+@@ -421,7 +413,7 @@ export async function handler(req: Request): Promise<Response> {
      'src/app_test.ts': `import { assertEquals } from "@std/assert";
  import { handler } from "./app.ts";
  
@@ -704,7 +714,7 @@ index 46b79c9..c8c62d6 100644
    const res = await handler(new Request("http://localhost/"));
    assertEquals(typeof res.status, "number");
  });
-@@ -429,7 +423,7 @@ Deno.test("exemple : l’API répond", async () => {
+@@ -429,7 +421,7 @@ Deno.test("exemple : l’API répond", async () => {
      'playground.ts': `import { handler } from "./src/app.ts";
  
  const res = await handler(new Request("http://localhost${
@@ -713,7 +723,7 @@ index 46b79c9..c8c62d6 100644
      }", {
    method: "${first?.method ?? 'GET'}",
  }));
-@@ -449,7 +443,7 @@ console.log(res.status, await res.text());
+@@ -449,7 +441,7 @@ console.log(res.status, await res.text());
  ## Tests
  deno task test
  
@@ -722,7 +732,7 @@ index 46b79c9..c8c62d6 100644
  - `,
    }
  }
-@@ -467,31 +461,20 @@ const saveProgress = (id: number, progress: Progress) => {
+@@ -467,31 +459,20 @@ const saveProgress = (id: number, progress: Progress) => {
    })
  }
  
@@ -755,7 +765,7 @@ index 46b79c9..c8c62d6 100644
    const result = await ask({
      ...options,
      onFallback: (reason) => {
-@@ -541,36 +524,29 @@ const repairInstruction = (d: Draft) => {
+@@ -541,36 +522,29 @@ const repairInstruction = (d: Draft) => {
        const test = spec.tests.find((t) => t.id === r.id)
        const why = reference!.excluded.find((e) => e.id === r.id)?.reason ??
          r.reason ?? ''
@@ -799,7 +809,7 @@ index 46b79c9..c8c62d6 100644
  ) => {
    const progress: Progress = {
      kind: instruction ? 'regeneration' : 'generation',
-@@ -579,63 +555,55 @@ const runGeneration = async (
+@@ -579,63 +553,55 @@ const runGeneration = async (
    }
    const previous = json<AssessmentSpec>(Assessment.require(id).assessmentSpec)
    try {
@@ -890,7 +900,7 @@ index 46b79c9..c8c62d6 100644
          durationMin: input.durationMin,
          level: analysis.data.level,
          jobDescription: input.jobDescription,
-@@ -665,7 +633,6 @@ const runGeneration = async (
+@@ -665,7 +631,6 @@ const runGeneration = async (
        if (repaired && problemsOf(repaired) < problemsOf(best)) best = repaired
      }
      const { spec, starter, starterFails, reference } = best
@@ -898,7 +908,7 @@ index 46b79c9..c8c62d6 100644
      progress.steps[3] = {
        state: 'done',
        ...(reference && { trace: reference.traces.at(-1) }),
-@@ -676,7 +643,7 @@ const runGeneration = async (
+@@ -676,7 +641,7 @@ const runGeneration = async (
        assessmentTitle: spec.title,
        assessmentLevel: spec.level,
        assessmentSpec: spec,
@@ -907,7 +917,7 @@ index 46b79c9..c8c62d6 100644
        assessmentChecks: { starterFails, reference },
        assessmentStarterFiles: starter,
        assessmentDeletedTests: reference?.excluded.map((e) => e.id) ?? [],
-@@ -697,19 +664,17 @@ const runGeneration = async (
+@@ -697,19 +662,17 @@ const runGeneration = async (
    }
  }
  
@@ -929,7 +939,7 @@ index 46b79c9..c8c62d6 100644
      assessmentJobDescription: input.jobDescription,
      assessmentStatus: 'generating',
      assessmentSkills: input.skills,
-@@ -720,42 +685,39 @@ export const createAssessment = (
+@@ -720,42 +683,39 @@ export const createAssessment = (
      companyId: companyOfAssessment(assessmentId),
      assessmentId,
    })
@@ -984,7 +994,7 @@ index 46b79c9..c8c62d6 100644
        return {
          level: oneOf(o.level, LEVELS, 'level'),
          skills: arr(o.skills, 'skills', (s, p) => str(s, p, 60), {
-@@ -764,18 +726,18 @@ export const prefillFromDescription = async (jobDescription: string) => {
+@@ -764,18 +724,18 @@ export const prefillFromDescription = async (jobDescription: string) => {
          }),
        }
      },
@@ -1006,7 +1016,7 @@ index 46b79c9..c8c62d6 100644
  export const updateAssessment = (
    id: number,
    { title, context, mission }: {
-@@ -784,7 +746,7 @@ export const updateAssessment = (
+@@ -784,7 +744,7 @@ export const updateAssessment = (
      mission?: string | null
    },
  ) => {
@@ -1015,7 +1025,7 @@ index 46b79c9..c8c62d6 100644
    const spec = json<AssessmentSpec>(row.assessmentSpec)!
    const next: AssessmentSpec = {
      ...spec,
-@@ -807,7 +769,7 @@ export const updateAssessment = (
+@@ -807,7 +767,7 @@ export const updateAssessment = (
  }
  
  export const setDeletedTests = (id: number, testIds: string[]) => {
@@ -1024,7 +1034,7 @@ index 46b79c9..c8c62d6 100644
    const known = new Set(
      json<AssessmentSpec>(row.assessmentSpec)!.tests.map((t) => t.id),
    )
-@@ -825,9 +787,9 @@ export const randomToken = (length: number) =>
+@@ -825,9 +785,9 @@ export const randomToken = (length: number) =>
      (n) => INVITATION_CHARS[n % INVITATION_CHARS.length],
    ).join('')
  
@@ -1036,7 +1046,7 @@ index 46b79c9..c8c62d6 100644
    const state = toState(row)
    const deleted = new Set(state.deletedTests)
    const { blocked } = computeChecks(
-@@ -838,7 +800,7 @@ export const approveAssessment = (id: number) => {
+@@ -838,7 +798,7 @@ export const approveAssessment = (id: number) => {
    )
    if (blocked) {
      throw new respond.BadRequestError({
@@ -1046,13 +1056,16 @@ index 46b79c9..c8c62d6 100644
    }
    Assessment.update({
 diff --git a/api/candidate.test.js b/api/candidate.test.js
-deleted file mode 100644
-index 2d5d576..0000000
+index 2d5d576..6c0cab0 100644
 --- a/api/candidate.test.js
-+++ /dev/null
-@@ -1,60 +0,0 @@
--import { eq, test } from '/api/lib/test.ts'
--import { Candidate } from '/api/schema.ts'
++++ b/api/candidate.test.js
+@@ -1,60 +1,373 @@
++// The journey of a candidate on the real routes: invitation, start, editor
++// (save, run, type check), submission, and the preparation of the interview
++// (every test run on the frozen code, the facts the interviewer receives).
+ import { eq, test } from '/api/lib/test.ts'
++import { routeHandler } from '/api/routes.ts'
+ import { Candidate } from '/api/schema.ts'
 -import { seedDemoAssessment, seedFinishedCandidate } from '/fixtures/seed.ts'
 -import { randomToken } from '/api/assessment.ts'
 -import {
@@ -1073,18 +1086,128 @@ index 2d5d576..0000000
 -    candidateAnswers: {
 -      [n]: { openedAt: Date.now() - ago, assistant: [], assistantTraces: [] },
 -    },
--  })
++import { factsOf } from '/api/interview.ts'
++import { demoFiles } from '/fixtures/demo-files.ts'
++import { demoJobDescription } from '/fixtures/demo.ts'
++
++const call = async (method, path, input, cookies = {}) => {
++  const url = new URL(`http://localhost${path}`)
++  if (method === 'GET') {
++    for (const [k, v] of Object.entries(input ?? {})) {
++      url.searchParams.set(k, String(v))
++    }
++  }
++  try {
++    return await routeHandler({
++      req: new Request(url, {
++        method,
++        headers: { 'content-type': 'application/json' },
++        body: method === 'POST' ? JSON.stringify(input ?? {}) : undefined,
++      }),
++      url,
++      cookies,
++      trace: Date.now(),
++    })
++  } catch (error) {
++    if (error.response instanceof Response) return error.response
++    throw error
++  }
++}
++
++const cookieOf = (res, name) =>
++  res.headers.get('set-cookie')?.match(new RegExp(`${name}=([^;]+)`))?.[1]
++
++const signup = async (name) => {
++  const res = await call('POST', '/api/signup', {
++    companyName: name,
++    name: 'Test',
++    email: `${name.toLowerCase()}-${crypto.randomUUID().slice(0, 6)}@gmail.com`,
++    password: 'Strong-password-1',
+   })
 -  return () => Candidate.require(candidateId)
--}
--
++  return { dfd_session: cookieOf(res, 'dfd_session') }
++}
++
++/** an approved assessment (recorded answers, no key) and its owner */
++const approvedAssessment = async (member) => {
++  const created = await call('POST', '/api/assessment', {
++    jobDescription: demoJobDescription,
++    level: 'intermediate',
++    durationMin: 90,
++    skills: ['REST API design', 'Data validation'],
++  }, member)
++  const { id } = await created.json()
++  for (let i = 0; i < 300; i++) {
++    const state = await (await call('GET', '/api/assessment', { id }, member))
++      .json()
++    if (state.status !== 'generating') break
++    await new Promise((r) => setTimeout(r, 50))
++  }
++  const res = await call('POST', '/api/assessment/approve', { id }, member)
++  eq(res.status, 200)
++  return id
++}
++
++const identity = (n = 1) => ({
++  firstName: 'Awa',
++  lastName: 'Diop',
++  email: `awa${n}-${crypto.randomUUID().slice(0, 6)}@gmail.com`,
++})
++
++const invite = async (member, assessment, patch = {}) => {
++  const res = await call('POST', '/api/candidate/invite', {
++    assessment,
++    ...identity(),
++    ...patch,
++  }, member)
++  return { res, body: res.ok ? await res.json() : undefined }
++}
++
++/** the preparation of the interview, once it is over */
++const prepared = async (cookies) => {
++  for (let i = 0; i < 600; i++) {
++    const view = await (await call('GET', '/api/candidate/me', {}, cookies))
++      .json()
++    const steps = view.preparation?.steps ?? []
++    if (steps.at(-1)?.state === 'done' || view.preparation?.error) return view
++    await new Promise((r) => setTimeout(r, 100))
++  }
++  throw Error('the preparation did not finish')
+ }
+ 
 -test('answers after the time are not recorded (AUD-005)', async (step) => {
 -  await step('within the time: the choice is kept', () => {
 -    const row = atQuestion(10_000)
 -    sendAnswer(row(), { n: 1, choice: 2 })
 -    const [answer] = Object.values(answersOf(row()))
 -    eq([answer.choice, answer.expired], [2, undefined])
--  })
--
++test('candidate: invitation and start', async (step) => {
++  const member = await signup('Invites')
++  const assessment = await approvedAssessment(member)
++  let link
++  let invitation
++
++  await step(
++    'a recruiter invites a person and gets a personal link',
++    async () => {
++      const { res, body } = await invite(member, assessment, {
++        profileUrl: 'https://github.com/awa',
++        note: 'Referred by Sam',
++      })
++      eq(res.status, 200)
++      invitation = body.invitation
++      link = body.link
++      eq(invitation.length, 24)
++      eq(link.endsWith(`/candidate?invitation=${invitation}`), true)
++    },
++  )
++
++  await step('the same e-mail cannot be invited twice', async () => {
++    const first = await invite(member, assessment, { email: 'same@gmail.com' })
++    const again = await invite(member, assessment, { email: 'SAME@gmail.com' })
++    eq([first.res.status, again.res.status], [200, 409])
+   })
+ 
 -  await step('an hour later: unanswered, « temps écoulé »', () => {
 -    const row = atQuestion(3_600_000)
 -    sendAnswer(row(), { n: 1, choice: 2 })
@@ -1092,11 +1215,117 @@ index 2d5d576..0000000
 -    eq([answer.choice, answer.expired, !!answer.sentAt], [
 -      undefined,
 -      true,
--      true,
++  await step('bad identities are refused', async () => {
++    eq(
++      (await invite(member, assessment, { email: 'not-an-email' })).res.status,
++      400,
++    )
++    eq((await invite(member, assessment, { firstName: '  ' })).res.status, 400)
++    eq(
++      (await invite(member, assessment, { profileUrl: 'http://insecure.io' }))
++        .res.status,
++      400,
++    )
++  })
++
++  await step(
++    'the welcome page shows the assessment, not the answers',
++    async () => {
++      const res = await call('GET', '/api/invitation', { invitation })
++      eq(res.status, 200)
++      const view = await res.json()
++      eq([view.state, view.firstName, view.durationMin], ['invited', 'Awa', 90])
++      eq(view.company, 'Linkly')
++      eq(
++        (await call('GET', '/api/invitation', { invitation: 'nope' })).status,
++        404,
++      )
++    },
++  )
++
++  await step('starting sets the cookie and starts the clock once', async () => {
++    const res = await call('POST', '/api/candidate/start', { invitation })
++    eq(res.status, 200)
++    const token = cookieOf(res, 'dfd_candidate')
++    eq(res.headers.get('set-cookie').includes('HttpOnly'), true)
++    const view = await res.json()
++    eq(view.pseudonym.startsWith('Candidate '), true)
++    eq(view.assessment.hiddenCount, 3)
++    eq(
++      view.assessment.publicTests.every((t) => t.visibility === 'public'),
+       true,
 -    ])
--  })
--})
--
++    )
++    eq('src/app.ts' in view.files, true)
++    const again = await call('POST', '/api/candidate/start', { invitation })
++    eq(cookieOf(again, 'dfd_candidate'), token)
++    eq((await again.json()).startedAt, view.startedAt)
++    eq(
++      (await call('GET', '/api/invitation', { invitation }).then((r) =>
++        r.json()
++      ))
++        .state,
++      'started',
++    )
++  })
++
++  await step('a revoked or expired link no longer starts', async () => {
++    const a = await invite(member, assessment)
++    const b = await invite(member, assessment)
++    const revoked = await call(
++      'POST',
++      '/api/candidate/revoke',
++      { candidate: a.body.candidateId },
++      member,
++    )
++    eq(revoked.status, 204)
++    eq(
++      (await call('POST', '/api/candidate/start', {
++        invitation: a.body.invitation,
++      })).status,
++      400,
++    )
++    Candidate.update({
++      candidateId: b.body.candidateId,
++      candidateInvitedAt: Date.now() - 15 * 24 * 3600_000,
++    })
++    eq(
++      (await call('POST', '/api/candidate/start', {
++        invitation: b.body.invitation,
++      })).status,
++      400,
++    )
++  })
++
++  await step('another company can neither invite nor revoke', async () => {
++    const other = await signup('Other')
++    eq((await invite(other, assessment)).res.status, 404)
++    const { body } = await invite(member, assessment)
++    eq(
++      (await call('POST', '/api/candidate/revoke', {
++        candidate: body.candidateId,
++      }, other))
++        .status,
++      404,
++    )
++  })
++
++  await step('without a session nothing is open', async () => {
++    eq((await call('GET', '/api/candidate/me')).status, 401)
++    eq(
++      (await call('POST', '/api/candidate/files', { files: demoFiles })).status,
++      401,
++    )
++    eq(
++      (await call('POST', '/api/candidate/invite', {
++        assessment,
++        ...identity(),
++      })).status,
++      401,
++    )
+   })
+ })
+ 
 -test('assistant limit under parallel calls (AUD-007)', async (step) => {
 -  await step('4 calls at once: 3 replies, 1 refused', async () => {
 -    const row = atQuestion(1_000, 7) // Q7 is a free answer
@@ -1109,52 +1338,203 @@ index 2d5d576..0000000
 -    eq(calls.filter((c) => c.status === 'rejected').length, 1)
 -    const stored = answersOf(row())[7].assistant
 -    eq(stored.filter((m) => m.role === 'user').length, ASSISTANT_LIMIT)
--  })
--})
++test('candidate: build, submit, and the facts of the interview', async (step) => {
++  const member = await signup('Builds')
++  const assessment = await approvedAssessment(member)
++  const { body } = await invite(member, assessment)
++  const started = await call('POST', '/api/candidate/start', {
++    invitation: body.invitation,
++  })
++  const cookies = { dfd_candidate: cookieOf(started, 'dfd_candidate') }
++
++  await step(
++    'the editor saves, runs the sandbox and checks the types',
++    async () => {
++      const save = await call('POST', '/api/candidate/files', {
++        files: demoFiles,
++      }, cookies)
++      eq(save.status, 200)
++      const view = await (await call('GET', '/api/candidate/me', {}, cookies))
++        .json()
++      eq(view.files['src/app.ts'], demoFiles['src/app.ts'])
++
++      const run = await (await call('POST', '/api/candidate/run', {
++        kind: 'run',
++        files: demoFiles,
++      }, cookies)).json()
++      eq(run.run.exitCode, 0)
++      eq(run.run.chunks.map((c) => c.text).join('').includes('201'), true)
++
++      // public tests only: the candidate never sees a hidden verdict
++      const evaluation = await (await call('POST', '/api/candidate/run', {
++        kind: 'eval',
++        files: demoFiles,
++      }, cookies)).json()
++      eq(evaluation.results.length, 8)
++      eq(evaluation.results.every((r) => r.passed), true)
++
++      const problems = await (await call('POST', '/api/candidate/check', {
++        files: demoFiles,
++      }, cookies)).json()
++      eq(problems, [])
++    },
++  )
++
++  await step('a declaration of the AI tools is required', async () => {
++    eq(
++      (await call('POST', '/api/candidate/submit', { tools: [] }, cookies))
++        .status,
++      400,
++    )
++  })
++
++  await step(
++    'the submission freezes the code and prepares the interview',
++    async () => {
++      const res = await call('POST', '/api/candidate/submit', {
++        tools: ['ChatGPT', 'GitHub Copilot'],
++      }, cookies)
++      eq(res.status, 200)
++      const view = await res.json()
++      eq(typeof view.submittedAt, 'number')
++      eq(view.declaredTools, ['ChatGPT', 'GitHub Copilot'])
++      eq(view.preparation.steps[0].state, 'done')
++
++      const done = await prepared(cookies)
++      eq(done.preparation.error, undefined)
++      eq(done.preparation.steps.map((s) => s.state), ['done', 'done', 'done'])
++    },
++  )
++
++  await step('the code cannot change any more', async () => {
++    const save = await call(
++      'POST',
++      '/api/candidate/files',
++      { files: {} },
++      cookies,
++    )
++    eq(save.status, 409)
++    const run = await call('POST', '/api/candidate/run', {
++      kind: 'run',
++      files: demoFiles,
++    }, cookies)
++    eq(run.status, 409)
++  })
++
++  await step(
++    'the interviewer knows what the server found, hidden tests too',
++    () => {
++      const row = Candidate.require(body.candidateId)
++      const facts = factsOf(row)
++      eq([facts.passedCount, facts.totalCount], [10, 11])
++      eq(facts.failedTests.length, 1)
++      eq(facts.failedTests[0].startsWith('T9 (hidden)'), true)
++      eq(facts.failedTests[0].includes('received 201'), true)
++      eq(facts.typeErrors, [])
++      eq(facts.ownTests, '6 pass, 0 fail')
++      eq(facts.files['src/app.ts'], demoFiles['src/app.ts'])
++      eq(facts.brief.includes('Mission:'), true)
++      eq(facts.questions, 6)
++    },
++  )
++
++  await step('before the preparation ends there are no facts', async () => {
++    const other = await invite(member, assessment)
++    eq(factsOf(Candidate.require(other.body.candidateId)), undefined)
++  })
++})
++
++test('candidate: time is up', async (step) => {
++  const member = await signup('Clock')
++  const assessment = await approvedAssessment(member)
++  const { body } = await invite(member, assessment)
++  const started = await call('POST', '/api/candidate/start', {
++    invitation: body.invitation,
++  })
++  const cookies = { dfd_candidate: cookieOf(started, 'dfd_candidate') }
++
++  await step(
++    'after the limit the code is submitted as it was last saved',
++    async () => {
++      await call('POST', '/api/candidate/files', { files: demoFiles }, cookies)
++      Candidate.update({
++        candidateId: body.candidateId,
++        candidateStartedAt: Date.now() - 91 * 60_000,
++      })
++      const view = await (await call('GET', '/api/candidate/me', {}, cookies))
++        .json()
++      eq(view.autoSubmitted, true)
++      // the submission is never later than the limit
++      eq(view.submittedAt <= view.startedAt + 90 * 60_000, true)
++      eq(view.files['src/app.ts'], demoFiles['src/app.ts'])
++      eq(view.declaredTools, [])
++      await prepared(cookies)
++    },
++  )
++
++  await step('only the declaration of the tools remains', async () => {
++    const res = await call('POST', '/api/candidate/submit', {
++      tools: ['Claude'],
++    }, cookies)
++    eq(res.status, 200)
++    eq((await res.json()).declaredTools, ['Claude'])
+   })
+ })
 diff --git a/api/candidate.ts b/api/candidate.ts
-deleted file mode 100644
-index 9a19ccb..0000000
+index 9a19ccb..ff52fc3 100644
 --- a/api/candidate.ts
-+++ /dev/null
-@@ -1,636 +0,0 @@
++++ b/api/candidate.ts
+@@ -1,63 +1,52 @@
 -import { companyOfAssessment } from '/api/schema.ts'
 -// Candidate journey (C1 → C7). The candidate is identified by a token in an
 -// httpOnly cookie, set when they start (no account, brief §6). The server is
 -// the clock: saves are refused after the time limit and the code is
 -// submitted automatically.
--import { respond } from '@01edu/api/response'
--import {
--  Assessment,
--  type AssessmentRow,
--  Candidate,
--  type CandidateRow,
--  Entry,
--} from '/api/schema.ts'
--import { json, randomToken, starterFiles } from '/api/assessment.ts'
--import {
--  checkTypes,
--  runEvaluation,
--  runOwnTests,
--  runPlayground,
--} from '/api/sandbox.ts'
++// The journey of a candidate, up to the interview. The candidate has no
++// account: they open a personal link, and an httpOnly cookie identifies them
++// from then on. The server is the clock: saves are refused after the time
++// limit and the code is submitted automatically. At the submission, the code is
++// frozen and the server runs every test (the hidden ones too), the type check
++// and the candidate's own tests: these facts are what the interviewer knows.
+ import { respond } from '@01edu/api/response'
++import { BASE_URL, ORIGIN } from '/api/lib/env.ts'
++import { log } from '/api/lib/log.ts'
+ import {
+   Assessment,
+   type AssessmentRow,
+   Candidate,
+   type CandidateRow,
++  companyOfAssessment,
+   Entry,
+ } from '/api/schema.ts'
+ import { json, randomToken, starterFiles } from '/api/assessment.ts'
+ import {
+   checkTypes,
++  type CodeProblem,
+   runEvaluation,
+   runOwnTests,
+   runPlayground,
+ } from '/api/sandbox.ts'
 -import { ask } from '/api/llm.ts'
 -import { prepareQuestions } from '/api/analysis.ts'
 -import { buildReport } from '/api/report.ts'
 -import { demoTraces } from '/fixtures/demo.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import type { Question } from '/fixtures/questions.ts'
--import type {
++import { paths } from '/web/paths.ts'
+ import type {
 -  AiTrace,
--  AssessmentSpec,
+   AssessmentSpec,
 -  AssistantMessage,
--  CandidateFiles,
--  CandidateView,
+   CandidateFiles,
+   CandidateView,
 -  IntegrityKind,
--  Invitation,
--  InvitationState,
--  Progress,
--} from '/web/types.ts'
--
+   Invitation,
+   InvitationState,
+   Progress,
++  TestResult,
+ } from '/web/types.ts'
+ 
 -export const QUESTION_GRACE_MS = 5_000
 -export const ASSISTANT_LIMIT = 3
 -
@@ -1172,184 +1552,178 @@ index 9a19ccb..0000000
 -  /** sent after the time and its grace: recorded unanswered (AUD-005) */
 -  expired?: boolean
 -}
--
++/** a link not opened for 14 days is no longer valid */
++export const INVITATION_DAYS = 14
+ 
 -/* ---------- invitation and start (C1) ---------- */
--
++export type Runs = { run: number; mine: number; eval: number }
+ 
 -/** a link not opened for 14 days is no longer valid (spec D9) */
 -export const INVITATION_DAYS = 14
--
--const byInvitation = Candidate.sql`
--  SELECT * FROM candidate WHERE candidateInvitation = :invitation
--`.get
--
--const byToken = Candidate.sql`
--  SELECT * FROM candidate WHERE candidateToken = :token
--`.get
--
--const sameEmail = Candidate.sql`
--  SELECT candidateId FROM candidate
--  WHERE assessmentId = :assessmentId AND candidateEmail = :email
--    AND candidateRevokedAt IS NULL
--`.get
--
--export const invitationState = (c: CandidateRow): InvitationState =>
--  c.candidateRevokedAt
--    ? 'revoked'
--    : c.candidateFinishedAt
--    ? 'finished'
--    : c.candidateStartedAt
--    ? 'started'
--    : Date.now() - (c.candidateInvitedAt ?? c.candidateCreatedAt ?? 0) >
--        INVITATION_DAYS * 24 * 3600_000
--    ? 'expired'
--    : 'invited'
--
--/** the candidate of a personal link, on an approved assessment */
--const findInvitation = (invitation?: string) => {
--  const c = invitation ? byInvitation({ invitation }) : undefined
--  const a = c && Assessment.get(c.assessmentId)
--  if (!c || !a || a.assessmentStatus !== 'approved') {
++/** what the server found when it ran the submitted code */
++export type StoredResults = {
++  tests: TestResult[]
++  problems: CodeProblem[]
++  own: { passed: number; failed: number }
++}
++
++/* ---------- invitation and start ---------- */
+ 
+ const byInvitation = Candidate.sql`
+   SELECT * FROM candidate WHERE candidateInvitation = :invitation
+@@ -90,7 +79,7 @@ const findInvitation = (invitation?: string) => {
+   const c = invitation ? byInvitation({ invitation }) : undefined
+   const a = c && Assessment.get(c.assessmentId)
+   if (!c || !a || a.assessmentStatus !== 'approved') {
 -    throw new respond.NotFoundError({ message: 'Lien d’évaluation invalide' })
--  }
--  return { c, a }
--}
--
--const specOf = (row: AssessmentRow) => json<AssessmentSpec>(row.assessmentSpec)!
--
--export const getInvitation = (invitation?: string): Invitation => {
--  const { c, a } = findInvitation(invitation)
--  const spec = specOf(a)
--  return {
--    invitation: c.candidateInvitation!,
--    title: spec.title,
--    company: spec.company,
--    format: spec.format,
--    durationMin: a.assessmentDuration,
--    firstName: c.candidateFirstName ?? undefined,
--    state: invitationState(c),
--  }
--}
--
++    throw new respond.NotFoundError({ message: 'Invalid assessment link.' })
+   }
+   return { c, a }
+ }
+@@ -111,9 +100,9 @@ export const getInvitation = (invitation?: string): Invitation => {
+   }
+ }
+ 
 -/** "Candidat A7F3", or "Candidate A7F3" on an assessment in English */
 -const pseudonym = (language: string | null) =>
 -  `${language === 'en' ? 'Candidate' : 'Candidat'} ${
--    Array.from(crypto.getRandomValues(new Uint8Array(2)), (n) =>
--      n.toString(16).padStart(2, '0')).join('').toUpperCase()
--  }`
--
--const field = (
--  value: string | null | undefined,
--  label: string,
--  max: number,
--) => {
--  const clean = (value ?? '').trim()
--  if (clean.length > max) {
++/** "Candidate A7F3": a recruiter reads a report, never a name, in the models */
++const pseudonym = () =>
++  `Candidate ${
+     Array.from(crypto.getRandomValues(new Uint8Array(2)), (n) =>
+       n.toString(16).padStart(2, '0')).join('').toUpperCase()
+   }`
+@@ -125,15 +114,19 @@ const field = (
+ ) => {
+   const clean = (value ?? '').trim()
+   if (clean.length > max) {
 -    throw new respond.BadRequestError({ message: `${label} trop long.` })
--  }
--  return clean
--}
--
++    throw new respond.BadRequestError({
++      message: `${label}: ${max} characters at most.`,
++    })
+   }
+   return clean
+ }
+ 
 -/**
 - * R5 « Inviter un candidat » (U4): the recruiter enters the identity, the
 - * candidate gets a personal link. Nothing is sent: the recruiter shares it.
 - */
--export const inviteCandidate = (
--  assessmentId: number,
--  memberId: number,
--  input: {
--    firstName: string
--    lastName: string
--    email: string
--    profileUrl?: string | null
--    note?: string | null
++/** the address a candidate opens: the app's own URL, then the page */
++export const invitationLink = (invitation: string) =>
++  `${ORIGIN}${
++    BASE_URL === '/' ? '' : BASE_URL.replace(/\/$/, '')
++  }${paths.candidate}?invitation=${invitation}`
++
+ export const inviteCandidate = (
+   assessmentId: number,
+   memberId: number,
+@@ -143,44 +136,42 @@ export const inviteCandidate = (
+     email: string
+     profileUrl?: string | null
+     note?: string | null
 -    /** 'cv': prefilled from a CV (U5), each field validated by the recruiter */
 -    source?: 'manual' | 'cv'
--  },
--) => {
--  const a = Assessment.require(assessmentId)
--  if (a.assessmentStatus !== 'approved') {
--    throw new respond.BadRequestError({
+   },
+ ) => {
+   const a = Assessment.require(assessmentId)
+   if (a.assessmentStatus !== 'approved') {
+     throw new respond.BadRequestError({
 -      message: 'Approuvez l’épreuve avant d’inviter un candidat.',
--    })
--  }
++      message: 'Approve the assessment before inviting a candidate.',
+     })
+   }
 -  const firstName = field(input.firstName, 'Prénom', 80)
 -  const lastName = field(input.lastName, 'Nom', 80)
--  const email = field(input.email, 'E-mail', 254).toLowerCase()
++  const firstName = field(input.firstName, 'First name', 80)
++  const lastName = field(input.lastName, 'Last name', 80)
+   const email = field(input.email, 'E-mail', 254).toLowerCase()
 -  const profileUrl = field(input.profileUrl, 'Profil', 300)
--  const note = field(input.note, 'Note', 500)
--  if (!firstName || !lastName) {
--    throw new respond.BadRequestError({
++  const profileUrl = field(input.profileUrl, 'Profile', 300)
+   const note = field(input.note, 'Note', 500)
+   if (!firstName || !lastName) {
+     throw new respond.BadRequestError({
 -      message: 'Le prénom et le nom sont obligatoires.',
--    })
--  }
--  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
++      message: 'The first name and the last name are required.',
+     })
+   }
+   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
 -    throw new respond.BadRequestError({ message: 'E-mail invalide.' })
--  }
--  if (profileUrl && !/^https:\/\/\S+$/.test(profileUrl)) {
--    throw new respond.BadRequestError({
++    throw new respond.BadRequestError({ message: 'Invalid e-mail.' })
+   }
+   if (profileUrl && !/^https:\/\/\S+$/.test(profileUrl)) {
+     throw new respond.BadRequestError({
 -      message: 'Le profil doit être une adresse https://.',
--    })
--  }
--  if (sameEmail({ assessmentId, email })) {
--    throw new respond.ConflictError({
++      message: 'The profile must be an https:// address.',
+     })
+   }
+   if (sameEmail({ assessmentId, email })) {
+     throw new respond.ConflictError({
 -      message: 'Cette personne a déjà un lien pour cette épreuve.',
--    })
--  }
--  const now = Date.now()
--  const invitation = randomToken(24)
--  const candidateId = Candidate.insert({
--    candidateToken: randomToken(24),
++      message: 'This person already has a link for this assessment.',
+     })
+   }
+   const now = Date.now()
+   const invitation = randomToken(24)
+   const candidateId = Candidate.insert({
+     candidateToken: randomToken(24),
 -    candidatePseudonym: pseudonym(a.assessmentLanguage),
--    assessmentId,
--    candidateCreatedAt: now,
--    candidateInvitation: invitation,
--    candidateInvitedAt: now,
--    candidateInvitedBy: memberId,
--    candidateFirstName: firstName,
--    candidateLastName: lastName,
--    candidateEmail: email,
--    candidateProfileUrl: profileUrl || undefined,
--    candidateNote: note || undefined,
++    candidatePseudonym: pseudonym(),
+     assessmentId,
+     candidateCreatedAt: now,
+     candidateInvitation: invitation,
+@@ -191,62 +182,51 @@ export const inviteCandidate = (
+     candidateEmail: email,
+     candidateProfileUrl: profileUrl || undefined,
+     candidateNote: note || undefined,
 -    candidateIdentitySource: input.source === 'cv' ? 'cv' : 'manual',
--  })
--  Entry.insert.CANDIDATE_INVITED({
--    companyId: companyOfAssessment(assessmentId),
--    assessmentId,
--    candidateId,
--  })
+   })
+   Entry.insert.CANDIDATE_INVITED({
+     companyId: companyOfAssessment(assessmentId),
+     assessmentId,
+     candidateId,
+   })
 -  return { candidateId, invitation }
--}
--
++  return { candidateId, invitation, link: invitationLink(invitation) }
+ }
+ 
 -/** R5 « Révoquer le lien »: the link stops working, the report stays */
--export const revokeInvitation = (candidateId: number) => {
--  const c = Candidate.require(candidateId)
--  if (c.candidateFinishedAt) {
--    throw new respond.BadRequestError({
++/** « Revoke the link »: it stops working, the report stays */
+ export const revokeInvitation = (candidateId: number) => {
+   const c = Candidate.require(candidateId)
+   if (c.candidateFinishedAt) {
+     throw new respond.BadRequestError({
 -      message: 'L’épreuve est terminée : le lien ne donne plus accès à rien.',
--    })
--  }
--  Candidate.update({ candidateId, candidateRevokedAt: Date.now() })
--}
--
--/**
++      message: 'The assessment is over: the link gives access to nothing.',
+     })
+   }
+   Candidate.update({ candidateId, candidateRevokedAt: Date.now() })
+ }
+ 
+ /**
 - * C1 "Commencer la phase de construction", from the personal link: starts
 - * the clock the first time, then only gives the session back (another
 - * device, a lost cookie). In the guided demo the clock starts at 01:12:43 on
 - * the draft of the prototype (brief C2).
-- */
++ * « Start »: starts the clock the first time, then only gives the session back
++ * (another device, a lost cookie).
+  */
 -export const startCandidate = (invitation: string, demo: boolean) => {
--  const { c, a } = findInvitation(invitation)
--  const state = invitationState(c)
--  if (state === 'expired' || state === 'revoked') {
--    throw new respond.BadRequestError({
++export const startCandidate = (invitation: string) => {
+   const { c, a } = findInvitation(invitation)
+   const state = invitationState(c)
+   if (state === 'expired' || state === 'revoked') {
+     throw new respond.BadRequestError({
 -      message: `Ce lien n’est plus valable. Demandez un nouveau lien à ${
--        specOf(a).company
++      message: `This link is no longer valid. Ask ${
+         specOf(a).company
 -      }.`,
--    })
--  }
--  if (state !== 'invited') return c.candidateToken
--  const spec = specOf(a)
--  const now = Date.now()
++      } for a new one.`,
+     })
+   }
+   if (state !== 'invited') return c.candidateToken
+   const spec = specOf(a)
+   const now = Date.now()
 -  // guided demo: the draft of the demo, in the language of the assessment
 -  const demoSet = demoOf(a.assessmentLanguage)
 -  const files = demo && spec.company === 'Linkly'
@@ -1358,172 +1732,165 @@ index 9a19ccb..0000000
 -      'src/links_repository.ts': demoSet.draftRepository,
 -    }
 -    : json<CandidateFiles>(a.assessmentStarterFiles) ?? starterFiles(spec)
--  Candidate.update({
--    candidateId: c.candidateId,
+   Candidate.update({
+     candidateId: c.candidateId,
 -    candidateStartedAt: now - (demo ? (72 * 60 + 43) * 1000 : 0),
 -    candidateFiles: files,
--    candidateSavedAt: now,
++    candidateStartedAt: now,
++    candidateFiles: json<CandidateFiles>(a.assessmentStarterFiles) ??
++      starterFiles(spec),
+     candidateSavedAt: now,
 -    candidateRuns: { run: 0, mine: 0, eval: 0, demo } satisfies Runs,
--    candidateTools: [],
++    candidateRuns: { run: 0, mine: 0, eval: 0 } satisfies Runs,
+     candidateTools: [],
 -    candidateAnswers: {},
--  })
--  Entry.insert.CANDIDATE_BUILD_STARTED({
--    companyId: companyOfAssessment(a.assessmentId),
--    assessmentId: a.assessmentId,
--    candidateId: c.candidateId,
--  })
--  return c.candidateToken
--}
--
--/* ---------- session ---------- */
--
--export const findCandidate = (token?: string) => {
--  const row = token ? byToken({ token }) : undefined
--  if (!row) {
+   })
+   Entry.insert.CANDIDATE_BUILD_STARTED({
+     companyId: companyOfAssessment(a.assessmentId),
+@@ -261,7 +241,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
+ export const findCandidate = (token?: string) => {
+   const row = token ? byToken({ token }) : undefined
+   if (!row) {
 -    throw new respond.UnauthorizedError({ message: 'Session candidat absente' })
--  }
--  return row
--}
--
--const assessmentOf = (c: CandidateRow) => Assessment.require(c.assessmentId)
--
--const deadline = (c: CandidateRow) =>
--  (c.candidateStartedAt ?? Date.now()) +
--  assessmentOf(c).assessmentDuration * 60_000
--
++    throw new respond.UnauthorizedError({
++      message: 'No candidate session.',
++    })
+   }
+   return row
+ }
+@@ -272,26 +254,21 @@ const deadline = (c: CandidateRow) =>
+   (c.candidateStartedAt ?? Date.now()) +
+   assessmentOf(c).assessmentDuration * 60_000
+ 
 -/** time is up: the code is submitted as it was last saved (brief C3) */
--export const autoSubmitIfExpired = (c: CandidateRow) => {
--  if (c.candidateSubmittedAt || Date.now() < deadline(c)) return c
--  submitCode(c, { tools: [], auto: true })
--  return Candidate.require(c.candidateId)
--}
--
++/** time is up: the code is submitted as it was last saved */
+ export const autoSubmitIfExpired = (c: CandidateRow) => {
+   if (c.candidateSubmittedAt || Date.now() < deadline(c)) return c
+   submitCode(c, { tools: [], auto: true })
+   return Candidate.require(c.candidateId)
+ }
+ 
 -export const answersOf = (c: CandidateRow) =>
 -  json<Record<number, StoredAnswer>>(c.candidateAnswers) ?? {}
 -
--export const runsOf = (c: CandidateRow): Runs =>
--  json<Runs>(c.candidateRuns) ?? { run: 0, mine: 0, eval: 0 }
--
--export const toView = (c: CandidateRow): CandidateView => {
--  const spec = specOf(assessmentOf(c))
+ export const runsOf = (c: CandidateRow): Runs =>
+   json<Runs>(c.candidateRuns) ?? { run: 0, mine: 0, eval: 0 }
+ 
+ export const toView = (c: CandidateRow): CandidateView => {
+   const spec = specOf(assessmentOf(c))
 -  const answers = answersOf(c)
--  return {
--    id: c.candidateId,
--    pseudonym: c.candidatePseudonym,
+   return {
+     id: c.candidateId,
+     pseudonym: c.candidatePseudonym,
 -    demo: !!runsOf(c).demo,
--    now: Date.now(),
--    assessment: {
--      title: spec.title,
--      company: spec.company,
--      format: spec.format,
--      durationMin: spec.durationMin,
--      candidateBrief: spec.candidateBrief,
--      requirements: spec.requirements.map(({ id, title, statement }) => ({
--        id,
--        title,
--        statement,
--      })),
--      routes: spec.routes,
--      constraints: spec.constraints,
--      publicTests: spec.tests.filter((t) => t.visibility === 'public'),
--      hiddenCount: spec.tests.filter((t) => t.visibility !== 'public').length,
--    },
--    startedAt: c.candidateStartedAt ?? undefined,
--    submittedAt: c.candidateSubmittedAt ?? undefined,
--    autoSubmitted: !!c.candidateAutoSubmitted,
--    declaredTools: json<string[]>(c.candidateTools) ?? [],
--    files: json<CandidateFiles>(c.candidateFiles) ?? {},
--    savedAt: c.candidateSavedAt ?? undefined,
--    preparation: json(c.candidatePreparation),
+     now: Date.now(),
+     assessment: {
+       title: spec.title,
+@@ -316,18 +293,17 @@ export const toView = (c: CandidateRow): CandidateView => {
+     files: json<CandidateFiles>(c.candidateFiles) ?? {},
+     savedAt: c.candidateSavedAt ?? undefined,
+     preparation: json(c.candidatePreparation),
 -    questionsStartedAt: c.candidateQuestionsStartedAt ?? undefined,
--    finishedAt: c.candidateFinishedAt ?? undefined,
++    interviewStartedAt: c.candidateInterviewStartedAt ?? undefined,
+     finishedAt: c.candidateFinishedAt ?? undefined,
 -    answeredCount: Object.values(answers).filter((a) => a.sentAt).length,
--  }
--}
--
+   }
+ }
+ 
 -/* ---------- workspace (C2) ---------- */
--
--const assertBuilding = (c: CandidateRow) => {
--  if (autoSubmitIfExpired(c).candidateSubmittedAt) {
--    throw new respond.ConflictError({
++/* ---------- workspace ---------- */
+ 
+ const assertBuilding = (c: CandidateRow) => {
+   if (autoSubmitIfExpired(c).candidateSubmittedAt) {
+     throw new respond.ConflictError({
 -      message: 'Votre code est soumis : il ne peut plus être modifié.',
--    })
--  }
--}
--
--export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
--  assertBuilding(c)
--  const savedAt = Date.now()
--  Candidate.update({
--    candidateId: c.candidateId,
--    candidateFiles: files,
--    candidateSavedAt: savedAt,
--  })
--  return { savedAt }
--}
--
++      message: 'Your code is submitted: it cannot be changed any more.',
+     })
+   }
+ }
+@@ -343,15 +319,16 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
+   return { savedAt }
+ }
+ 
 -const countRun = (c: CandidateRow, kind: 'run' | 'mine' | 'eval') => {
--  const runs = runsOf(Candidate.require(c.candidateId))
--  runs[kind]++
--  Candidate.update({ candidateId: c.candidateId, candidateRuns: runs })
--}
--
--export const runCode = async (
--  c: CandidateRow,
++const countRun = (c: CandidateRow, kind: keyof Runs) => {
+   const runs = runsOf(Candidate.require(c.candidateId))
+   runs[kind]++
+   Candidate.update({ candidateId: c.candidateId, candidateRuns: runs })
+ }
+ 
++/** « Run », « My tests », « Evaluation tests »: in the sandbox, saved first */
+ export const runCode = async (
+   c: CandidateRow,
 -  kind: 'run' | 'mine' | 'eval',
--  files: CandidateFiles,
--) => {
--  saveFiles(c, files)
--  countRun(c, kind)
--  if (kind === 'run') return { kind, run: await runPlayground(files) }
--  if (kind === 'mine') return { kind, own: await runOwnTests(files) }
--  const tests = specOf(assessmentOf(c)).tests.filter((t) =>
--    t.visibility === 'public'
--  )
--  return { kind, results: await runEvaluation(files, tests) }
--}
--
--export const checkCode = (files: CandidateFiles) => checkTypes(files)
--
++  kind: keyof Runs,
+   files: CandidateFiles,
+ ) => {
+   saveFiles(c, files)
+@@ -366,7 +343,22 @@ export const runCode = async (
+ 
+ export const checkCode = (files: CandidateFiles) => checkTypes(files)
+ 
 -/* ---------- submission (C3) → preparation (C4) ---------- */
--
--export const submitCode = (
--  c: CandidateRow,
--  { tools, otherTool, auto = false }: {
--    tools: string[]
--    otherTool?: string
--    auto?: boolean
--  },
--) => {
--  if (c.candidateSubmittedAt) {
--    // after an automatic submission, only the AI declaration remains
++/* ---------- submission and preparation of the interview ---------- */
++
++const PREPARATION_STEPS = 3
++
++const saveProgress = (c: CandidateRow, progress: Progress) => {
++  Candidate.update({
++    candidateId: c.candidateId,
++    candidatePreparation: progress,
++  })
++  Entry.insert.CANDIDATE_PREPARATION_STEP({
++    companyId: companyOfAssessment(c.assessmentId),
++    assessmentId: c.assessmentId,
++    candidateId: c.candidateId,
++    data: { steps: progress.steps.map((s) => s.state) },
++  })
++}
+ 
+ export const submitCode = (
+   c: CandidateRow,
+@@ -376,261 +368,89 @@ export const submitCode = (
+     auto?: boolean
+   },
+ ) => {
++  const declared = otherTool ? [...tools, otherTool] : tools
+   if (c.candidateSubmittedAt) {
+     // after an automatic submission, only the AI declaration remains
 -    Candidate.update({
 -      candidateId: c.candidateId,
 -      candidateTools: otherTool ? [...tools, otherTool] : tools,
 -    })
--    return
--  }
--  const progress: Progress = {
++    Candidate.update({ candidateId: c.candidateId, candidateTools: declared })
+     return
+   }
+   const progress: Progress = {
 -    steps: [{ state: 'done' }, { state: 'wait' }, { state: 'wait' }, {
 -      state: 'wait',
 -    }],
--  }
--  Candidate.update({
--    candidateId: c.candidateId,
--    candidateSubmittedAt: Math.min(Date.now(), deadline(c)),
--    candidateAutoSubmitted: auto ? 1 : 0,
++    steps: [{ state: 'done' }, { state: 'wait' }, { state: 'wait' }],
+   }
+   Candidate.update({
+     candidateId: c.candidateId,
+     candidateSubmittedAt: Math.min(Date.now(), deadline(c)),
+     candidateAutoSubmitted: auto ? 1 : 0,
 -    candidateTools: otherTool ? [...tools, otherTool] : tools,
--    candidatePreparation: progress,
--  })
--  Entry.insert.CANDIDATE_CODE_SUBMITTED({
--    companyId: companyOfAssessment(c.assessmentId),
--    assessmentId: c.assessmentId,
--    candidateId: c.candidateId,
++    candidateTools: declared,
+     candidatePreparation: progress,
+   })
+   Entry.insert.CANDIDATE_CODE_SUBMITTED({
+     companyId: companyOfAssessment(c.assessmentId),
+     assessmentId: c.assessmentId,
+     candidateId: c.candidateId,
 -    data: { tools, auto },
--  })
++    data: { tools: declared, auto },
+   })
 -  prepareQuestions(c.candidateId, progress)
--}
--
++  // in the background: the candidate already sees the progress
++  prepareInterview(c.candidateId, progress)
+ }
+ 
 -/* ---------- questions (C5, C6) ---------- */
 -
 -export const questionsOf = (c: CandidateRow) =>
@@ -1592,7 +1959,15 @@ index 9a19ccb..0000000
 -    text?: string | null
 -    auto?: boolean | null
 -  },
--) => {
++/**
++ * What the interviewer will know: every test (the hidden ones too), the type
++ * check and the tests the candidate wrote, run by the server on the frozen
++ * code.
++ */
++export const prepareInterview = async (
++  candidateId: number,
++  progress: Progress,
+ ) => {
 -  const questions = questionsOf(c)
 -  const answers = answersOf(c)
 -  const stored = answers[n]
@@ -1631,12 +2006,42 @@ index 9a19ccb..0000000
 -      companyId: companyOfAssessment(c.assessmentId),
 -      assessmentId: c.assessmentId,
 -      candidateId: c.candidateId,
--    })
++  const c = Candidate.require(candidateId)
++  const spec = specOf(assessmentOf(c))
++  const files = json<CandidateFiles>(c.candidateFiles) ?? {}
++  try {
++    progress.steps[1] = { state: 'run' }
++    saveProgress(c, progress)
++    const [tests, problems, own] = await Promise.all([
++      runEvaluation(files, spec.tests),
++      checkTypes(files),
++      runOwnTests(files),
++    ])
++    Candidate.update({
++      candidateId,
++      candidateResults: {
++        tests,
++        problems,
++        own: { passed: own.passed, failed: own.failed },
++      } satisfies StoredResults,
+     })
 -    buildReport(c.candidateId)
--  }
++    progress.steps[1] = { state: 'done' }
++    progress.steps[2] = { state: 'done' }
++    delete progress.error
++    saveProgress(c, progress)
++  } catch (err) {
++    log.warn('preparation-failed', { candidateId, message: String(err) })
++    const running = progress.steps.findIndex((s) => s.state === 'run')
++    if (running >= 0) progress.steps[running] = { state: 'error' }
++    progress.error = `The preparation of the interview failed: ${
++      err instanceof Error ? err.message.slice(0, 160) : String(err)
++    }`
++    saveProgress(c, progress)
+   }
 -  return { finished }
--}
--
+ }
+ 
 -/* ---------- documentation assistant (C6) ---------- */
 -
 -const ASSISTANT_SYSTEM =
@@ -1677,7 +2082,13 @@ index 9a19ccb..0000000
 -    const left = (pendingAssistant.get(slot) ?? 1) - 1
 -    if (left) pendingAssistant.set(slot, left)
 -    else pendingAssistant.delete(slot)
--  }
++/** « Retry » after a failed preparation */
++export const retryPreparation = (candidateId: number) => {
++  const c = Candidate.require(candidateId)
++  const previous = json<Progress>(c.candidatePreparation)
++  if (!previous?.error) {
++    throw new respond.ConflictError({ message: 'Nothing to retry.' })
+   }
 -}
 -
 -const replyAssistant = async (
@@ -1731,7 +2142,13 @@ index 9a19ccb..0000000
 -      text: data,
 -    }],
 -    assistantTraces: [...latest[n].assistantTraces, trace],
--  }
++  const progress: Progress = {
++    steps: Array.from(
++      { length: PREPARATION_STEPS },
++      (_, i) =>
++        i === 0 ? { state: 'done' as const } : { state: 'wait' as const },
++    ),
+   }
 -  Candidate.update({ candidateId: c.candidateId, candidateAnswers: latest })
 -  return { reply: data, trace, left: ASSISTANT_LIMIT - used - 1 }
 -}
@@ -1752,7 +2169,9 @@ index 9a19ccb..0000000
 -    candidateId: c.candidateId,
 -    data: event,
 -  })
--}
++  saveProgress(c, progress)
++  prepareInterview(candidateId, progress)
+ }
 diff --git a/api/cv.test.js b/api/cv.test.js
 deleted file mode 100644
 index c03201e..0000000
@@ -2717,6 +3136,37 @@ index 711bdb9..0000000
 -    return { sent: false, error: err.message }
 -  }
 -}
+diff --git a/api/entries.ts b/api/entries.ts
+index 08f51ab..c20569d 100644
+--- a/api/entries.ts
++++ b/api/entries.ts
+@@ -8,17 +8,15 @@ export const entries = {
+   CANDIDATE_BUILD_STARTED: 7,
+   CANDIDATE_CODE_SUBMITTED: 8,
+   CANDIDATE_PREPARATION_STEP: 9,
+-  CANDIDATE_QUESTIONS_STARTED: 10,
+-  CANDIDATE_ANSWER_SENT: 11,
+-  CANDIDATE_INTEGRITY_EVENT: 12,
+-  CANDIDATE_FINISHED: 13,
+-  CANDIDATE_REPORT_READY: 14,
+-  DECISION_SAVED: 15,
+-  COMPANY_CREATED: 16,
+-  MEMBER_CREATED: 17,
+-  MEMBER_LOGIN: 18,
+-  MEMBER_LOGIN_FAILED: 19,
+-  CANDIDATE_LINK_SENT: 20,
++  CANDIDATE_INTERVIEW_STARTED: 10,
++  CANDIDATE_INTEGRITY_EVENT: 11,
++  CANDIDATE_FINISHED: 12,
++  CANDIDATE_REPORT_READY: 13,
++  DECISION_SAVED: 14,
++  COMPANY_CREATED: 15,
++  MEMBER_CREATED: 16,
++  MEMBER_LOGIN: 17,
++  MEMBER_LOGIN_FAILED: 18,
+ } as const
+ 
+ export type Entries = typeof entries
 diff --git a/api/lib/check.ts b/api/lib/check.ts
 index a306559..c858a54 100644
 --- a/api/lib/check.ts
@@ -4901,16 +5351,15 @@ index 8d00735..4e73220 100644
    }
    pending.set(email, (pending.get(email) ?? 0) + 1)
 diff --git a/api/recovery.ts b/api/recovery.ts
-index 952c4db..e8ebb41 100644
+index 952c4db..7941608 100644
 --- a/api/recovery.ts
 +++ b/api/recovery.ts
 @@ -1,14 +1,14 @@
  // Background jobs live in the server process: a restart interrupts them.
  // At boot, what was running is marked as failed so the pages show their
 -// "Réessayer" button (brief §2.13) instead of an endless spinner.
--import { Assessment, Candidate } from '/api/schema.ts'
 +// "Retry" button instead of an endless spinner.
-+import { Assessment } from '/api/schema.ts'
+ import { Assessment, Candidate } from '/api/schema.ts'
  import { json } from '/api/assessment.ts'
  import { log } from '/api/lib/log.ts'
  import type { Progress } from '/web/types.ts'
@@ -4923,12 +5372,10 @@ index 952c4db..e8ebb41 100644
    ...progress,
    steps: (progress?.steps ?? []).map((s) =>
      s.state === 'run' ? { state: 'error' } : s
-@@ -20,17 +20,6 @@ const generating = Assessment.sql`
-   SELECT * FROM assessment WHERE assessmentStatus = 'generating'
- `.all
+@@ -22,25 +22,10 @@ const generating = Assessment.sql`
  
--const preparing = Candidate.sql`
--  SELECT * FROM candidate
+ const preparing = Candidate.sql`
+   SELECT * FROM candidate
 -  WHERE candidateSubmittedAt IS NOT NULL AND candidateQuestions IS NULL
 -`.all
 -
@@ -4936,31 +5383,43 @@ index 952c4db..e8ebb41 100644
 -  SELECT * FROM candidate
 -  WHERE candidateFinishedAt IS NOT NULL
 -    AND (candidateReport IS NULL OR json_extract(candidateReport, '$.status') = 'pending')
--`.all
--
++  WHERE candidateSubmittedAt IS NOT NULL AND candidateResults IS NULL
+ `.all
+ 
  export const recoverInterruptedJobs = () => {
-   for (const a of generating()) {
-     // a regeneration keeps its previous draft
-@@ -41,20 +30,4 @@ export const recoverInterruptedJobs = () => {
-     })
-     log.warn('job-interrupted', { assessmentId: a.assessmentId })
-   }
--  for (const c of preparing()) {
--    const progress = json<Progress>(c.candidatePreparation)
--    if (progress?.error) continue
--    Candidate.update({
--      candidateId: c.candidateId,
--      candidatePreparation: interrupt(progress),
+-  for (const a of generating()) {
+-    // a regeneration keeps its previous draft
+-    Assessment.update({
+-      assessmentId: a.assessmentId,
+-      assessmentStatus: a.assessmentSpec ? 'draft' : 'failed',
+-      assessmentGeneration: interrupt(json<Progress>(a.assessmentGeneration)),
 -    })
--    log.warn('job-interrupted', { candidateId: c.candidateId, job: 'C4' })
+-    log.warn('job-interrupted', { assessmentId: a.assessmentId })
 -  }
+   for (const c of preparing()) {
+     const progress = json<Progress>(c.candidatePreparation)
+     if (progress?.error) continue
+@@ -48,13 +33,15 @@ export const recoverInterruptedJobs = () => {
+       candidateId: c.candidateId,
+       candidatePreparation: interrupt(progress),
+     })
+-    log.warn('job-interrupted', { candidateId: c.candidateId, job: 'C4' })
++    log.warn('job-interrupted', { candidateId: c.candidateId })
+   }
 -  for (const c of reporting()) {
 -    Candidate.update({
 -      candidateId: c.candidateId,
 -      candidateReport: { status: 'failed', error: INTERRUPTED },
--    })
++  for (const a of generating()) {
++    // a regeneration keeps its previous draft
++    Assessment.update({
++      assessmentId: a.assessmentId,
++      assessmentStatus: a.assessmentSpec ? 'draft' : 'failed',
++      assessmentGeneration: interrupt(json<Progress>(a.assessmentGeneration)),
+     })
 -    log.warn('job-interrupted', { candidateId: c.candidateId, job: 'R6' })
--  }
++    log.warn('job-interrupted', { assessmentId: a.assessmentId })
+   }
  }
 diff --git a/api/reference.ts b/api/reference.ts
 index 58b4786..65ba5b5 100644
@@ -6390,10 +6849,10 @@ index 75d54dc..0000000
 -
 -export type { Question }
 diff --git a/api/routes.ts b/api/routes.ts
-index 20228a8..069d100 100644
+index 20228a8..316816e 100644
 --- a/api/routes.ts
 +++ b/api/routes.ts
-@@ -3,25 +3,12 @@ import type { RequestContext } from '@01edu/api/context'
+@@ -3,25 +3,13 @@ import type { RequestContext } from '@01edu/api/context'
  import { makeRouter, route } from '@01edu/api/router'
  import { respond } from '@01edu/api/response'
  import { metrics } from '@01edu/db'
@@ -6411,38 +6870,37 @@ index 20228a8..069d100 100644
  import { log } from '/api/lib/log.ts'
 -import { replayForDemo } from '/api/lib/ai-context.ts'
  import { APP_ENV } from '/api/lib/env.ts'
--import { FILES, JSON_OF } from '/api/lib/validator.ts'
-+import { JSON_OF } from '/api/lib/validator.ts'
+ import { FILES, JSON_OF } from '/api/lib/validator.ts'
  import {
    Assessment,
--  Candidate,
+   Candidate,
 -  companyOfAssessment,
 -  demoCompanyId,
    demoMemberId,
    entryInsertListeners,
    type EntryListener,
-@@ -48,47 +35,7 @@ import {
-   setDeletedTests,
+@@ -49,86 +37,90 @@ import {
    updateAssessment,
  } from '/api/assessment.ts'
--import {
+ import {
 -  askAssistant,
--  autoSubmitIfExpired,
--  checkCode,
--  findCandidate,
--  getInvitation,
--  inviteCandidate,
+   autoSubmitIfExpired,
+   checkCode,
+   findCandidate,
+   getInvitation,
+   inviteCandidate,
 -  logIntegrity,
 -  openQuestion,
--  revokeInvitation,
--  runCode,
--  saveFiles,
++  retryPreparation,
+   revokeInvitation,
+   runCode,
+   saveFiles,
 -  sendAnswer,
--  startCandidate,
+   startCandidate,
 -  startQuestions,
--  submitCode,
--  toView,
--} from '/api/candidate.ts'
+   submitCode,
+   toView,
+ } from '/api/candidate.ts'
 -import { retryPreparation } from '/api/analysis.ts'
 -import { CV_MAX_BYTES, type CvReading, readCv } from '/api/cv.ts'
 -import { type LinkSent, sendCandidateLink } from '/api/email.ts'
@@ -6454,23 +6912,25 @@ index 20228a8..069d100 100644
 -  retryReport,
 -  saveDecision,
 -} from '/api/report.ts'
--import type { CodeProblem, OwnTestsRun, SandboxRun } from '/api/sandbox.ts'
--import type {
--  AiTrace,
--  AssessmentState,
+ import type { CodeProblem, OwnTestsRun, SandboxRun } from '/api/sandbox.ts'
+ import type {
+   AiTrace,
+   AssessmentState,
 -  AssistantMessage,
--  CandidateView,
--  Invitation,
--  TestResult,
--} from '/web/types.ts'
--
+   CandidateView,
+   Invitation,
+   TestResult,
+ } from '/web/types.ts'
+ 
 -const ACK_PAYLOAD = new TextEncoder().encode('event: ack\ndata: \n\n')
 -const CANDIDATE_COOKIE = 'dfd_candidate'
-+import type { AiTrace, AssessmentState } from '/web/types.ts'
- 
+-
  /* ---------- sessions ---------- */
  
-@@ -98,37 +45,39 @@ const demoAccess = () => Deno.env.get('DEMO_ACCESS') === '1'
+ const MEMBER_COOKIE = 'dfd_session'
++const CANDIDATE_COOKIE = 'dfd_candidate'
+ // the guided demo can log in the demo member (POST/api/demo/session)
+ const demoAccess = () => Deno.env.get('DEMO_ACCESS') === '1'
  const withSession = async (ctx: RequestContext) => {
    const session = await decodeSession(ctx.cookies[MEMBER_COOKIE])
    if (!session) {
@@ -6515,21 +6975,33 @@ index 20228a8..069d100 100644
    }
    return assessmentId
  }
--const ownedCandidate = (ctx: RequestContext, value: string | number) => {
--  const candidateId = id(value)
--  const row = Candidate.get(candidateId)
--  if (!row) {
--    throw new respond.NotFoundError({ message: 'Candidat introuvable.' })
--  }
--  ownedAssessment(ctx, row.assessmentId)
--  return candidateId
--}
 +const ownedAssessment = (ctx: RequestContext, value: string | number) =>
 +  ownedBy(memberOf(ctx), value)
++/* ---------- candidate session ---------- */
++
++const withCandidate = (ctx: RequestContext) => {
++  const c = findCandidate(ctx.cookies[CANDIDATE_COOKIE])
++  return autoSubmitIfExpired(c)
++}
++const candidateOf = (ctx: RequestContext) =>
++  (ctx as RequestContext & { session: ReturnType<typeof withCandidate> })
++    .session
++/** a candidate of another company answers 404, as if they did not exist */
+ const ownedCandidate = (ctx: RequestContext, value: string | number) => {
+   const candidateId = id(value)
+   const row = Candidate.get(candidateId)
+   if (!row) {
+-    throw new respond.NotFoundError({ message: 'Candidat introuvable.' })
++    throw new respond.NotFoundError({ message: 'Candidate not found.' })
+   }
+   ownedAssessment(ctx, row.assessmentId)
+   return candidateId
+ }
++
  // Same host only: behind a TLS proxy the server sees http:// while the
  // browser sends Origin: https://, so the scheme is not compared.
  const checkOrigin = (ctx: RequestContext) => {
-@@ -138,13 +87,13 @@ const checkOrigin = (ctx: RequestContext) => {
+@@ -138,13 +130,13 @@ const checkOrigin = (ctx: RequestContext) => {
      host = origin ? new URL(origin).host : undefined
    } catch { /* malformed Origin: refused below */ }
    if (origin && host !== ctx.url.host) {
@@ -6545,7 +7017,7 @@ index 20228a8..069d100 100644
    }
    const response = respond.OK(memberView(session.memberId))
    setCookie(response.headers, {
-@@ -160,32 +109,12 @@ const sessionResponse = async (token: string) => {
+@@ -160,32 +152,13 @@ const sessionResponse = async (token: string) => {
    return response
  }
  
@@ -6572,14 +7044,14 @@ index 20228a8..069d100 100644
  /* ---------- shared validators ---------- */
  
  const ASSESSMENT = JSON_OF<AssessmentState>('Assessment and its state')
--const CANDIDATE = JSON_OF<CandidateView>('Candidate session')
+ const CANDIDATE = JSON_OF<CandidateView>('Candidate session')
  const TRACE = JSON_OF<AiTrace>('AI trace: model, place, latency, tokens')
  const LEVEL = LIST(['junior', 'intermediate', 'senior'], 'Level')
 +
  // The framework's default validator report echoes invalid values. Auth fields
  // must never be echoed, even when a password has an unexpected JSON type.
  const signupInput = {
-@@ -246,7 +175,7 @@ const defs = {
+@@ -246,7 +219,7 @@ const defs = {
    'POST/api/demo/session': route({
      fn: async (ctx) => {
        if (!demoAccess()) {
@@ -6588,7 +7060,7 @@ index 20228a8..069d100 100644
        }
        checkOrigin(ctx)
        return sessionResponse(await generateSession(demoMemberId))
-@@ -256,7 +185,7 @@ const defs = {
+@@ -256,7 +229,7 @@ const defs = {
    'GET/api/demo': route({
      fn: () => ({ available: demoAccess() }),
      output: OBJ({ available: BOOL('Demo account available (DEMO_ACCESS)') }),
@@ -6597,7 +7069,7 @@ index 20228a8..069d100 100644
    }),
    'GET/api/health': route({
      fn: () => ({ status: 'ok', env: APP_ENV }),
-@@ -267,13 +196,13 @@ const defs = {
+@@ -267,13 +240,13 @@ const defs = {
      description: 'Healthcheck used by docker and the dev tooling',
    }),
  
@@ -6613,7 +7085,7 @@ index 20228a8..069d100 100644
    }),
  
    'GET/api/assessment': route({
-@@ -281,7 +210,7 @@ const defs = {
+@@ -281,7 +254,7 @@ const defs = {
      fn: (ctx, { id: value }) => getAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: STR('Assessment id') }),
      output: ASSESSMENT,
@@ -6622,7 +7094,7 @@ index 20228a8..069d100 100644
    }),
  
    'POST/api/assessment/prefill': route({
-@@ -293,35 +222,30 @@ const defs = {
+@@ -293,35 +266,30 @@ const defs = {
        skills: ARR(STR('Skill name'), 'Suggested skills, 5 at most'),
        trace: TRACE,
      }),
@@ -6665,7 +7137,7 @@ index 20228a8..069d100 100644
          memberOf(ctx),
        )
      },
-@@ -331,20 +255,16 @@ const defs = {
+@@ -331,20 +299,16 @@ const defs = {
        durationMin: NUM('60, 90 or 120 minutes'),
        skills: ARR(STR('Skill name'), '1 to 5 skills'),
        domain: optional(STR('Business domain')),
@@ -6688,7 +7160,7 @@ index 20228a8..069d100 100644
    }),
  
    'POST/api/assessment/update': route({
-@@ -360,7 +280,7 @@ const defs = {
+@@ -360,7 +324,7 @@ const defs = {
        mission: optional(STR('New mission, as the candidate reads it')),
      }),
      output: ASSESSMENT,
@@ -6697,7 +7169,7 @@ index 20228a8..069d100 100644
    }),
  
    'POST/api/assessment/deleted-tests': route({
-@@ -374,7 +294,7 @@ const defs = {
+@@ -374,7 +338,7 @@ const defs = {
        testIds: ARR(STR('Test id'), 'Tests removed before approval'),
      }),
      output: ASSESSMENT,
@@ -6706,7 +7178,7 @@ index 20228a8..069d100 100644
    }),
  
    'POST/api/assessment/regenerate': route({
-@@ -385,7 +305,7 @@ const defs = {
+@@ -385,7 +349,7 @@ const defs = {
        id: NUM('Assessment id'),
        instruction: STR('Recruiter instruction'),
      }),
@@ -6715,21 +7187,25 @@ index 20228a8..069d100 100644
    }),
  
    'POST/api/assessment/approve': route({
-@@ -393,277 +313,7 @@ const defs = {
+@@ -393,24 +357,19 @@ const defs = {
      fn: (ctx, { id: value }) => approveAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: NUM('Assessment id') }),
      output: ASSESSMENT,
 -    description: 'R4 → R5: freezes the assessment, creates the candidate link',
--  }),
--
++    description: 'Freezes the assessment, creates the candidate link',
+   }),
+ 
 -  /* ---------- recruiter: candidates (R5, U4) ---------- */
--
--  'POST/api/candidate/invite': route({
--    authorize: withMember,
++  /* ---------- recruiter: candidates ---------- */
+ 
+   'POST/api/candidate/invite': route({
+     authorize: withMember,
 -    fn: async (ctx, { assessment, sendEmail, fromCv, ...identity }) => {
 -      const invited = inviteCandidate(
--        ownedAssessment(ctx, assessment),
--        memberOf(ctx).memberId,
++    fn: (ctx, { assessment, ...identity }) =>
++      inviteCandidate(
+         ownedAssessment(ctx, assessment),
+         memberOf(ctx).memberId,
 -        { ...identity, source: fromCv ? 'cv' : 'manual' },
 -      )
 -      const email = sendEmail
@@ -6737,19 +7213,21 @@ index 20228a8..069d100 100644
 -        : undefined
 -      return { ...invited, email }
 -    },
--    input: OBJ({
--      assessment: NUM('Assessment id'),
--      firstName: STR('First name'),
--      lastName: STR('Last name'),
--      email: STR('Email'),
--      profileUrl: optional(STR('LinkedIn, GitHub or portfolio (https://)')),
--      note: optional(STR('Internal note, never shown to the candidate')),
++        identity,
++      ),
+     input: OBJ({
+       assessment: NUM('Assessment id'),
+       firstName: STR('First name'),
+@@ -418,102 +377,37 @@ const defs = {
+       email: STR('Email'),
+       profileUrl: optional(STR('LinkedIn, GitHub or portfolio (https://)')),
+       note: optional(STR('Internal note, never shown to the candidate')),
 -      fromCv: optional(BOOL('Prefilled from a CV, validated by the recruiter')),
 -      sendEmail: optional(BOOL('E-mail the personal link (Resend)')),
--    }),
--    output: OBJ({
--      candidateId: NUM('Invited candidate'),
--      invitation: STR('Token of the personal link'),
+     }),
+     output: OBJ({
+       candidateId: NUM('Invited candidate'),
+       invitation: STR('Token of the personal link'),
 -      email: optional(JSON_OF<LinkSent>('E-mail of the personal link')),
 -    }),
 -    description: 'R5 « Inviter un candidat »: identity and personal link',
@@ -6785,13 +7263,15 @@ index 20228a8..069d100 100644
 -    input: OBJ({
 -      assessment: NUM('Assessment id the candidate will be invited to'),
 -      data: STR('The CV file (PDF or DOCX), base64'),
--    }),
++      link: STR('The personal link to give to the candidate'),
+     }),
 -    output: JSON_OF<CvReading>('Fields read in the CV, to validate'),
 -    description: 'R5 « Importer un CV »: prefills the invitation form',
--  }),
--
--  'POST/api/candidate/revoke': route({
--    authorize: withMember,
++    description: 'Invite a candidate: identity and personal link',
+   }),
+ 
+   'POST/api/candidate/revoke': route({
+     authorize: withMember,
 -    fn: (ctx, { candidate }) =>
 -      revokeInvitation(ownedCandidate(ctx, candidate)),
 -    input: OBJ({ candidate: NUM('Candidate id') }),
@@ -6811,7 +7291,11 @@ index 20228a8..069d100 100644
 -  'POST/api/report/retry': route({
 -    authorize: withMember,
 -    fn: (ctx, { candidate }) => retryReport(ownedCandidate(ctx, candidate)),
--    input: OBJ({ candidate: NUM('Candidate id') }),
++    fn: (ctx, { candidate }) => {
++      revokeInvitation(ownedCandidate(ctx, candidate))
++      return respond.NoContent()
++    },
+     input: OBJ({ candidate: NUM('Candidate id') }),
 -    description: 'R6 « Réessayer » after a failed report',
 -  }),
 -
@@ -6826,110 +7310,109 @@ index 20228a8..069d100 100644
 -    }),
 -    output: JSON_OF<Decision>('Saved decision and its timestamp'),
 -    description: 'R6 « Enregistrer la décision » (decision is human only)',
--  }),
--
++    description: 'The link stops working, the report stays',
+   }),
+ 
 -  /* ---------- candidate (C1 → C7) ---------- */
--
--  'GET/api/invitation': route({
--    fn: (_ctx, { invitation }) => getInvitation(invitation || undefined),
--    input: OBJ({ invitation: optional(STR('Token of the candidate link')) }),
++  /* ---------- candidate journey ---------- */
+ 
+   'GET/api/invitation': route({
+     fn: (_ctx, { invitation }) => getInvitation(invitation || undefined),
+     input: OBJ({ invitation: optional(STR('Token of the candidate link')) }),
 -    output: JSON_OF<Invitation>('What C1 shows before starting'),
 -    description: 'C1: the assessment of a candidate link',
--  }),
--
--  'POST/api/candidate/start': route({
++    output: JSON_OF<Invitation>('What the welcome page shows'),
++    description: 'The assessment of a candidate link',
+   }),
+ 
+   'POST/api/candidate/start': route({
 -    fn: (_ctx, { invitation, demo }) => {
 -      const token = startCandidate(invitation, demo ?? false)
--      const response = respond.OK(toView(findCandidate(token)))
--      setCookie(response.headers, {
--        name: CANDIDATE_COOKIE,
--        value: token,
--        path: '/',
--        httpOnly: true,
--        sameSite: 'Lax',
--        secure: APP_ENV === 'prod',
--        maxAge: 7 * 24 * 3600,
--      })
--      return response
--    },
++    fn: (_ctx, { invitation }) => {
++      const token = startCandidate(invitation)
+       const response = respond.OK(toView(findCandidate(token)))
+       setCookie(response.headers, {
+         name: CANDIDATE_COOKIE,
+@@ -526,12 +420,9 @@ const defs = {
+       })
+       return response
+     },
 -    input: OBJ({
 -      invitation: STR('Token of the candidate link'),
 -      demo: optional(BOOL('Guided demo: clock at 01:12:43 on the draft')),
 -    }),
--    output: CANDIDATE,
++    input: OBJ({ invitation: STR('Token of the candidate link') }),
+     output: CANDIDATE,
 -    description: 'C1 « Commencer la phase de construction »',
--  }),
--
--  'GET/api/candidate/me': route({
--    authorize: withCandidate,
--    fn: (ctx) => toView(candidateOf(ctx)),
--    output: CANDIDATE,
--    description: 'Session of the candidate (timer, files, progress)',
--  }),
--
--  'POST/api/candidate/files': route({
--    authorize: withCandidate,
--    fn: (ctx, { files }) => saveFiles(candidateOf(ctx), files),
--    input: OBJ({ files: FILES }),
++    description: 'Start the building phase: the clock starts',
+   }),
+ 
+   'GET/api/candidate/me': route({
+@@ -545,18 +436,15 @@ const defs = {
+     authorize: withCandidate,
+     fn: (ctx, { files }) => saveFiles(candidateOf(ctx), files),
+     input: OBJ({ files: FILES }),
 -    output: OBJ({ savedAt: NUM('Save timestamp (ms)') }),
 -    description: 'C2 auto-save',
--  }),
--
--  'POST/api/candidate/run': route({
--    authorize: withCandidate,
--    fn: (ctx, { kind, files }) => runCode(candidateOf(ctx), kind, files),
--    input: OBJ({
++    output: OBJ({ savedAt: NUM('Server time of the save, ms') }),
++    description: 'Auto-save of the editor',
+   }),
+ 
+   'POST/api/candidate/run': route({
+     authorize: withCandidate,
+     fn: (ctx, { kind, files }) => runCode(candidateOf(ctx), kind, files),
+     input: OBJ({
 -      kind: LIST(
 -        ['run', 'mine', 'eval'],
 -        'Exécuter, Mes tests, Tests d’évaluation',
 -      ),
--      files: FILES,
--    }),
--    output: JSON_OF<{
--      kind: 'run' | 'mine' | 'eval'
--      run?: SandboxRun
--      own?: OwnTestsRun
--      results?: TestResult[]
--    }>('Output of the sandbox'),
++      kind: LIST(['run', 'mine', 'eval'], 'Run, My tests, Evaluation tests'),
+       files: FILES,
+     }),
+     output: JSON_OF<{
+@@ -565,7 +453,7 @@ const defs = {
+       own?: OwnTestsRun
+       results?: TestResult[]
+     }>('Output of the sandbox'),
 -    description: 'C2 runs in the Deno sandbox',
--  }),
--
--  'POST/api/candidate/check': route({
--    authorize: withCandidate,
--    fn: (_ctx, { files }) => checkCode(files),
--    input: OBJ({ files: FILES }),
--    output: JSON_OF<CodeProblem[]>('Type errors of deno check'),
++    description: 'Runs in the Deno sandbox',
+   }),
+ 
+   'POST/api/candidate/check': route({
+@@ -573,7 +461,7 @@ const defs = {
+     fn: (_ctx, { files }) => checkCode(files),
+     input: OBJ({ files: FILES }),
+     output: JSON_OF<CodeProblem[]>('Type errors of deno check'),
 -    description: 'C2 type errors under the code',
--  }),
--
--  'POST/api/candidate/submit': route({
--    authorize: withCandidate,
--    fn: (ctx, { tools, otherTool, files }) => {
--      const c = candidateOf(ctx)
--      if (!tools.length) {
--        throw new respond.BadRequestError({
++    description: 'Type errors shown under the code',
+   }),
+ 
+   'POST/api/candidate/submit': route({
+@@ -582,7 +470,7 @@ const defs = {
+       const c = candidateOf(ctx)
+       if (!tools.length) {
+         throw new respond.BadRequestError({
 -          message: 'Déclarez au moins un outil IA (ou « Aucun »).',
--        })
--      }
--      if (files && !c.candidateSubmittedAt) saveFiles(c, files)
--      submitCode(findCandidate(c.candidateToken), {
--        tools,
--        otherTool: otherTool || undefined,
--      })
--      return toView(findCandidate(c.candidateToken))
--    },
--    input: OBJ({
--      tools: ARR(STR('AI tool'), 'Declared AI tools'),
++          message: 'Declare at least one AI tool (or "None").',
+         })
+       }
+       if (files && !c.candidateSubmittedAt) saveFiles(c, files)
+@@ -594,76 +482,17 @@ const defs = {
+     },
+     input: OBJ({
+       tools: ARR(STR('AI tool'), 'Declared AI tools'),
 -      otherTool: optional(STR('« Autre » tool')),
--      files: optional(FILES),
--    }),
--    output: CANDIDATE,
++      otherTool: optional(STR('« Other » tool')),
+       files: optional(FILES),
+     }),
+     output: CANDIDATE,
 -    description: 'C3 submission, then the C4 preparation starts',
--  }),
--
--  'POST/api/candidate/preparation/retry': route({
--    authorize: withCandidate,
--    fn: (ctx) => retryPreparation(candidateOf(ctx).candidateId),
++    description: 'Submission: the code is frozen, the interview is prepared',
+   }),
+ 
+   'POST/api/candidate/preparation/retry': route({
+     authorize: withCandidate,
+     fn: (ctx) => retryPreparation(candidateOf(ctx).candidateId),
 -    description: 'C4 « Réessayer » after a failed preparation',
 -  }),
 -
@@ -6990,29 +7473,31 @@ index 20228a8..069d100 100644
 -      durationSec: optional(NUM('Time away (s)')),
 -    }),
 -    description: 'C6 facts for the recruiter, without automatic penalty',
-+    description: 'Freezes the assessment, creates the candidate link',
++    description: 'Retry after a failed preparation of the interview',
    }),
  
    /* ---------- events ---------- */
-@@ -675,29 +325,11 @@ const defs = {
+@@ -675,28 +504,19 @@ const defs = {
            message: 'Must accept event-stream',
          })
        }
--      let companyId: number | undefined
--      let assessmentId: number | undefined
--      let candidateId: number | undefined
++      let session: MemberSession | undefined
+       let companyId: number | undefined
+       let assessmentId: number | undefined
+       let candidateId: number | undefined
 -      let session: MemberSession | undefined
--      if (input.candidate === 'me') {
+       if (input.candidate === 'me') {
 -        // Never combine the candidate scope with an arbitrary assessment.
 -        if (input.assessment) {
 -          throw new respond.BadRequestError({
 -            message: 'Filtres incompatibles.',
 -          })
 -        }
--        candidateId = findCandidate(ctx.cookies[CANDIDATE_COOKIE]).candidateId
--      } else {
--        session = await withMember(ctx)
--        companyId = session.companyId
++        // the candidate follows only their own entries
+         candidateId = findCandidate(ctx.cookies[CANDIDATE_COOKIE]).candidateId
+       } else {
+         session = await withMember(ctx)
+         companyId = session.companyId
 -        const scoped = { ...ctx, session }
 -        if (input.assessment) {
 -          assessmentId = ownedAssessment(scoped, input.assessment)
@@ -7020,41 +7505,25 @@ index 20228a8..069d100 100644
 -        if (input.candidate) {
 -          candidateId = ownedCandidate(scoped, input.candidate)
 -        }
--      }
-+      const session = await withMember(ctx)
-+      const companyId = session.companyId
-+      const assessmentId = input.assessment
-+        ? ownedBy(session, input.assessment)
-+        : undefined
++        assessmentId = input.assessment
++          ? ownedBy(session, input.assessment)
++          : undefined
+       }
        let listener: EntryListener
        let ackInterval: ReturnType<typeof setInterval>
-       const body = new ReadableStream({
-@@ -705,10 +337,8 @@ const defs = {
+@@ -705,9 +525,9 @@ const defs = {
            controller.enqueue(ACK_PAYLOAD)
            ackInterval = setInterval(async () => {
              try {
--              if (
++              // the stream ends with the session
+               if (
 -                session?.entryId &&
 -                !await decodeSession(ctx.cookies[MEMBER_COOKIE])
--              ) {
-+              // the stream ends with the session
-+              if (!await decodeSession(ctx.cookies[MEMBER_COOKIE])) {
++                session && !await decodeSession(ctx.cookies[MEMBER_COOKIE])
+               ) {
                  clearInterval(ackInterval)
                  entryInsertListeners.delete(listener)
-                 controller.close()
-@@ -724,10 +354,9 @@ const defs = {
-             }
-           }, 15_000)
-           listener = {
--            memberSessionId: session?.entryId,
-+            memberSessionId: session.entryId,
-             companyId,
-             assessmentId,
--            candidateId,
-             controller,
-           }
-           entryInsertListeners.add(listener)
-@@ -737,7 +366,6 @@ const defs = {
+@@ -737,7 +557,6 @@ const defs = {
            entryInsertListeners.delete(listener)
          },
        })
@@ -7062,15 +7531,13 @@ index 20228a8..069d100 100644
        return new Response(body, {
          headers: {
            'Content-Type': 'text/event-stream',
-@@ -746,13 +374,9 @@ const defs = {
-         },
-       })
+@@ -748,11 +567,10 @@ const defs = {
      },
--    input: OBJ({
--      assessment: optional(STR('Followed assessment')),
+     input: OBJ({
+       assessment: optional(STR('Followed assessment')),
 -      candidate: optional(STR('Followed candidate, "me" for the candidate')),
--    }),
-+    input: OBJ({ assessment: optional(STR('Followed assessment')) }),
++      candidate: optional(STR('"me": the candidate follows their own entries')),
+     }),
    }),
  } as const
  
@@ -7367,7 +7834,7 @@ index d0468a6..c88a1b5 100644
    const out: Record<string, ProbeResponse[] | undefined> = {}
    for (const s of sequences) {
 diff --git a/api/schema.ts b/api/schema.ts
-index 263037b..00f1a02 100644
+index 263037b..9695e09 100644
 --- a/api/schema.ts
 +++ b/api/schema.ts
 @@ -1,16 +1,8 @@
@@ -7416,7 +7883,7 @@ index 263037b..00f1a02 100644
    assessmentInvitation: { type: 'TEXT', optional: true }, // candidate link
    companyId: { type: 'INTEGER', join: Company, optional: true },
    assessmentCreatedBy: { type: 'INTEGER', join: Member, optional: true },
-@@ -57,17 +46,16 @@ export const Candidate = createTable('candidate', {
+@@ -57,26 +46,23 @@ export const Candidate = createTable('candidate', {
    candidateToken: { type: 'TEXT' },
    candidatePseudonym: { type: 'TEXT' }, // e.g. "Candidat A7F3", never a name
    assessmentId: { type: 'INTEGER', join: Assessment },
@@ -7430,16 +7897,20 @@ index 263037b..00f1a02 100644
    candidateFiles: { type: 'JSON', optional: true }, // CandidateFiles
    candidateSavedAt: { type: 'REAL', optional: true },
 -  candidateRuns: { type: 'JSON', optional: true }, // counters of C2 runs
-+  candidateRuns: { type: 'JSON', optional: true }, // counters of the runs
-   candidateResults: { type: 'JSON', optional: true }, // tests after C3
+-  candidateResults: { type: 'JSON', optional: true }, // tests after C3
 -  candidatePreparation: { type: 'JSON', optional: true }, // C4 progress
+-  candidateAnalysis: { type: 'JSON', optional: true }, // observations
+-  candidateQuestions: { type: 'JSON', optional: true }, // the 10 questions
+-  candidateQuestionsStartedAt: { type: 'REAL', optional: true },
+-  candidateAnswers: { type: 'JSON', optional: true }, // by question number
++  candidateRuns: { type: 'JSON', optional: true }, // counters of the runs
++  candidateResults: { type: 'JSON', optional: true }, // tests after submission
 +  candidatePreparation: { type: 'JSON', optional: true }, // progress of the preparation
-   candidateAnalysis: { type: 'JSON', optional: true }, // observations
-   candidateQuestions: { type: 'JSON', optional: true }, // the 10 questions
-   candidateQuestionsStartedAt: { type: 'REAL', optional: true },
-@@ -75,8 +63,8 @@ export const Candidate = createTable('candidate', {
++  candidateInterviewStartedAt: { type: 'REAL', optional: true },
++  candidateInterview: { type: 'JSON', optional: true }, // transcript of the interview
    candidateFinishedAt: { type: 'REAL', optional: true },
-   candidateReport: { type: 'JSON', optional: true }, // R6
+-  candidateReport: { type: 'JSON', optional: true }, // R6
++  candidateReport: { type: 'JSON', optional: true }, // report of the recruiter
    candidateDecision: { type: 'JSON', optional: true }, // human decision
 -  // 005 (U4): personal link and identity, entered by the recruiter; the
 -  // identity is never sent to the models
@@ -7448,16 +7919,28 @@ index 263037b..00f1a02 100644
    candidateInvitation: { type: 'TEXT', optional: true }, // token of the link
    candidateInvitedAt: { type: 'REAL', optional: true },
    candidateInvitedBy: { type: 'INTEGER', optional: true }, // memberId
-@@ -87,7 +75,7 @@ export const Candidate = createTable('candidate', {
+@@ -86,10 +72,6 @@ export const Candidate = createTable('candidate', {
+   candidateEmail: { type: 'TEXT', optional: true }, // lower-case
    candidateProfileUrl: { type: 'TEXT', optional: true }, // https://
    candidateNote: { type: 'TEXT', optional: true }, // internal, recruiter only
-   candidateIdentitySource: { type: 'TEXT', optional: true }, // manual | cv
+-  candidateIdentitySource: { type: 'TEXT', optional: true }, // manual | cv
 -  // 006 (U5): the personal link sent by e-mail
-+  // the personal link sent by e-mail
-   candidateEmailSentAt: { type: 'REAL', optional: true },
-   candidateEmailError: { type: 'TEXT', optional: true }, // last failure
+-  candidateEmailSentAt: { type: 'REAL', optional: true },
+-  candidateEmailError: { type: 'TEXT', optional: true }, // last failure
  })
-@@ -185,20 +173,20 @@ export const Entry = initEntries(entries, relations, {
+ sql`CREATE UNIQUE INDEX IF NOT EXISTS candidate_invitation
+   ON candidate(candidateInvitation)`.run()
+@@ -175,62 +157,48 @@ export const Entry = initEntries(entries, relations, {
+     candidateId: 'invited candidate',
+     trigger: sameAssessment,
+   },
+-  CANDIDATE_LINK_SENT: {
+-    companyId: 'owning company',
+-    assessmentId: 'assessment the candidate is invited to',
+-    candidateId: 'candidate whose personal link was e-mailed',
+-    data: 'sent or failure reason',
+-    trigger: sameAssessment,
+-  },
    CANDIDATE_BUILD_STARTED: {
      companyId: 'owning company',
      assessmentId: 'assessment',
@@ -7481,7 +7964,27 @@ index 263037b..00f1a02 100644
      data: 'step index, state and AI trace',
      trigger: sameCandidate,
    },
-@@ -224,13 +212,13 @@ export const Entry = initEntries(entries, relations, {
+-  CANDIDATE_QUESTIONS_STARTED: {
++  CANDIDATE_INTERVIEW_STARTED: {
+     companyId: 'owning company',
+     assessmentId: 'assessment',
+     candidateId: 'candidate',
+     trigger: sameCandidate,
+   },
+-  CANDIDATE_ANSWER_SENT: {
+-    companyId: 'owning company',
+-    assessmentId: 'assessment',
+-    candidateId: 'candidate',
+-    data: 'question number, automatic sending',
+-  },
+   CANDIDATE_INTEGRITY_EVENT: {
+     companyId: 'owning company',
+     assessmentId: 'assessment',
+     candidateId: 'candidate',
+-    data:
+-      'kind (page-leave, paste-blocked, fullscreen-exit), question, duration',
++    data: 'kind (page-leave, paste-blocked, fullscreen-exit), duration',
+   },
    CANDIDATE_FINISHED: {
      companyId: 'owning company',
      assessmentId: 'assessment',
@@ -7497,7 +8000,7 @@ index 263037b..00f1a02 100644
      trigger: sameCandidate,
    },
    DECISION_SAVED: {
-@@ -256,7 +244,7 @@ export type EntryListener = {
+@@ -256,7 +224,7 @@ export type EntryListener = {
  export const entryInsertListeners = Entry.insertListeners
  export const archiveEntry = Entry.archive
  
@@ -7506,7 +8009,7 @@ index 263037b..00f1a02 100644
  const demoEmail = 'demo@defendable.invalid'
  const existingDemo = Member.sql<'memberId' | 'companyId', string>`
    SELECT memberId, companyId FROM member WHERE memberEmail = ?
-@@ -275,12 +263,12 @@ const demoHash = !existingDemo
+@@ -275,12 +243,12 @@ const demoHash = !existingDemo
    : undefined
  const demo = existingDemo ?? db.transaction(() => {
    const companyId = Company.insert({
@@ -17280,7 +17783,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..c78a07d 100644
+index 83f3535..a579766 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,11 @@
@@ -17406,7 +17909,7 @@ index 83f3535..c78a07d 100644
  }
  
  export type GenerationInput = {
-@@ -130,118 +121,42 @@ export type GenerationInput = {
+@@ -130,68 +121,76 @@ export type GenerationInput = {
    durationMin: number
    skills: string[]
    domain?: string
@@ -17454,24 +17957,55 @@ index 83f3535..c78a07d 100644
 -  questionsMinutes?: number
 +  interviewMinutes?: number
    date: string // ISO
-   /** the personal link was e-mailed (ISO), or why the last sending failed */
-   emailSentAt?: string
-   emailError?: string
+-  /** the personal link was e-mailed (ISO), or why the last sending failed */
+-  emailSentAt?: string
+-  emailError?: string
  }
  
 -/* ---------- candidate journey (C1 → C7) ---------- */
 -
 -export type IntegrityKind = 'page-leave' | 'paste-blocked' | 'fullscreen-exit'
--
++export type ReferenceCheck = {
++  code: string // src/app.ts
++  results: {
++    id: string
++    passed: boolean
++    received?: string
++    reason?: string // of the fairness judge, when failed
++    /** judge's verdict: "solution" = the test is fair, the solution wrong */
++    fault?: 'test' | 'solution'
++  }[]
++  /** tests the brief does not justify: deleted before the review */
++  excluded: { id: string; reason: string }[]
++  traces: AiTrace[]
++}
+ 
 -export type IntegrityEvent = {
 -  type: IntegrityKind
 -  question: number
 -  at: string // ISO
 -  durationSec?: number
--}
--
++export type AssessmentState = {
++  id: number
++  spec: AssessmentSpec
++  status: AssessmentStatus
++  input: GenerationInput
++  createdAt: string // ISO
++  approvedAt?: string
++  trace: AiTrace
++  generation?: Progress
++  /** sandbox check "the starter code fails every test" */
++  starterFails?: boolean
++  /** fairness check: a solution written from the candidate brief only */
++  reference?: ReferenceCheck
++  deletedTests: string[]
++  invitation?: string // token of the candidate link, once approved
++  candidates: CandidateSummary[]
+ }
+ 
 -export type AssistantMessage = { role: 'user' | 'bot'; text: string }
--
++/* ---------- candidate journey ---------- */
+ 
 -export type Answer = {
 -  choice?: number | 'idk' // QCM
 -  text?: string // free answer
@@ -17479,74 +18013,80 @@ index 83f3535..c78a07d 100644
 -  auto?: boolean // sent by the timer at 00:00
 -  seconds: number // time spent
 -}
--
++export type IntegrityKind = 'page-leave' | 'paste-blocked' | 'fullscreen-exit'
+ 
 -/** what C1 shows before the candidate starts */
--/** what the personal link allows: start, resume, or nothing any more */
--export type InvitationState =
--  | 'invited'
--  | 'started'
--  | 'finished'
--  | 'expired'
--  | 'revoked'
--
--export type Invitation = {
--  invitation: string
--  title: string
--  company: string
--  format: string
--  durationMin: number
--  firstName?: string
--  state: InvitationState
--}
--
+ /** what the personal link allows: start, resume, or nothing any more */
+ export type InvitationState =
+   | 'invited'
+@@ -200,6 +199,7 @@ export type InvitationState =
+   | 'expired'
+   | 'revoked'
+ 
++/** what the candidate sees before starting */
+ export type Invitation = {
+   invitation: string
+   title: string
+@@ -210,11 +210,10 @@ export type Invitation = {
+   state: InvitationState
+ }
+ 
 -/** the candidate's own session: never the hidden tests nor answer keys */
--export type CandidateView = {
--  id: number
--  pseudonym: string
++/** the candidate's own session: never the hidden tests nor their results */
+ export type CandidateView = {
+   id: number
+   pseudonym: string
 -  demo: boolean
--  /** server clock, to align the timers */
--  now: number
--  assessment: {
--    title: string
--    company: string
--    format: string
--    durationMin: number
--    candidateBrief: { context: string; mission: string }
--    requirements: { id: string; title: string; statement: string }[]
--    routes: ApiRoute[]
--    constraints: string[]
--    publicTests: TestCase[]
--    hiddenCount: number
--  }
--  startedAt?: number
--  submittedAt?: number
--  autoSubmitted?: boolean
--  declaredTools: string[]
+   /** server clock, to align the timers */
+   now: number
+   assessment: {
+@@ -233,157 +232,10 @@ export type CandidateView = {
+   submittedAt?: number
+   autoSubmitted?: boolean
+   declaredTools: string[]
 -  otherTool?: string
--  files: CandidateFiles
--  savedAt?: number
--  preparation?: Progress
+   files: CandidateFiles
+   savedAt?: number
++  /** progress of the preparation of the interview, after the submission */
+   preparation?: Progress
 -  questionsStartedAt?: number
--  finishedAt?: number
++  interviewStartedAt?: number
+   finishedAt?: number
 -  answeredCount: number
 -}
 -
- export type ReferenceCheck = {
-   code: string // src/app.ts
-   results: {
-@@ -266,7 +181,7 @@ export type AssessmentState = {
-   approvedAt?: string
-   trace: AiTrace
-   generation?: Progress
+-export type ReferenceCheck = {
+-  code: string // src/app.ts
+-  results: {
+-    id: string
+-    passed: boolean
+-    received?: string
+-    reason?: string // of the fairness judge, when failed
+-    /** judge's verdict: "solution" = the test is fair, the solution wrong */
+-    fault?: 'test' | 'solution'
+-  }[]
+-  /** tests the brief does not justify: deleted before the review */
+-  excluded: { id: string; reason: string }[]
+-  traces: AiTrace[]
+-}
+-
+-export type AssessmentState = {
+-  id: number
+-  spec: AssessmentSpec
+-  status: AssessmentStatus
+-  input: GenerationInput
+-  createdAt: string // ISO
+-  approvedAt?: string
+-  trace: AiTrace
+-  generation?: Progress
 -  /** sandbox check "Le code de départ échoue à tous les tests" */
-+  /** sandbox check "the starter code fails every test" */
-   starterFails?: boolean
-   /** fairness check: a solution written from the candidate brief only */
-   reference?: ReferenceCheck
-@@ -274,116 +189,3 @@ export type AssessmentState = {
-   invitation?: string // token of the candidate link, once approved
-   candidates: CandidateSummary[]
- }
+-  starterFails?: boolean
+-  /** fairness check: a solution written from the candidate brief only */
+-  reference?: ReferenceCheck
+-  deletedTests: string[]
+-  invitation?: string // token of the candidate link, once approved
+-  candidates: CandidateSummary[]
+-}
 -
 -/* ---------- report (R6) ---------- */
 -
@@ -17659,7 +18199,7 @@ index 83f3535..c78a07d 100644
 -  debrief: { question: string; goodAnswer: string }[]
 -  limits: string[]
 -  trace: TraceRow[]
--}
+ }
 diff --git a/web/ui/ai-trace.tsx b/web/ui/ai-trace.tsx
 deleted file mode 100644
 index e9f7c70..0000000
