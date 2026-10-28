@@ -54,10 +54,10 @@ index 9a23581..acd7092 100644
 +# runs of `deno task llm:generate --out=generated`
 +generated/
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 395848d..1902f48 100644
+index 395848d..60779e6 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -5,153 +5,101 @@ code in this repository.
+@@ -5,153 +5,102 @@ code in this repository.
  
  ## What this is
  
@@ -119,6 +119,7 @@ index 395848d..1902f48 100644
 +deno task llm:generate --out=generated   # one real generation, with cost
 +deno task llm:bench   # same fictional inputs through several models and efforts
 +deno task llm:eval    # the report on fictional candidates whose reading is known
++deno task llm:interview-eval   # Oracle against simulated candidates, rules checked per turn
  ```
  
 -`deno task seed` cannot delete `defendable.db` while the dev server holds it
@@ -9421,7 +9422,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..f474643 100644
+index 5f704a5..3f0f6a0 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -9461,7 +9462,7 @@ index 5f704a5..f474643 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +48,36 @@
+@@ -45,41 +48,37 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
@@ -9486,7 +9487,7 @@ index 5f704a5..f474643 100644
 -    },
 -    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts & deno task test --watch api web fixtures --reporter=dot & deno task fmt --watch api web fixtures migrations *.ts & deno task lint --watch api web fixtures migrations *.ts",
 +    "lint": "deno lint",
-+    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-bench.ts task-llm-check.ts task-llm-report-eval.ts task-llm-generate.ts task-llm-interview.ts",
++    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-bench.ts task-llm-check.ts task-llm-report-eval.ts task-llm-generate.ts task-llm-interview.ts task-llm-interview-eval.ts",
 +    "fmt": "deno fmt",
 +    "test": "deno test --env-file=.env-test -A --no-check",
 +    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts",
@@ -9520,6 +9521,7 @@ index 5f704a5..f474643 100644
 -    "deploy": "deno run -A task-deploy.ts"
 +    "llm:generate": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-generate.ts",
 +    "all": "deno task check && deno task lint && deno task test",
++    "llm:interview-eval": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-interview-eval.ts",
 +    "llm:interview": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-interview.ts"
    }
  }
@@ -10244,6 +10246,149 @@ index 41b95c1..cf5b5ce 100644
  
  // DIST_DIR: the folder built by task-prod.ts (QA: dist-qa), default dist
  const dist = `${import.meta.dirname}/${Deno.env.get('DIST_DIR') || 'dist'}`
+diff --git a/task-dev.ts b/task-dev.ts
+index 8d76471..b38b13a 100644
+--- a/task-dev.ts
++++ b/task-dev.ts
+@@ -2,26 +2,58 @@ import { config } from './build-config.ts'
+ import { context } from 'npm:esbuild'
+ import api from '/api/server.ts'
+ 
++// esbuild's own server checks every watched file (packages included) before it
++// answers the first request after a pause, about 2 s on this machine. The
++// built files are served from dist/ here instead, held back only while a
++// rebuild is running.
++let built: () => void
++let building = new Promise<void>((resolve) => (built = resolve))
++
+ const ctx = await context({
+   ...config,
++  plugins: [...(config.plugins ?? []), {
++    name: 'rebuild-gate',
++    setup(build) {
++      build.onStart(() => {
++        building = new Promise<void>((resolve) => (built = resolve))
++      })
++      build.onEnd(() => built())
++    },
++  }],
+   entryPoints: { ...config.entryPoints, index: 'web/debug-app.ts' },
+   sourcemap: 'both',
+ })
+ 
+ await ctx.watch()
+ 
+-Deno.mkdirSync('dist', { recursive: true })
+-Deno.copyFileSync('web/index.html', 'dist/index.html')
+-
+-Deno.mkdirSync('dist/assets/styles', { recursive: true })
+-for (const entry of Deno.readDirSync('web/assets/styles')) {
+-  if (entry.isFile && entry.name.endsWith('.css')) {
+-    Deno.copyFileSync(
+-      `web/assets/styles/${entry.name}`,
+-      `dist/assets/styles/${entry.name}`,
+-    )
++// the page, the styles and the fonts are copied to dist/ and kept in sync
++const syncStatic = () => {
++  Deno.mkdirSync('dist/assets', { recursive: true })
++  Deno.copyFileSync('web/index.html', 'dist/index.html')
++  for (const dir of ['styles', 'fonts']) {
++    Deno.mkdirSync(`dist/assets/${dir}`, { recursive: true })
++    for (const entry of Deno.readDirSync(`web/assets/${dir}`)) {
++      if (entry.isFile) {
++        Deno.copyFileSync(
++          `web/assets/${dir}/${entry.name}`,
++          `dist/assets/${dir}/${entry.name}`,
++        )
++      }
++    }
+   }
+ }
++syncStatic()
++;(async () => {
++  let timer: number | undefined
++  for await (const _ of Deno.watchFs(['web/index.html', 'web/assets'])) {
++    clearTimeout(timer)
++    timer = setTimeout(() => {
++      try {
++        syncStatic()
++      } catch { /* a file was being written: the next event copies it */ }
++    }, 100)
++  }
++})()
+ const { port } = await ctx.serve({ servedir: 'dist', port: 7575 })
+ 
+ const getForwaredPath = (path: string) => {
+@@ -30,6 +62,34 @@ const getForwaredPath = (path: string) => {
+   return '/'
+ }
+ 
++const TYPES: Record<string, string> = {
++  '.html': 'text/html; charset=utf-8',
++  '.js': 'text/javascript; charset=utf-8',
++  '.css': 'text/css; charset=utf-8',
++  '.map': 'application/json',
++  '.svg': 'image/svg+xml',
++  '.woff2': 'font/woff2',
++  '.woff': 'font/woff',
++  '.json': 'application/json',
++}
++
++const serveBuilt = async (pathname: string) => {
++  await building
++  const file = pathname === '/' ? '/index.html' : pathname
++  try {
++    const body = await Deno.readFile(`dist${file}`)
++    const dot = file.lastIndexOf('.')
++    return new Response(body, {
++      headers: {
++        'content-type': TYPES[file.slice(dot)] ?? 'application/octet-stream',
++        'cache-control': 'no-cache',
++      },
++    })
++  } catch {
++    return new Response('Not found', { status: 404 })
++  }
++}
++
+ const generateTestCoverage = new Deno.Command('deno', {
+   args: ['test', '--no-check', '--coverage=dist/.cov', '--reporter=dot'],
+ })
+@@ -38,7 +98,7 @@ const generateCoverageHTML = new Deno.Command('deno', {
+   args: ['coverage', '--html', 'dist/.cov'],
+ })
+ 
+-export default {
++const server = {
+   async fetch(request: Request) {
+     const url = new URL(request.url)
+     if (url.pathname.startsWith('/api')) return api.fetch(request)
+@@ -53,8 +113,24 @@ export default {
+       await generateCoverageHTML.spawn().status
+     }
+     const pathname = getForwaredPath(url.pathname)
+-    const apiUrl = `http://localhost:${port}${pathname}${url.hash}${url.search}`
++    if (pathname !== '/esbuild') return serveBuilt(pathname)
++    // 127.0.0.1, not localhost: on Windows localhost tries IPv6 first and every
++    // request waits about 2.5 s before falling back
++    const apiUrl = `http://127.0.0.1:${port}${pathname}${url.hash}${url.search}`
+     const { headers, method, signal, body } = request
+     return fetch(apiUrl, { headers, method, signal, body, redirect: 'manual' })
+   },
+ }
++
++// `deno serve` listens on 0.0.0.0 only, and browsers resolve localhost to ::1
++// first: without this listener every request waits about 2 s for the IPv6
++// attempt to fail before using IPv4
++try {
++  Deno.serve({
++    hostname: '::1',
++    port: Number(Deno.env.get('PORT') ?? 8000),
++    onListen() {},
++  }, server.fetch)
++} catch { /* IPv6 unavailable: IPv4 is enough */ }
++
++export default server
 diff --git a/task-llm-bench.ts b/task-llm-bench.ts
 index 24e2259..887872a 100644
 --- a/task-llm-bench.ts
@@ -11169,8 +11314,26 @@ index a1f76fa..bacb112 100644
 -Deno.exit(failed ? 1 : 0)
 +Object.assign(llmConfig, saved)
 +Deno.exit(rows.some((r) => !r.ok) ? 1 : 0)
+diff --git a/task-prod.ts b/task-prod.ts
+index ad9d7a5..5519abf 100644
+--- a/task-prod.ts
++++ b/task-prod.ts
+@@ -149,5 +149,13 @@ const html = Deno.readTextFileSync('web/index.html')
+     `<style>${css}</style>`,
+   )
+ Deno.writeTextFileSync(`${outdir}/index.html`, html)
++// the fonts stay files, the cache keeps them between visits
++Deno.mkdirSync(`${outdir}/assets/fonts`, { recursive: true })
++for (const entry of Deno.readDirSync('web/assets/fonts')) {
++  Deno.copyFileSync(
++    `web/assets/fonts/${entry.name}`,
++    `${outdir}/assets/fonts/${entry.name}`,
++  )
++}
+ 
+ console.log('\nduration:', `${yellow(String((Date.now() - start) / 1000))}s`)
 diff --git a/web/app.tsx b/web/app.tsx
-index da0b0a9..e7655b9 100644
+index da0b0a9..0d15d9a 100644
 --- a/web/app.tsx
 +++ b/web/app.tsx
 @@ -1,6 +1,6 @@
@@ -11182,7 +11345,7 @@ index da0b0a9..e7655b9 100644
  import { buildPreflightTokens, customClasses, semanticColors } from './theme.ts'
  import { url } from '/web/lib/router-signal.ts'
  import { tailwindColors } from '/web/tailwind-colors.ts'
-@@ -13,23 +13,21 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
+@@ -13,23 +13,22 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
  import { makePlaceholder } from '/web/pages/placeholder-page.tsx'
  import { screens } from '/web/screens.ts'
  import { Notifications } from '/web/ui/notifications.tsx'
@@ -11193,6 +11356,7 @@ index da0b0a9..e7655b9 100644
  import { landingPaths } from '/web/lib/section-scroll.ts'
  import { LoginPage, SignupPage } from '/web/pages/auth/auth-pages.tsx'
 +import { VoiceLabPage } from '/web/pages/voice/voice-lab.tsx'
++import { TtsLabPage } from '/web/pages/voice/tts-lab.tsx'
  import { memberStatus } from '/web/lib/member-store.ts'
 +import { ConsentPage } from '/web/pages/candidate/consent-page.tsx'
 +import { InterviewPage } from '/web/pages/candidate/interview-page.tsx'
@@ -11212,7 +11376,16 @@ index da0b0a9..e7655b9 100644
  import '/web/ui/themetoggle.tsx'
  
  Object.assign(globalThis, { h, Fragment })
-@@ -54,7 +52,7 @@ setup({
+@@ -37,8 +36,6 @@ setup({
+   darkMode: 'class',
+   preflight: (preflight) => ({
+     ...preflight,
+-    '@import':
+-      `url('https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=Space+Mono:wght@400;700&display=swap')`,
+     ...customClasses,
+     // `@apply placeholder:…` gives an invalid `:placeholder` selector
+     '.input::placeholder': { color: 'var(--color-content-tertiary)' },
+@@ -54,7 +51,7 @@ setup({
          'wide-narrow': 'minmax(0,1.3fr) minmax(0,1fr)',
          'split': 'minmax(0,1.4fr) minmax(0,1fr)',
          'nav-main': '168px minmax(0,1fr)',
@@ -11221,7 +11394,7 @@ index da0b0a9..e7655b9 100644
          'report': '168px minmax(0,880px) 280px',
          'report-md': 'minmax(0,1fr) 264px',
          'cards': 'repeat(auto-fill, minmax(min(340px, 100%), 1fr))',
-@@ -75,23 +73,26 @@ setup({
+@@ -75,23 +72,27 @@ setup({
    },
  })
  
@@ -11235,6 +11408,7 @@ index da0b0a9..e7655b9 100644
    [paths.login]: LoginPage,
    [paths.signup]: SignupPage,
 +  [paths.voiceLab]: VoiceLabPage,
++  [paths.ttsLab]: TtsLabPage,
 +  [paths.candidate]: ConsentPage,
 +  [paths.workspace]: () => (
 +    <DesktopOnly>
@@ -11300,6 +11474,17 @@ index 5beb73a..26d1b46 100644
  export const Minimize = (props: IconProps) => (
    <Icon {...props}>
      <path d='M8 3v3a2 2 0 0 1-2 2H3' />
+diff --git a/web/assets/styles/style.css b/web/assets/styles/style.css
+index 3381905..a273815 100644
+--- a/web/assets/styles/style.css
++++ b/web/assets/styles/style.css
+@@ -1,6 +1,3 @@
+-/* brand wordmark font (not on Google Fonts), used by the DEFENDABLE logo */
+-@import url('https://fonts.cdnfonts.com/css/nasalization');
+-
+ /* Public presentation: use the same semantic colors as the application. */
+ .public-links {
+   display: flex;
 diff --git a/web/debug.ts b/web/debug.ts
 index 4019411..134646f 100644
 --- a/web/debug.ts
@@ -11311,7 +11496,7 @@ index 4019411..134646f 100644
  const es = new EventSource('/esbuild')
  es.addEventListener('error', () => location.reload())
 diff --git a/web/index.html b/web/index.html
-index dad458b..1a95b2a 100644
+index dad458b..6b73561 100644
 --- a/web/index.html
 +++ b/web/index.html
 @@ -1,5 +1,5 @@
@@ -11321,7 +11506,26 @@ index dad458b..1a95b2a 100644
    <head>
      <base href="/" />
      <meta charset="utf-8" />
-@@ -13,7 +13,7 @@
+@@ -9,11 +9,26 @@
+       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%234f46e5'/><text x='16' y='22' font-family='sans-serif' font-size='17' font-weight='600' text-anchor='middle' fill='white'>D</text></svg>"
+     />
+     <title>Defendable</title>
++    <link
++      rel="preload"
++      href="assets/fonts/bricolage-grotesque.woff2"
++      as="font"
++      type="font/woff2"
++      crossorigin
++    />
++    <link
++      rel="preload"
++      href="assets/fonts/unbounded.woff2"
++      as="font"
++      type="font/woff2"
++      crossorigin
++    />
++    <link rel="stylesheet" href="assets/fonts/fonts.css" />
+     <link rel="stylesheet" href="assets/styles/style.css" />
    </head>
    <body>
      <div id="app"></div>
@@ -17359,10 +17563,10 @@ index a8ecf4b..8a82c89 100644
 -  bottomTab.value = 'out'
 -})
 diff --git a/web/paths.ts b/web/paths.ts
-index 0c5de49..2e91f4e 100644
+index 0c5de49..d0bef4d 100644
 --- a/web/paths.ts
 +++ b/web/paths.ts
-@@ -1,26 +1,25 @@
+@@ -1,26 +1,26 @@
  // Every route of the app, in one place: pages never hard-code a URL.
  // Two symmetric spaces, /recruiter/… and /candidate/…; ids stay in the
 -// query string (?id=, ?q=) like tournament's signal-router routes.
@@ -17403,6 +17607,7 @@ index 0c5de49..2e91f4e 100644
 +  interview: '/candidate/interview', // the voice interview
 +  done: '/candidate/done', // end of the assessment
 +  voiceLab: '/dev/voice', // test page of the voice interview
++  ttsLab: '/dev/tts', // test page of Oracle's voice
  } as const
  
  export const isCandidatePath = (path: string) =>

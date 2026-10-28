@@ -1,0 +1,38 @@
+/* Self-hosted fonts (latin subset), all under the SIL Open Font License except
+   Nasalization, the free font of the DEFENDABLE wordmark. */
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 400 700;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url('bricolage-grotesque.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Unbounded';
+  font-style: normal;
+  font-weight: 500 700;
+  font-display: swap;
+  src: url('unbounded.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('space-mono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('space-mono-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Nasalization Rg';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('nasalization.woff') format('woff');
+}

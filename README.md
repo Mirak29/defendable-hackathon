@@ -80,6 +80,7 @@ without any key.
 | `deno task llm:generate --out=generated` | one real generation, step by step, with cost; writes a readable `.md` |
 | `deno task llm:bench`                    | the same fictional inputs through several models and efforts: latency |
 | `deno task llm:eval`                     | the report on six fictional candidates whose right reading is known   |
+| `deno task llm:interview-eval`           | Oracle against six kinds of simulated candidates, its rules checked   |
 | `deno task all`                          | type-check, lint and tests                                            |
 
 `llm:generate` takes `--file=fixtures/offers/roomly.txt` (or `stockly.txt`),
