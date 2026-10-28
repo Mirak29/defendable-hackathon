@@ -31,7 +31,24 @@ export const voiceConfig = {
   maxBufferedBytes: 24_000 * 2 * 4,
   /** questions asked before the interviewer closes */
   questions: 6,
+  /**
+   * After a turn of the candidate, the interviewer writes its answer at once
+   * but only starts to speak after this delay. A candidate who takes up the
+   * thread within it is still answering: the two turns become one. Most of it
+   * is spent waiting for the model anyway.
+   */
+  holdMs: Number(ENV('VOICE_HOLD_MS', '900')),
 }
+
+/**
+ * A turn the transcription could not make sense of ("15", "uh"): the
+ * interviewer asks again instead of moving on.
+ */
+export const isUnclear = (text: string) =>
+  !/[a-z]{3,}/i.test(text) && !/^(yes|no|ok|okay|yeah|yep|nope)\b/i.test(text)
+
+const NOT_UNDERSTOOD = (text: string) =>
+  `(The transcription could not make out the candidate's answer: "${text}". Say in one short sentence that you did not catch it and ask them to say it again. Do not move on and do not close the interview.)`
 
 /** what the browser receives */
 export type VoiceEvent =
@@ -41,7 +58,7 @@ export type VoiceEvent =
   /** what is being said, replaced at each update */
   | { type: 'partial'; text: string }
   /** the final words of a turn of the candidate */
-  | { type: 'heard'; turnId: number; text: string }
+  | { type: 'heard'; turnId: number; text: string; merge?: boolean }
   | { type: 'ai-delta'; text: string }
   | { type: 'ai-done'; text: string; interrupted: boolean }
   | { type: 'metrics'; metrics: TurnMetrics }
@@ -148,6 +165,10 @@ export class VoiceInterview {
   /** what the interviewer says in this turn, to tell an echo from a voice */
   #said = ''
   #interrupted = false
+  /** the words of a turn whose answer was withdrawn: the next turn adds to it */
+  #carry = ''
+  /** while the answer is held back: withdraws it if the candidate goes on */
+  #withdraw?: () => void
   #asked = 0
   #speechEndAt = 0
   #transcriptAt = 0
@@ -213,6 +234,7 @@ export class VoiceInterview {
 
   close() {
     this.#closed = true
+    this.#withdraw?.()
     this.#controller?.abort()
     try {
       this.#asr?.send(JSON.stringify({ type: 'endStream' }))
@@ -246,9 +268,15 @@ export class VoiceInterview {
         if (!msg.final) {
           const heard = String(msg.transcript ?? '')
           this.#send({ type: 'partial', text: heard })
-          // words that are not the interviewer's own: the candidate speaks
-          // over it, and it stops
-          if (this.#busy && this.#controller && !isEcho(heard, this.#said)) {
+          if (this.#withdraw && heard.trim()) {
+            // the interviewer has not spoken yet: the candidate is still
+            // answering, so what was written is dropped
+            this.#withdraw()
+          } else if (
+            // words that are not the interviewer's own: the candidate speaks
+            // over it, and it stops
+            this.#busy && this.#controller && !isEcho(heard, this.#said)
+          ) {
             this.#interrupted = true
             this.#controller.abort()
           }
@@ -278,16 +306,29 @@ export class VoiceInterview {
     const wasInterrupted = this.#interrupted
     this.#interrupted = false
     if (!text && !wasInterrupted) return
-    this.#send({ type: 'heard', turnId, text })
+    // the words of a turn withdrawn just before, which this one goes on with
+    const merge = !!this.#carry && !!text
+    const full = merge ? `${this.#carry} ${text}` : text || this.#carry
+    this.#carry = ''
+    this.#send({ type: 'heard', turnId, text: full, merge })
     this.#running = this.#answer(
-      text || '(Something was said but it was not understandable.)',
+      !full
+        ? '(Something was said but it was not understandable.)'
+        : isUnclear(full)
+        ? NOT_UNDERSTOOD(full)
+        : full,
       turnId,
+      full,
     )
     await this.#running
   }
 
+  #deliver(text: string) {
+    this.#send({ type: 'ai-delta', text })
+  }
+
   /** one turn of the interviewer, streamed to the browser while it is written */
-  async #answer(userText: string, turnId?: number) {
+  async #answer(userText: string, turnId?: number, heardText = userText) {
     this.#history.push({ role: 'user', content: userText })
     const controller = new AbortController()
     this.#controller = controller
@@ -296,6 +337,31 @@ export class VoiceInterview {
     const guard = markerGuard()
     let firstWordAt = 0
     const started = performance.now()
+    // the answer is written at once but held back for a moment (see holdMs)
+    const held: string[] = []
+    let open = turnId === undefined || voiceConfig.holdMs <= 0
+    let withdrawn = false
+    let opened!: () => void
+    const gate = new Promise<void>((resolve) => (opened = resolve))
+    const release = () => {
+      if (open) return
+      open = true
+      this.#withdraw = undefined
+      if (held.length) firstWordAt ||= performance.now()
+      for (const text of held.splice(0)) this.#deliver(text)
+      opened()
+    }
+    const timer = open ? undefined : setTimeout(release, voiceConfig.holdMs)
+    if (open) opened()
+    else {
+      this.#withdraw = () => {
+        withdrawn = true
+        this.#withdraw = undefined
+        clearTimeout(timer)
+        controller.abort()
+        opened()
+      }
+    }
     try {
       const result = await converse({
         task: 'interview',
@@ -309,12 +375,24 @@ export class VoiceInterview {
           const safe = guard.push(delta)
           if (!safe) return
           this.#said += safe
-          if (!firstWordAt) firstWordAt = performance.now()
-          this.#send({ type: 'ai-delta', text: safe })
+          if (open) {
+            firstWordAt ||= performance.now()
+            this.#deliver(safe)
+          } else held.push(safe)
         },
       })
+      await gate
+      // cut before its first word, after the hold: nothing was said either
+      if (withdrawn || (controller.signal.aborted && !this.#said.trim())) {
+        // the candidate went on: nothing of this answer was said or kept
+        this.#history.pop()
+        this.#carry = heardText
+        this.#said = ''
+        return
+      }
+      firstWordAt ||= performance.now()
+      const ended = result.text.includes(END_MARKER) && !isUnclear(heardText)
       const interrupted = controller.signal.aborted
-      const ended = result.text.includes(END_MARKER)
       const spoken = result.text.replace(END_MARKER, '').trim()
       this.#history.push({
         role: 'assistant',
@@ -323,7 +401,7 @@ export class VoiceInterview {
           : spoken,
       })
       this.#send({ type: 'ai-done', text: spoken, interrupted })
-      if (!interrupted) this.#asked++
+      if (!interrupted && !isUnclear(heardText)) this.#asked++
       if (turnId !== undefined && firstWordAt) {
         this.#send({
           type: 'metrics',
@@ -390,7 +468,9 @@ export const handleVoice = async (
   let completed = false
   const interview = new VoiceInterview(facts, (event) => {
     if (event.type === 'heard') {
-      transcript.push({ who: 'candidate', text: event.text })
+      const last = transcript.at(-1)
+      if (event.merge && last?.who === 'candidate') last.text = event.text
+      else transcript.push({ who: 'candidate', text: event.text })
     } else if (event.type === 'ai-done' && event.text) {
       transcript.push({
         who: 'ai',

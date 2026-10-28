@@ -17563,7 +17563,7 @@ index a8ecf4b..8a82c89 100644
 -  bottomTab.value = 'out'
 -})
 diff --git a/web/paths.ts b/web/paths.ts
-index 0c5de49..d0bef4d 100644
+index 0c5de49..04f7cd0 100644
 --- a/web/paths.ts
 +++ b/web/paths.ts
 @@ -1,26 +1,26 @@
@@ -17601,7 +17601,7 @@ index 0c5de49..d0bef4d 100644
 +  newAssessment: '/recruiter/new', // new assessment and its generation
 +  review: '/recruiter/review', // review before approval, ?id=
 +  assessment: '/recruiter/assessment', // approved assessment, ?id=
-+  report: '/recruiter/report', // report of a candidate, ?id=
++  report: '/recruiter/report', // report of a candidate, ?candidate=
 +  candidate: '/candidate', // welcome and consent
 +  workspace: '/candidate/workspace', // code editor and submission
 +  interview: '/candidate/interview', // the voice interview

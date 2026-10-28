@@ -192,10 +192,14 @@ const onEvent = (event: VoiceEvent) => {
     case 'heard':
       voice.partial.value = ''
       if (event.text) {
-        voice.lines.value = [...voice.lines.value, {
-          who: 'you',
-          text: event.text,
-        }]
+        const last = voice.lines.value.at(-1)
+        // the turn goes on the one just before it: one line, not two
+        voice.lines.value = event.merge && last?.who === 'you'
+          ? [...voice.lines.value.slice(0, -1), {
+            who: 'you',
+            text: event.text,
+          }]
+          : [...voice.lines.value, { who: 'you', text: event.text }]
       }
       break
     case 'ai-delta':

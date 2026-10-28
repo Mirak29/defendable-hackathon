@@ -95,6 +95,7 @@ without any key.
 | `MODEL_FALLBACK`     | fallback model, default `muse-spark-1.2`, empty for none  |
 | `MODEL_EFFORT`       | default reasoning effort, `low`                           |
 | `MODEL_API_BASE_URL` | default `https://api.meta.ai/v1`                          |
+| `VOICE_HOLD_MS`      | interview: pause before Oracle speaks, default `900`      |
 | `DEMO_ACCESS`        | `1`: a demo account can be signed in without a password   |
 | `DATABASE_PATH`      | SQLite file (`:memory:` in tests)                         |
 | `RESEND_API_KEY`     | e-mail of the personal link of a candidate (Resend)       |

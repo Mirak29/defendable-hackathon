@@ -144,6 +144,153 @@ const withInterview = async ({ replies, recognise }, fn) => {
   }
 }
 
+test('voice interview: a candidate who goes on is not answered twice', async (step) => {
+  await withInterview({
+    replies: [
+      'Hello, I am your interviewer. How did you approach the task?',
+      'Okay. What about the validation?',
+    ],
+    recognise: async (send) => {
+      await sleep(30)
+      send({ type: 'transcript', transcript: 'I started with', final: false })
+      send({ type: 'speechEnd', turnId: 1, audioProcessedMs: 900 })
+      send({
+        type: 'speechComplete',
+        turnId: 1,
+        transcript: 'I started with the file',
+      })
+      // the candidate takes up the thread while the answer is held back
+      await sleep(150)
+      send({ type: 'transcript', transcript: 'and then the', final: false })
+      await sleep(50)
+      send({ type: 'speechEnd', turnId: 2, audioProcessedMs: 2000 })
+      send({
+        type: 'speechComplete',
+        turnId: 2,
+        transcript: 'and then the handler',
+      })
+    },
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, { holdMs: 600 })
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done')
+    b.frame()
+    await b.waitFor((e) => e.type === 'heard' && e.merge)
+    await b.waitFor((e) => e.type === 'ai-done' && e.text.startsWith('Okay'))
+
+    await step('the two turns become one line', () => {
+      const heard = b.events.filter((e) => e.type === 'heard')
+      eq(heard.map((e) => [e.text, !!e.merge]), [
+        ['I started with the file', false],
+        ['I started with the file and then the handler', true],
+      ])
+    })
+
+    await step('the withdrawn answer was never sent nor kept', () => {
+      const answers = b.events.filter((e) => e.type === 'ai-done')
+      eq(answers.length, 2) // the greeting and one answer
+      eq(model.calls.length, 3) // greeting, the withdrawn answer, the merged one
+      eq(model.calls[2].messages.map((m) => m.role), [
+        'system',
+        'user',
+        'assistant',
+        'user',
+      ])
+      eq(
+        model.calls[2].messages.at(-1).content,
+        'I started with the file and then the handler',
+      )
+    })
+    b.ws.close()
+  })
+})
+
+test('voice interview: a candidate who goes on after the hold is not answered either', async (step) => {
+  await withInterview({
+    replies: [
+      'Hello, I am your interviewer. How did you approach the task?',
+      // the model is slower than the hold: the candidate resumes before its first word
+      { pieces: ['Okay. ', 'What about the validation?'], gap: 400 },
+      'Okay. What about the validation?',
+    ],
+    recognise: async (send) => {
+      await sleep(30)
+      send({ type: 'speechEnd', turnId: 1, audioProcessedMs: 900 })
+      send({
+        type: 'speechComplete',
+        turnId: 1,
+        transcript: 'I started with the file',
+      })
+      await sleep(150)
+      send({ type: 'transcript', transcript: 'and then the', final: false })
+      await sleep(50)
+      send({ type: 'speechEnd', turnId: 2, audioProcessedMs: 2000 })
+      send({
+        type: 'speechComplete',
+        turnId: 2,
+        transcript: 'and then the handler',
+      })
+    },
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, { holdMs: 50 })
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done')
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done' && e.text.startsWith('Okay'))
+
+    await step('the two turns are one line and the answer comes once', () => {
+      eq(
+        b.events.filter((e) => e.type === 'heard').map((e) => e.text),
+        [
+          'I started with the file',
+          'I started with the file and then the handler',
+        ],
+      )
+      eq(b.events.filter((e) => e.type === 'ai-done').length, 2)
+      eq(
+        model.calls.at(-1).messages.at(-1).content,
+        'I started with the file and then the handler',
+      )
+    })
+    b.ws.close()
+  })
+})
+
+test('voice interview: an answer nobody could make out is asked again', async (step) => {
+  await withInterview({
+    replies: [
+      'Hello, I am your interviewer. How did you approach the task?',
+      'Sorry, I did not catch that. Could you say it again? [END]',
+    ],
+    recognise: async (send) => {
+      await sleep(30)
+      send({ type: 'speechEnd', turnId: 1, audioProcessedMs: 900 })
+      send({ type: 'speechComplete', turnId: 1, transcript: '15' })
+    },
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, { holdMs: 0 })
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done')
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done' && e.text.startsWith('Sorry'))
+    await sleep(100)
+
+    await step('the model is told to ask again, not to move on', () => {
+      const last = model.calls[1].messages.at(-1).content
+      eq(last.includes('could not make out'), true)
+      eq(last.includes('"15"'), true)
+    })
+
+    await step('the interview does not end on a turn nobody understood', () => {
+      eq(b.events.some((e) => e.type === 'end'), false)
+    })
+    b.ws.close()
+  })
+})
+
 test('voice interview: a full conversation', async (step) => {
   await withInterview({
     replies: [
