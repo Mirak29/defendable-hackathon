@@ -29,7 +29,11 @@ if (!hasAiKey()) {
   console.error('MODEL_API_KEY is empty: add it to .env')
   Deno.exit(1)
 }
-if (args.model) llmConfig.model = args.model
+// --model: that model does every step, none is routed by step
+if (args.model) {
+  llmConfig.openTasks = []
+  llmConfig.model = args.model
+}
 if (args.fallback !== undefined) llmConfig.fallback = args.fallback
 
 // USD per million tokens (input, output): docs/pricing
@@ -39,6 +43,8 @@ const PRICE: Record<string, [number, number]> = {
   'muse-wonder-1.0': [4, 20],
   'muse-spark-1.3-contributor': [0.1, 0.2],
 }
+/** some steps are served by the open-weights model: no price for them */
+const routed = !!llmConfig.open.key && llmConfig.openTasks.length > 0
 const [pin, pout] = PRICE[llmConfig.model] ?? [0, 0]
 const cost = (tin: number, tout: number) => (tin * pin + tout * pout) / 1e6
 
@@ -149,7 +155,11 @@ for (let run = 1; run <= Number(args.runs); run++) {
     tout += t.trace?.tokensOut ?? 0
   }
   console.log(
-    `  tokens ${tin}→${tout}  ≈ $${cost(tin, tout).toFixed(3)} `,
+    `  tokens ${tin}→${tout}  ${
+      // steps on the open-weights model are not priced here (Baseten credits)
+      routed
+        ? '(open weights, not priced)'
+        : `≈ $${cost(tin, tout).toFixed(3)}`}`,
   )
   if (state.status !== 'draft') {
     console.log(`  error: ${state.generation?.error}`)

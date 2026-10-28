@@ -3382,10 +3382,10 @@ index 6493f68..ab3bad2 100644
    },
  )
 diff --git a/api/llm.test.js b/api/llm.test.js
-index 03637a4..08108a3 100644
+index 03637a4..bab04ef 100644
 --- a/api/llm.test.js
 +++ b/api/llm.test.js
-@@ -1,269 +1,306 @@
+@@ -1,269 +1,459 @@
 -import { eq, rejects, test } from '/api/lib/test.ts'
 -import { mockLlm } from '/api/lib/llm-mock.ts'
 +// The AI client against a local mock of the Meta Model API: JSON, retries,
@@ -3397,10 +3397,12 @@ index 03637a4..08108a3 100644
    ask,
    extractJson,
 +  hasAiKey,
++  isOpenModel,
    llmConfig,
 -  MODELS,
 -  retryDelay,
 -  routeChain,
++  modelFor,
 +  modelLabel,
  } from '/api/llm.ts'
  
@@ -3411,26 +3413,9 @@ index 03637a4..08108a3 100644
 -  return v
 +  if (!v || typeof v.n !== 'number') throw Error('n must be a number')
 +  return v.n
- }
++}
 +const base = { task: 'test', system: 'system', prompt: 'prompt', parse }
- 
--const mock = mockLlm
--
--const task = (extra = {}) => ({
--  task: 'unit',
--  tier: 'super',
--  system: 'Réponds en JSON',
--  prompt: 'Combien ?',
--  parse,
--  ...extra,
--})
--
--test('extractJson', async (step) => {
--  await step('fences, think blocks and prose around', () => {
--    eq(extractJson('```json\n{"a":1}\n```'), { a: 1 })
--    eq(extractJson('<think>hmm {"no":1}</think>Voici : {"a":[1,2]} merci'), {
--      a: [1, 2],
--    })
++
 +/** a mock endpoint: `script` gives, per call, a status and a body */
 +const withMock = async (script, fn) => {
 +  const calls = []
@@ -3460,14 +3445,88 @@ index 03637a4..08108a3 100644
 +    fallback: 'muse-spark-1.2',
 +    retryDelayMs: 0,
 +    maxRetryAfterMs: 0,
-   })
++  })
 +  try {
 +    return await fn(calls)
 +  } finally {
 +    Object.assign(llmConfig, saved)
 +    await server.shutdown()
 +  }
-+}
+ }
+ 
+-const mock = mockLlm
++const reply = (
++  content,
++  usage = { prompt_tokens: 10, completion_tokens: 5 },
++) => [
++  200,
++  { choices: [{ message: { content }, finish_reason: 'stop' }], usage },
++]
+ 
+-const task = (extra = {}) => ({
+-  task: 'unit',
+-  tier: 'super',
+-  system: 'Réponds en JSON',
+-  prompt: 'Combien ?',
+-  parse,
+-  ...extra,
++test('JSON extraction', async (step) => {
++  await step('plain, fenced, with prose and a trailing comma', () => {
++    eq(extractJson('{"n": 1}'), { n: 1 })
++    eq(extractJson('```json\n{"n": 2}\n```'), { n: 2 })
++    eq(extractJson('Here you go: {"n": 3} done'), { n: 3 })
++    eq(extractJson('{"n": 4,}'), { n: 4 })
++    eq(extractJson('<think>{"n": 0}</think>{"n": 5}'), { n: 5 })
++  })
++  await step('no JSON at all is an error', () => {
++    let failed = false
++    try {
++      extractJson('nothing here')
++    } catch {
++      failed = true
++    }
++    eq(failed, true)
++  })
++  await step('model labels are readable', () => {
++    eq(modelLabel('muse-spark-1.3'), 'Muse Spark 1.3')
++    eq(modelLabel('muse-spark-1.2-contributor'), 'Muse Spark 1.2 (contributor)')
++  })
+ })
+ 
+-test('extractJson', async (step) => {
+-  await step('fences, think blocks and prose around', () => {
+-    eq(extractJson('```json\n{"a":1}\n```'), { a: 1 })
+-    eq(extractJson('<think>hmm {"no":1}</think>Voici : {"a":[1,2]} merci'), {
+-      a: [1, 2],
++test('ask: Muse Spark Open is served by Baseten, with its own key', async (step) => {
++  // two hosts: the Meta Model API and the open-weights host
++  const calls = { meta: [], open: [] }
++  const serve = (name, n) =>
++    Deno.serve({ port: 0, onListen() {} }, async (req) => {
++      calls[name].push({
++        body: await req.json(),
++        auth: req.headers.get('authorization'),
++      })
++      return Response.json({
++        choices: [{
++          message: { content: `{"n":${n}}` },
++          finish_reason: 'stop',
++        }],
++        usage: { prompt_tokens: 10, completion_tokens: 5 },
++      })
+     })
++  const meta = serve('meta', 1)
++  const open = serve('open', 2)
++  const saved = structuredClone(llmConfig)
++  Object.assign(llmConfig, {
++    key: 'meta-key',
++    baseUrl: `http://localhost:${meta.addr.port}/v1`,
++    open: { key: 'open-key', baseUrl: `http://localhost:${open.addr.port}/v1` },
++    model: 'meta-models/muse-spark-open-1026',
++    fallback: 'muse-spark-1.3',
+   })
++  try {
++    const result = await ask(base)
  
 -  await step(
 -    'a code block inside a value is not the envelope (LIVE-005)',
@@ -3487,29 +3546,42 @@ index 03637a4..08108a3 100644
 -      )
 -    },
 -  )
-+const reply = (
-+  content,
-+  usage = { prompt_tokens: 10, completion_tokens: 5 },
-+) => [
-+  200,
-+  { choices: [{ message: { content }, finish_reason: 'stop' }], usage },
-+]
++    await step('the open model goes to its host with its own key', () => {
++      eq(calls.open.length, 1)
++      eq(calls.meta.length, 0)
++      eq(calls.open[0].auth, 'Bearer open-key')
++      eq(calls.open[0].body.model, 'meta-models/muse-spark-open-1026')
++    })
  
 -  await step('a trailing comma is forgiven', () => {
 -    eq(extractJson('{"a": [1, 2,], "b": {"c": 3,},}'), {
 -      a: [1, 2],
 -      b: { c: 3 },
--    })
-+test('JSON extraction', async (step) => {
-+  await step('plain, fenced, with prose and a trailing comma', () => {
-+    eq(extractJson('{"n": 1}'), { n: 1 })
-+    eq(extractJson('```json\n{"n": 2}\n```'), { n: 2 })
-+    eq(extractJson('Here you go: {"n": 3} done'), { n: 3 })
-+    eq(extractJson('{"n": 4,}'), { n: 4 })
-+    eq(extractJson('<think>{"n": 0}</think>{"n": 5}'), { n: 5 })
-   })
--})
--
++    await step('the trace says where the open model ran', () => {
++      eq(result.data, 2)
++      eq(result.trace.model, 'Muse Spark Open 1026')
++      eq(result.trace.where, 'Baseten · open weights')
+     })
+-  })
++
++    await step('a Meta model still goes to the Meta Model API', async () => {
++      llmConfig.model = 'muse-spark-1.3'
++      const meta = await ask(base)
++      eq(calls.meta.length, 1)
++      eq(calls.meta[0].auth, 'Bearer meta-key')
++      eq(meta.trace.where, 'Meta Model API')
++      eq([isOpenModel('meta-models/x'), isOpenModel('muse-spark-1.3')], [
++        true,
++        false,
++      ])
++    })
++  } finally {
++    Object.assign(llmConfig, saved)
++    await meta.shutdown()
++    await open.shutdown()
++  }
+ })
+ 
 -test('ask', async (step) => {
 -  await step('valid answer, trace with tokens', async () => {
 -    await using m = mock(() => [200, '{"answer":42}'])
@@ -3522,16 +3594,40 @@ index 03637a4..08108a3 100644
 -      false,
 -    ])
 -    eq(m.calls[0].model, 'model-super')
-+  await step('no JSON at all is an error', () => {
-+    let failed = false
-+    try {
-+      extractJson('nothing here')
-+    } catch {
-+      failed = true
-+    }
-+    eq(failed, true)
++test('each step goes to the model it was measured on', async (step) => {
++  const calls = { meta: [], open: [] }
++  let failOpen = false
++  const serve = (name) =>
++    Deno.serve({ port: 0, onListen() {} }, async (req) => {
++      const body = await req.json()
++      calls[name].push(body.model)
++      if (name === 'open' && failOpen) {
++        return new Response('down', { status: 500 })
++      }
++      return Response.json({
++        choices: [{ message: { content: '{"n":1}' }, finish_reason: 'stop' }],
++        usage: { prompt_tokens: 10, completion_tokens: 5 },
++      })
++    })
++  const meta = serve('meta')
++  const open = serve('open')
++  const saved = structuredClone(llmConfig)
++  Object.assign(llmConfig, {
++    key: 'meta-key',
++    baseUrl: `http://localhost:${meta.addr.port}/v1`,
++    open: { key: 'open-key', baseUrl: `http://localhost:${open.addr.port}/v1` },
++    model: 'muse-spark-1.3',
++    fallback: '',
++    retryDelayMs: 0,
++    retries: 0,
    })
--
++  try {
++    await step('a measured step runs on the open-weights model', async () => {
++      await ask({ ...base, task: 'scenario' })
++      eq(calls.open, ['meta-models/muse-spark-open-1026'])
++      eq(calls.meta, [])
++    })
+ 
 -  await step('invalid answer is retried with the error', async () => {
 -    await using m = mock((
 -      _,
@@ -3545,22 +3641,80 @@ index 03637a4..08108a3 100644
 -      true,
 -    )
 -    eq(trace.tokensIn, 20)
-+  await step('model labels are readable', () => {
-+    eq(modelLabel('muse-spark-1.3'), 'Muse Spark 1.3')
-+    eq(modelLabel('muse-spark-1.2-contributor'), 'Muse Spark 1.2 (contributor)')
-   })
-+})
+-  })
++    await step('the report and the others stay on the main model', async () => {
++      await ask({ ...base, task: 'report' })
++      eq(calls.meta, ['muse-spark-1.3'])
++      eq(modelFor('report'), 'muse-spark-1.3')
++      eq(modelFor('prefill'), 'meta-models/muse-spark-open-1026')
++    })
  
 -  await step('main model down: fallback model, amber banner', async () => {
 -    await using m = mock((body) =>
 -      body.model === 'model-super' ? [500] : [200, '{"answer":7}']
--    )
++    await step(
++      'when the open model fails, the main model answers',
++      async () => {
++        failOpen = true
++        const result = await ask({ ...base, task: 'prefill' })
++        eq(result.data, 1)
++        eq(result.trace.model, 'Muse Spark 1.3')
++        eq(result.trace.failures.length >= 1, true)
++        eq(result.trace.failures[0].model, 'Muse Spark Open 1026')
++      },
+     )
 -    const fallbacks = []
 -    const { data, trace } = await ask(
 -      task({ onFallback: (e) => fallbacks.push(e) }),
--    )
++
++    await step(
++      'without a Baseten key or with an empty list: main model',
++      () => {
++        llmConfig.open.key = ''
++        eq(modelFor('scenario'), 'muse-spark-1.3')
++        llmConfig.open.key = 'open-key'
++        llmConfig.openTasks = []
++        eq(modelFor('scenario'), 'muse-spark-1.3')
++      },
+     )
 -    eq([data.answer, trace.model, fallbacks.length], [7, 'Nemotron 3 Ultra', 1])
 -    eq(m.calls.length, 2)
+-  })
++  } finally {
++    Object.assign(llmConfig, saved)
++    await meta.shutdown()
++    await open.shutdown()
++  }
++})
+ 
+-  await step('overloaded endpoint: one retry on the same model', async () => {
+-    await using m = mock((_, n) => n === 1 ? [503] : [200, '{"answer":2}'])
+-    const { data, trace } = await ask(task())
+-    eq([data.answer, trace.model, m.calls.length], [2, 'Nemotron 3 Super', 2])
++test('the effort of a step can be set without touching the code', async (step) => {
++  await withMock([reply('{"n":1}')], async (calls) => {
++    await step('the effort written in the code, then the default', async () => {
++      await ask({ ...base, task: 'x', effort: 'medium' })
++      eq(calls[0].body.reasoning_effort, 'medium')
++      await ask({ ...base, task: 'x' })
++      eq(calls[1].body.reasoning_effort, llmConfig.effort)
++    })
++
++    await step('MODEL_EFFORTS wins for that step only', async () => {
++      llmConfig.efforts = { x: 'xhigh' }
++      await ask({ ...base, task: 'x', effort: 'medium' })
++      eq(calls[2].body.reasoning_effort, 'xhigh')
++      await ask({ ...base, task: 'other', effort: 'medium' })
++      eq(calls[3].body.reasoning_effort, 'medium')
++      llmConfig.efforts = {}
++    })
+   })
++})
+ 
+-  await step('patient job: spaced retries before the fallback', async () => {
+-    await using m = mock((_, n) => n <= 3 ? [503] : [200, '{"answer":4}'])
+-    const { data, trace } = await ask(task({ patient: true }))
+-    eq([data.answer, trace.model, m.calls.length], [4, 'Nemotron 3 Super', 4])
 +test('ask: the Meta Model API', async (step) => {
 +  await step('a valid answer: parsed, traced, key and body sent', async () => {
 +    await withMock([reply('{"n": 7}')], async (calls) => {
@@ -3581,10 +3735,9 @@ index 03637a4..08108a3 100644
 +    })
    })
  
--  await step('overloaded endpoint: one retry on the same model', async () => {
--    await using m = mock((_, n) => n === 1 ? [503] : [200, '{"answer":2}'])
--    const { data, trace } = await ask(task())
--    eq([data.answer, trace.model, m.calls.length], [2, 'Nemotron 3 Super', 2])
+-  await step('fallback chosen by the step', async () => {
+-    await using m = mock((body) =>
+-      body.model === 'model-precise' ? [200, '{"answer":6}'] : [500]
 +  await step('a schema the API refuses is dropped, once', async () => {
 +    await withMock(
 +      [[400, 'response_format not supported'], reply('{"n": 8}')],
@@ -3597,39 +3750,9 @@ index 03637a4..08108a3 100644
 +        eq(calls.map((c) => !!c.body.response_format), [true, false])
 +        eq(trace.failures.length, 1)
 +      },
-+    )
-   })
- 
--  await step('patient job: spaced retries before the fallback', async () => {
--    await using m = mock((_, n) => n <= 3 ? [503] : [200, '{"answer":4}'])
--    const { data, trace } = await ask(task({ patient: true }))
--    eq([data.answer, trace.model, m.calls.length], [4, 'Nemotron 3 Super', 4])
-+  await step('a schema asks for json_schema', async () => {
-+    await withMock([reply('{"n": 1}')], async (calls) => {
-+      await ask({
-+        ...base,
-+        schema: { name: 'Answer', schema: { type: 'object' } },
-+      })
-+      eq(calls[0].body.response_format.type, 'json_schema')
-+      eq(calls[0].body.response_format.json_schema.name, 'Answer')
-+    })
-   })
- 
--  await step('fallback chosen by the step', async () => {
--    await using m = mock((body) =>
--      body.model === 'model-precise' ? [200, '{"answer":6}'] : [500]
--    )
+     )
 -    const { data } = await ask(task({ fallback: 'precise' }))
 -    eq([data.answer, m.calls.at(-1).model], [6, 'model-precise'])
-+  await step('an invalid answer gets one retry with the reason', async () => {
-+    await withMock([reply('{"x": 1}'), reply('{"n": 9}')], async (calls) => {
-+      const { data, trace } = await ask(base)
-+      eq(data, 9)
-+      eq(calls.length, 2)
-+      const retry = calls[1].body.messages.at(-1).content
-+      eq(retry.includes('n must be a number'), true)
-+      eq(trace.failures.map((f) => f.reason), ['answer not valid'])
-+    })
    })
  
 -  await step('every failed attempt is kept, with its reason', async () => {
@@ -3644,6 +3767,28 @@ index 03637a4..08108a3 100644
 -        'Nemotron 3 Super : service surchargé (503)',
 -      ],
 -    )
++  await step('a schema asks for json_schema', async () => {
++    await withMock([reply('{"n": 1}')], async (calls) => {
++      await ask({
++        ...base,
++        schema: { name: 'Answer', schema: { type: 'object' } },
++      })
++      eq(calls[0].body.response_format.type, 'json_schema')
++      eq(calls[0].body.response_format.json_schema.name, 'Answer')
++    })
++  })
++
++  await step('an invalid answer gets one retry with the reason', async () => {
++    await withMock([reply('{"x": 1}'), reply('{"n": 9}')], async (calls) => {
++      const { data, trace } = await ask(base)
++      eq(data, 9)
++      eq(calls.length, 2)
++      const retry = calls[1].body.messages.at(-1).content
++      eq(retry.includes('n must be a number'), true)
++      eq(trace.failures.map((f) => f.reason), ['answer not valid'])
++    })
++  })
++
 +  await step('a busy endpoint (429) is retried on the same model', async () => {
 +    await withMock([[429, 'busy'], reply('{"n": 3}')], async (calls) => {
 +      const { data, trace } = await ask(base)
@@ -3911,10 +4056,10 @@ index 03637a4..08108a3 100644
 +  )
  })
 diff --git a/api/llm.ts b/api/llm.ts
-index 76404e9..2e7591f 100644
+index 76404e9..cfd5faf 100644
 --- a/api/llm.ts
 +++ b/api/llm.ts
-@@ -1,189 +1,43 @@
+@@ -1,189 +1,98 @@
 -// AI client (OpenAI-compatible chat completions) for every AI step, over two
 -// providers: NVIDIA (build.nvidia.com, or a Brev NIM) and Google Gemini.
 -// Each task is routed to the models that did best on it, for the lowest cost
@@ -3923,7 +4068,9 @@ index 76404e9..2e7591f 100644
 -// answers (LLM_RECORD=1) and, for the demo, the answers of the brief: without
 -// any key the whole journey still works, with grey "Cache de rejeu" badges.
 +// AI client for every AI step, over the Meta Model API (Chat Completions,
-+// https://api.meta.ai/v1). One main model and a fallback model; an invalid
++// https://api.meta.ai/v1) and, for Muse Spark Open (Meta's open-weights model,
++// served by Baseten), the same API on another host. One main model and a
++// fallback model; an invalid
 +// answer gets one retry with the validation error; every failed attempt is
 +// kept with a readable reason and shown with the trace. Without a key, a step
 +// that has a `demo` answer replays it (grey "recorded answer" badge) and the
@@ -3958,10 +4105,13 @@ index 76404e9..2e7591f 100644
 -  /** USD per million tokens (paid tier), for the cost of a trace */
 -  price?: { input: number; output: number }
 -}
--
++const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
++export type Effort = typeof EFFORTS[number]
+ 
 -const NVIDIA_URL = 'https://integrate.api.nvidia.com/v1'
 -const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/openai'
-+const where = 'Meta Model API'
++/** the open-weights model of Meta, served by Baseten: "meta-models/…" */
++export const isOpenModel = (model: string) => model.startsWith('meta-models/')
  
 -const nvidia = (
 -  model: string,
@@ -3992,7 +4142,9 @@ index 76404e9..2e7591f 100644
 -  price,
 -  ...(reasoning && { reasoning }),
 -})
--
++const whereOf = (model: string) =>
++  isOpenModel(model) ? 'Baseten · open weights' : 'Meta Model API'
+ 
 -/** The models a route can name; each one is overridable by environment */
 -export const MODELS = {
 -  ultra: ENV('NVIDIA_PRECISE_MODEL', 'x')
@@ -4035,14 +4187,25 @@ index 76404e9..2e7591f 100644
 -} satisfies Record<string, Endpoint>
 -
 -export type ModelId = keyof typeof MODELS
--
--/**
++/** "muse-spark-1.3" → "Muse Spark 1.3" */
++export const modelLabel = (model: string) =>
++  model.replace(/^meta-models\//, '').replace(/-contributor$/, ' (contributor)')
++    .split(/[-\s]+/).map((w) =>
++      /^\d/.test(w) || w.startsWith('(') ? w : w[0].toUpperCase() + w.slice(1)
++    ).join(' ')
+ 
+ /**
 - * Task → models, best first (main, then fallback), measured by `deno task
 - * llm:bench` on the real tasks (README « Choix des modèles »): the best
 - * quality, then the fastest, then the cheapest. The fallback is on the other
 - * provider when it can be: one provider down never stops a task. A model
 - * without its key is skipped; a task without a route follows its tier.
-- */
++ * The steps measured on Muse Spark Open (README, "Model choice"): as good as
++ * Muse Spark 1.3 on every automatic check and about twice as fast. The report
++ * and the interview are not on the list: it missed a planted false claim and
++ * leaked the content of a failed test, so they stay on Muse Spark 1.3 and
++ * Muse Wonder.
+  */
 -export const ROUTES: Record<string, ModelId[]> = {
 -  // R2, R3: 5/5 assessments approvable in 16 s (Ultra: 1/5 in 4 min)
 -  'need-analysis': ['flash-lite', 'ultra'],
@@ -4083,12 +4246,30 @@ index 76404e9..2e7591f 100644
 -  const fallback: Tier = o.fallback ??
 -    (o.tier === 'super' ? 'precise' : 'super')
 -  return [llmConfig.endpoint(o.tier), llmConfig.endpoint(fallback)]
--}
-+/** "muse-spark-1.3" → "Muse Spark 1.3" */
-+export const modelLabel = (model: string) =>
-+  model.replace(/-contributor$/, ' (contributor)').split(/[-\s]+/).map((w) =>
-+    /^\d/.test(w) || w.startsWith('(') ? w : w[0].toUpperCase() + w.slice(1)
-+  ).join(' ')
++const OPEN_TASKS = [
++  'need-analysis',
++  'instruction',
++  'scenario',
++  'tests',
++  'reference',
++  'reference-crash',
++  'reference-review',
++  'reference-fix',
++  'prefill',
++  'cv-extract',
++]
++
++/** "scenario=low,report=medium" → { scenario: 'low', report: 'medium' } */
++function parseEfforts(text: string) {
++  const efforts: Record<string, Effort> = {}
++  for (const pair of text.split(',')) {
++    const [task, effort] = pair.split('=').map((t) => t.trim())
++    if (task && EFFORTS.includes(effort as Effort)) {
++      efforts[task] = effort as Effort
++    }
++  }
++  return efforts
+ }
  
 -/** `deno task llm:bench`: every call of a run goes to the model under test */
 -const forced = new AsyncLocalStorage<Endpoint[]>()
@@ -4114,6 +4295,7 @@ index 76404e9..2e7591f 100644
 +export const llmConfig = {
 +  key: ENV('MODEL_API_KEY', ''),
 +  baseUrl: ENV('MODEL_API_BASE_URL', 'https://api.meta.ai/v1'),
++  /** `meta-models/muse-spark-open-1026` runs Muse Spark Open on Baseten */
 +  model: ENV('MODEL_NAME', 'muse-spark-1.3'),
 +  /** tried when the main model fails; empty: no fallback */
 +  fallback: ENV('MODEL_FALLBACK', 'muse-spark-1.2'),
@@ -4121,6 +4303,18 @@ index 76404e9..2e7591f 100644
 +  interviewModel: ENV('MODEL_INTERVIEW', 'muse-wonder-1.0'),
 +  /** Muse Spark always reasons: "none" is refused (HTTP 400) */
 +  effort: ENV('MODEL_EFFORT', 'low'),
++  /** the effort of a step when it is not the one written in the code: "scenario=low,report=medium" */
++  efforts: parseEfforts(ENV('MODEL_EFFORTS', '')),
++  /** the open-weights model of the steps below, used when its key is set */
++  openModel: ENV('MODEL_OPEN', 'meta-models/muse-spark-open-1026'),
++  /** steps run on the open-weights model (empty list: none) */
++  openTasks: ENV('MODEL_OPEN_TASKS', OPEN_TASKS.join(','))
++    .split(',').map((t) => t.trim()).filter(Boolean),
++  /** where the open-weights models are served (OpenAI-compatible) */
++  open: {
++    key: ENV('BASETEN_API_KEY', ''),
++    baseUrl: ENV('BASETEN_BASE_URL', 'https://inference.baseten.co/v1'),
++  },
 +  timeoutMs: 60_000,
 +  /** wait before the retry of a busy or failing endpoint, doubled each time */
 +  retryDelayMs: 1_000,
@@ -4136,7 +4330,7 @@ index 76404e9..2e7591f 100644
  export type CallStat = {
    task: string
    model: string
-@@ -194,28 +48,14 @@ export type CallStat = {
+@@ -194,28 +103,24 @@ export type CallStat = {
    reason?: string
  }
  
@@ -4153,11 +4347,20 @@ index 76404e9..2e7591f 100644
 -  cacheDir: fromFileUrl(import.meta.resolve('../fixtures/replay-cache/')),
 -  onCall: undefined as ((stat: CallStat) => void) | undefined,
 -}
--
++/** a key is set: the models are called */
++export const hasAiKey = () => !!llmConfig.key || !!llmConfig.open.key
++
++/** the model that starts a step: open weights where measured, else the main one */
++export const modelFor = (task: string) =>
++  llmConfig.open.key && llmConfig.openTasks.includes(task)
++    ? llmConfig.openModel
++    : llmConfig.model
+ 
 -/** at least one provider key: the models are called */
 -export const hasAiKey = () => Object.values(llmConfig.keys).some(Boolean)
-+/** a key is set: the models are called */
-+export const hasAiKey = () => !!llmConfig.key
++/** the host and the key of a model */
++const endpointOf = (model: string) =>
++  isOpenModel(model) ? llmConfig.open : llmConfig
  
  export class AiError extends Error {
    constructor(
@@ -4168,7 +4371,7 @@ index 76404e9..2e7591f 100644
      public readonly failures: AiFailure[] = [],
    ) {
      super(message)
-@@ -226,70 +66,36 @@ export class AiError extends Error {
+@@ -226,70 +131,36 @@ export class AiError extends Error {
  export type Message = { role: 'system' | 'user' | 'assistant'; content: string }
  
  export type AskOptions<T> = {
@@ -4201,7 +4404,7 @@ index 76404e9..2e7591f 100644
 -  onFallback?: (error: string) => void
 -  /** model tried when the main one fails (default: the other of super/nano) */
 -  fallback?: Tier
-+  effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
++  effort?: Effort
    /**
 -   * background jobs nobody waits for second by second (generation): an
 -   * overloaded endpoint gets several spaced retries instead of one
@@ -4254,7 +4457,7 @@ index 76404e9..2e7591f 100644
  /** from the first [ or { to the last ] or }, undefined when there is none */
  const jsonSlice = (body: string) => {
    const start = body.search(/[[{]/)
-@@ -312,15 +118,15 @@ const parseRelaxed = (json: string) => {
+@@ -312,15 +183,15 @@ const parseRelaxed = (json: string) => {
  /** JSON of a model answer: without <think> blocks nor ```json fences */
  export const extractJson = (content: string) => {
    const text = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
@@ -4273,7 +4476,7 @@ index 76404e9..2e7591f 100644
    let error: unknown
    try {
      return parseRelaxed(main)
-@@ -328,266 +134,169 @@ export const extractJson = (content: string) => {
+@@ -328,266 +199,170 @@ export const extractJson = (content: string) => {
      error = err
    }
    for (const body of [outer, text]) {
@@ -4481,7 +4684,7 @@ index 76404e9..2e7591f 100644
 +  model,
 +  messages,
 +  max_completion_tokens: o.maxTokens ?? 8_000,
-+  reasoning_effort: o.effort ?? llmConfig.effort,
++  reasoning_effort: llmConfig.efforts[o.task] ?? o.effort ?? llmConfig.effort,
 +  ...(o.schema && withSchema && {
 +    response_format: {
 +      type: 'json_schema',
@@ -4539,14 +4742,15 @@ index 76404e9..2e7591f 100644
  ) => {
 -  const base = e.baseUrl.replace(/\/openai\/?$/, '')
 -  const res = await fetch(`${base}/models/${e.model}:generateContent`, {
-+  const res = await fetch(`${llmConfig.baseUrl}/chat/completions`, {
++  const host = endpointOf(model)
++  const res = await fetch(`${host.baseUrl}/chat/completions`, {
      method: 'POST',
 -    signal: AbortSignal.timeout(timeoutOf(e, o)),
 +    signal: AbortSignal.timeout(o.timeoutMs ?? llmConfig.timeoutMs),
      headers: {
        'Content-Type': 'application/json',
 -      'x-goog-api-key': llmConfig.keys[e.provider],
-+      Authorization: `Bearer ${llmConfig.key}`,
++      Authorization: `Bearer ${host.key}`,
      },
      body: JSON.stringify({
 -      systemInstruction: { parts: [{ text: o.system }] },
@@ -4655,7 +4859,7 @@ index 76404e9..2e7591f 100644
    const messages: Message[] = [
      { role: 'system', content: o.system },
      { role: 'user', content: o.prompt },
-@@ -595,148 +304,311 @@ const attempt = async <T>(
+@@ -595,148 +370,314 @@ const attempt = async <T>(
    const started = performance.now()
    let tokensIn = 0
    let tokensOut = 0
@@ -4723,7 +4927,7 @@ index 76404e9..2e7591f 100644
 +          data,
 +          trace: {
 +            model: label,
-+            where,
++            where: whereOf(model),
 +            latencyMs: ms,
 +            tokensIn,
 +            tokensOut,
@@ -4831,10 +5035,12 @@ index 76404e9..2e7591f 100644
 +export const ask = async <T>(o: AskOptions<T>): Promise<AiResult<T>> => {
 +  if (!hasAiKey()) return recorded(o)
 +  const failures: AiFailure[] = []
-+  const models = [llmConfig.model]
-+  if (llmConfig.fallback && llmConfig.fallback !== llmConfig.model) {
-+    models.push(llmConfig.fallback)
-+  }
++  // the step's model, then the main model, then the fallback: without repeats
++  const models = [
++    ...new Set(
++      [modelFor(o.task), llmConfig.model, llmConfig.fallback].filter(Boolean),
++    ),
++  ]
 +  let last: AiError | undefined
 +  for (const [i, model] of models.entries()) {
 +    try {
@@ -4857,7 +5063,7 @@ index 76404e9..2e7591f 100644
 +  // not a model failure (sandbox, data…): said as it is
 +  if (!(err instanceof AiError) && !/\b(429|5\d\d)\b|timeout/i.test(message)) {
 +    return `Processing error: ${message.slice(0, 160)}`
-+  }
+   }
 +  if (
 +    /\b(429|502|503|504)\b|overloaded|rate limit|unavailable/i.test(message)
 +  ) {
@@ -4870,7 +5076,7 @@ index 76404e9..2e7591f 100644
 +  // the attempts are listed under "Why?": no need to repeat them
 +  if (err instanceof AiError && err.failures.length) {
 +    return 'The model did not give a usable answer.'
-   }
++  }
 +  return message.slice(0, 200)
 +}
 +
@@ -4883,7 +5089,7 @@ index 76404e9..2e7591f 100644
 +  system: string
 +  messages: Message[]
 +  /** a voice answer is short and must start fast: leave the reasoning low */
-+  effort?: 'minimal' | 'low' | 'medium' | 'high'
++  effort?: Effort
 +  maxTokens?: number
 +  /** the candidate speaks again: the answer in progress is cancelled */
 +  signal?: AbortSignal
@@ -4964,7 +5170,8 @@ index 76404e9..2e7591f 100644
 +    let text = ''
 +    let firstDeltaMs = 0
 +    try {
-+      const res = await fetch(`${llmConfig.baseUrl}/chat/completions`, {
++      const host = endpointOf(model)
++      const res = await fetch(`${host.baseUrl}/chat/completions`, {
 +        method: 'POST',
 +        signal: AbortSignal.any([
 +          ...(o.signal ? [o.signal] : []),
@@ -4972,13 +5179,13 @@ index 76404e9..2e7591f 100644
 +        ]),
 +        headers: {
 +          'Content-Type': 'application/json',
-+          Authorization: `Bearer ${llmConfig.key}`,
++          Authorization: `Bearer ${host.key}`,
 +        },
 +        body: JSON.stringify({
 +          model,
 +          messages: [{ role: 'system', content: o.system }, ...o.messages],
 +          max_completion_tokens: o.maxTokens ?? 2_000,
-+          reasoning_effort: o.effort ?? 'minimal',
++          reasoning_effort: llmConfig.efforts[o.task] ?? o.effort ?? 'minimal',
 +          stream: true,
 +        }),
 +      })
@@ -5019,7 +5226,7 @@ index 76404e9..2e7591f 100644
 +        firstDeltaMs,
 +        trace: {
 +          model: modelLabel(model),
-+          where,
++          where: whereOf(model),
 +          latencyMs: ms,
 +          tokensIn: out.usage?.prompt_tokens ?? 0,
 +          tokensOut: out.usage?.completion_tokens ?? 0,
@@ -5040,7 +5247,7 @@ index 76404e9..2e7591f 100644
 +          firstDeltaMs,
 +          trace: {
 +            model: modelLabel(model),
-+            where,
++            where: whereOf(model),
 +            latencyMs: ms,
 +            tokensIn: 0,
 +            tokensOut: 0,
@@ -5063,7 +5270,7 @@ index 76404e9..2e7591f 100644
 +          firstDeltaMs,
 +          trace: {
 +            model: modelLabel(model),
-+            where,
++            where: whereOf(model),
 +            latencyMs: Math.round(performance.now() - started),
 +            tokensIn: 0,
 +            tokensOut: 0,
@@ -6362,10 +6569,10 @@ index f8db3f1..eec60cc 100644
 +  )
  })
 diff --git a/api/report.ts b/api/report.ts
-index 75d54dc..dd53d45 100644
+index 75d54dc..5731f61 100644
 --- a/api/report.ts
 +++ b/api/report.ts
-@@ -1,1032 +1,510 @@
+@@ -1,1032 +1,512 @@
 -import { contentLang, tc, withContentLang } from '/api/lib/content-lang.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import { companyOfAssessment } from '/api/schema.ts'
@@ -7603,7 +7810,9 @@ index 75d54dc..dd53d45 100644
 +      stream: true,
 +      maxTokens: 14_000,
 +      timeoutMs: 180_000,
-+      effort: 'low',
++      // measured: from `low` to `high` the planted false claims go from 3 of 6
++      // noticed to 6 of 6, for about 14 s more in a job nobody waits on
++      effort: 'high',
      })
 -
 -    const events = integrityEvents({ candidateId }).map((row) =>
@@ -9422,7 +9631,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..3f0f6a0 100644
+index 5f704a5..3b5e870 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -9462,7 +9671,7 @@ index 5f704a5..3f0f6a0 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +48,37 @@
+@@ -45,41 +48,38 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
@@ -9487,7 +9696,7 @@ index 5f704a5..3f0f6a0 100644
 -    },
 -    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts & deno task test --watch api web fixtures --reporter=dot & deno task fmt --watch api web fixtures migrations *.ts & deno task lint --watch api web fixtures migrations *.ts",
 +    "lint": "deno lint",
-+    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-bench.ts task-llm-check.ts task-llm-report-eval.ts task-llm-generate.ts task-llm-interview.ts task-llm-interview-eval.ts",
++    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-bench.ts task-llm-check.ts task-llm-report-eval.ts task-llm-generate.ts task-llm-interview.ts task-llm-interview-eval.ts task-llm-extraction-eval.ts",
 +    "fmt": "deno fmt",
 +    "test": "deno test --env-file=.env-test -A --no-check",
 +    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts",
@@ -9522,6 +9731,7 @@ index 5f704a5..3f0f6a0 100644
 +    "llm:generate": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-generate.ts",
 +    "all": "deno task check && deno task lint && deno task test",
 +    "llm:interview-eval": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-interview-eval.ts",
++    "llm:extraction-eval": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-extraction-eval.ts",
 +    "llm:interview": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-interview.ts"
    }
  }
@@ -10390,10 +10600,10 @@ index 8d76471..b38b13a 100644
 +
 +export default server
 diff --git a/task-llm-bench.ts b/task-llm-bench.ts
-index 24e2259..887872a 100644
+index 24e2259..35ca197 100644
 --- a/task-llm-bench.ts
 +++ b/task-llm-bench.ts
-@@ -1,564 +1,233 @@
+@@ -1,564 +1,235 @@
 -// `deno task llm:bench`: every model on every AI task of Defendable, through
 -// the real code (prompts, validators, sandbox checks), on an in-memory
 -// database. Each flow runs with a single model (withModels: no fallback), and
@@ -10549,6 +10759,8 @@ index 24e2259..887872a 100644
 -      (last.ms / 1000).toFixed(1)
 -    } s · score ${last.score.toFixed(2)}${last.note ? ` · ${last.note}` : ''}`,
 -  )
++// the models are chosen here, not by step
++llmConfig.openTasks = []
 +const tasks = (args.tasks ?? 'prefill,cv,report').split(',')
 +const models = (args.models ??
 +  'muse-spark-1.3,muse-spark-1.2,muse-spark-1.1,muse-wonder-1.0').split(',')
@@ -12967,7 +13179,7 @@ index bd86fb1..ead6195 100644
        </article>
      </main>
 diff --git a/web/pages/landing/landing-page.tsx b/web/pages/landing/landing-page.tsx
-index 08078d9..7d19a4e 100644
+index 08078d9..bf1cc01 100644
 --- a/web/pages/landing/landing-page.tsx
 +++ b/web/pages/landing/landing-page.tsx
 @@ -1,12 +1,10 @@
@@ -13079,7 +13291,7 @@ index 08078d9..7d19a4e 100644
          <Logo />
          <span tw='text-xs text-content-secondary'>
 -          {t('Le dernier mot reste humain.', 'The last word stays human.')}
-+          {'Built with Meta models. The last word stays human.'}
++          {'Built with Muse Spark Open and Meta models. The last word stays human.'}
          </span>
 -        <button type='button' tw='btn btn-ghost' onClick={startDemo}>
 -          {t('Démo guidée', 'Guided demo')}

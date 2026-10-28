@@ -9,13 +9,19 @@
 //
 // Only fictional data: never a real candidate.
 import { parseArgs } from 'jsr:@std/cli/parse-args'
-import { converse, hasAiKey, llmConfig, type Message } from '/api/llm.ts'
+import {
+  converse,
+  type Effort,
+  hasAiKey,
+  llmConfig,
+  type Message,
+} from '/api/llm.ts'
 import { END_MARKER, INTERVIEW_START, interviewSystem } from '/api/prompts.ts'
 import { labFacts } from '/api/voice-lab.ts'
 
 const args = parseArgs(Deno.args, {
   boolean: ['show'],
-  string: ['models', 'runs', 'personas'],
+  string: ['models', 'runs', 'personas', 'effort'],
   default: { questions: 6 },
 })
 if (!hasAiKey()) {
@@ -24,6 +30,10 @@ if (!hasAiKey()) {
 }
 
 const models = (args.models ?? llmConfig.interviewModel).split(',')
+/** the model that plays the candidate stays the same whatever is tested */
+const PLAYER = llmConfig.model
+/** the reasoning effort of the interviewer under test */
+const EFFORT = (args.effort ?? 'minimal') as Effort
 const runs = Number(args.runs ?? 2)
 const QUESTIONS = Number(args.questions)
 const facts = { ...await labFacts(), questions: QUESTIONS }
@@ -126,6 +136,13 @@ type Result = {
   model: string
 }
 
+/** the delay to the first word of the interviewer, in ms, per turn */
+const firstWords: number[] = []
+const percentile = (values: number[], p: number) => {
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] ?? 0
+}
+
 const converseOnce = async (
   model: string,
   persona: string,
@@ -144,10 +161,11 @@ const converseOnce = async (
       model,
       system,
       messages: history,
-      effort: 'minimal',
+      effort: EFFORT,
       maxTokens: 1_200,
     })
     used = answer.trace.model
+    firstWords.push(answer.firstDeltaMs)
     const last = answer.text.includes(END_MARKER)
     const spoken = answer.text.replace(END_MARKER, '').trim()
     problems.push(...judgeTurn(answer.text, turn, last, said))
@@ -175,7 +193,7 @@ const converseOnce = async (
     }))
     const candidate = await converse({
       task: 'candidate',
-      model: llmConfig.model,
+      model: PLAYER,
       system: PERSONAS[persona],
       messages: swapped,
       effort: 'minimal',
@@ -215,6 +233,10 @@ let kept = 0
 const variety: number[] = []
 for (const model of models) {
   console.log(`\n== ${model}`)
+  // only the tested model answers: a fallback would hide its failures
+  llmConfig.model = model
+  llmConfig.fallback = ''
+  firstWords.length = 0
   for (let run = 1; run <= runs; run++) {
     const done = await Promise.all(personas.map(async (persona) => {
       try {
@@ -242,6 +264,11 @@ for (const model of models) {
       }
     }
   }
+  console.log(
+    `first word of the interviewer: median ${
+      percentile(firstWords, 0.5)
+    } ms · p95 ${percentile(firstWords, 0.95)} ms (${firstWords.length} turns)`,
+  )
 }
 const mean = variety.reduce((a, b) => a + b, 0) / Math.max(1, variety.length)
 console.log(`\nvariety of openings: ${(mean * 100).toFixed(0)}% distinct`)

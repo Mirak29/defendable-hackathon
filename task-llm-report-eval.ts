@@ -25,6 +25,8 @@ if (!hasAiKey()) {
   Deno.exit(1)
 }
 
+// the models are chosen here, not by step
+llmConfig.openTasks = []
 const models = (args.models ?? 'muse-spark-1.3').split(',')
 const efforts = (args.efforts ?? 'low').split(',')
 const runs = Number(args.runs ?? 1)
