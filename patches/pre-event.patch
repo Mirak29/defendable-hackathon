@@ -54,10 +54,10 @@ index 9a23581..acd7092 100644
 +# runs of `deno task llm:generate --out=generated`
 +generated/
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 395848d..3d10156 100644
+index 395848d..1902f48 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -5,153 +5,81 @@ code in this repository.
+@@ -5,153 +5,101 @@ code in this repository.
  
  ## What this is
  
@@ -117,6 +117,8 @@ index 395848d..3d10156 100644
 -deno task qa:audit    # accessibility + responsive audit of every screen
 +deno task llm:check   # one call per Meta model and reasoning level (needs MODEL_API_KEY)
 +deno task llm:generate --out=generated   # one real generation, with cost
++deno task llm:bench   # same fictional inputs through several models and efforts
++deno task llm:eval    # the report on fictional candidates whose reading is known
  ```
  
 -`deno task seed` cannot delete `defendable.db` while the dev server holds it
@@ -124,8 +126,10 @@ index 395848d..3d10156 100644
 -`web/assets/styles/*.css` into `dist/` only at startup: restart the dev server
 -after editing them. `@01edu/db` reads `DATABASE_PATH` itself, so keep it set in
 -the `.env-*` files.
-+`preact` and `@preact/signals` are pinned in `deno.json`: a newer
-+`@preact/signals` resolves Preact 11, which breaks hooks with Preact 10.
++`preact` and `@preact/signals` are pinned in `deno.json`, and the `npm:`
++specifiers asked by the jsr packages are remapped there: two copies in the
++bundle make the app fail with "Cycle detected". Import them with the bare
++specifiers (`@preact/signals`, `@twind/preact`), never with `npm:`.
  
  ## Architecture
  
@@ -152,6 +156,20 @@ index 395848d..3d10156 100644
 +  (need analysis, scenario, tests, fairness check). Prompts live in `prompts.ts`
 +  and are tested against the real parsers (`prompts.test.js`). Answers are
 +  validated in code with precise errors sent back to the model.
++- **Candidate journey** (`candidate.ts`, `interview.ts`, `voice.ts`): invitation
++  link, cookie session, editor (save, run, type check), submission, preparation
++  of the interview (hidden tests, type check). `/api/voice` is a WebSocket the
++  browser opens with the candidate cookie: microphone to Meta's transcription,
++  Oracle's answer streamed from the interviewer model, spoken by the browser.
++  The transcript is stored when the interview ends.
++- **Report** (`api/report.ts`): the facts are measured by the server (tests,
++  type check, durations, tools, what was said). The model reads the transcript
++  and the code; every quote, line range and test it cites is checked against
++  what exists, evidence not found is removed, a skill with none is "Not
++  assessed", and the confidence and the status are capped by the checks (see
++  `checkReading`). No global score; the decision is saved as written by a
++  person. `fixtures/report-cases.ts` holds fictional candidates with a known
++  right reading, run by `deno task llm:eval`.
 +- **Sandbox** (`api/sandbox.ts`): the candidate's code runs in a `deno`
 +  subprocess (temp dir, deny net/env/run/write, `--cached-only`, 10 s, 64 KB,
 +  queue of 2). Tests are readable steps (`api/test-steps.ts`) run against
@@ -199,8 +217,10 @@ index 395848d..3d10156 100644
 -  `web/pages/questions/questions-state.ts`. Pages never hold server data
 -  themselves.
 +  `@01edu/signal-router`. `app.tsx` maps paths to pages; every URL lives in
-+  `web/paths.ts`, never hard-code a path. Screens not built yet show a
-+  placeholder (`web/screens.ts`).
++  `web/paths.ts`, never hard-code a path. Server state lives in module-level
++  stores (`web/lib/*-store.ts`) refetched on the server events
++  (`web/lib/events.ts`). The interview page shows Oracle as an orb
++  (`web/ui/oracle-orb.tsx`) beside a message panel, and starts by itself.
  - **Shared code**: `web/types.ts` and `web/lib/assessment-checks.ts` are used by
    the API too; the web only imports _types_ from `api/`.
 -- **Demo data**: `fixtures/demo.ts` (assessment, tests, results, AI traces),
@@ -1049,10 +1069,10 @@ index 46b79c9..daf5aa5 100644
    }
    Assessment.update({
 diff --git a/api/candidate.test.js b/api/candidate.test.js
-index 2d5d576..8705f8e 100644
+index 2d5d576..38b9973 100644
 --- a/api/candidate.test.js
 +++ b/api/candidate.test.js
-@@ -1,60 +1,307 @@
+@@ -1,60 +1,296 @@
 +// The journey of a candidate on the real routes: invitation, start, editor
 +// (save, run, type check), submission, and the preparation of the interview
 +// (every test run on the frozen code, the facts the interviewer receives).
@@ -1082,23 +1102,12 @@ index 2d5d576..8705f8e 100644
 +  cookieOf,
 +  identity,
 +  invite,
++  prepared,
 +  signup,
 +} from '/api/lib/journey-test.js'
 +import { Candidate } from '/api/schema.ts'
 +import { factsOf } from '/api/interview.ts'
 +import { demoFiles } from '/fixtures/demo-files.ts'
-+
-+/** the preparation of the interview, once it is over */
-+const prepared = async (cookies) => {
-+  for (let i = 0; i < 600; i++) {
-+    const view = await (await call('GET', '/api/candidate/me', {}, cookies))
-+      .json()
-+    const steps = view.preparation?.steps ?? []
-+    if (steps.at(-1)?.state === 'done' || view.preparation?.error) return view
-+    await new Promise((r) => setTimeout(r, 100))
-+  }
-+  throw Error('the preparation did not finish')
-+}
 +
 +test('candidate: invitation and start', async (step) => {
 +  const member = await signup('Invites')
@@ -1250,9 +1259,21 @@ index 2d5d576..8705f8e 100644
 +      })).status,
 +      401,
 +    )
-+  })
-+})
-+
+   })
+ })
+ 
+-test('assistant limit under parallel calls (AUD-007)', async (step) => {
+-  await step('4 calls at once: 3 replies, 1 refused', async () => {
+-    const row = atQuestion(1_000, 7) // Q7 is a free answer
+-    const calls = await Promise.allSettled(
+-      [1, 2, 3, 4].map((i) =>
+-        askAssistant(row(), { n: 7, message: `Question ${i}` })
+-      ),
+-    )
+-    eq(calls.filter((c) => c.status === 'fulfilled').length, ASSISTANT_LIMIT)
+-    eq(calls.filter((c) => c.status === 'rejected').length, 1)
+-    const stored = answersOf(row())[7].assistant
+-    eq(stored.filter((m) => m.role === 'user').length, ASSISTANT_LIMIT)
 +test('candidate: build, submit, and the facts of the interview', async (step) => {
 +  const member = await signup('Builds')
 +  const assessment = await approvedAssessment(member)
@@ -1356,21 +1377,9 @@ index 2d5d576..8705f8e 100644
 +  await step('before the preparation ends there are no facts', async () => {
 +    const other = await invite(member, assessment)
 +    eq(factsOf(Candidate.require(other.body.candidateId)), undefined)
-   })
- })
- 
--test('assistant limit under parallel calls (AUD-007)', async (step) => {
--  await step('4 calls at once: 3 replies, 1 refused', async () => {
--    const row = atQuestion(1_000, 7) // Q7 is a free answer
--    const calls = await Promise.allSettled(
--      [1, 2, 3, 4].map((i) =>
--        askAssistant(row(), { n: 7, message: `Question ${i}` })
--      ),
--    )
--    eq(calls.filter((c) => c.status === 'fulfilled').length, ASSISTANT_LIMIT)
--    eq(calls.filter((c) => c.status === 'rejected').length, 1)
--    const stored = answersOf(row())[7].assistant
--    eq(stored.filter((m) => m.role === 'user').length, ASSISTANT_LIMIT)
++  })
++})
++
 +test('candidate: time is up', async (step) => {
 +  const member = await signup('Clock')
 +  const assessment = await approvedAssessment(member)
@@ -2126,10 +2135,10 @@ index 9a19ccb..b9ca76e 100644
    })
  }
 diff --git a/api/cv.test.js b/api/cv.test.js
-index c03201e..6bee532 100644
+index c03201e..8c651db 100644
 --- a/api/cv.test.js
 +++ b/api/cv.test.js
-@@ -1,18 +1,63 @@
+@@ -1,18 +1,68 @@
 -// U5: the invitation form prefilled from a CV. Fictional CVs of
 -// fixtures/cv/; the model is a mock (api/lib/llm-mock.ts).
 +// The invitation form prefilled from a CV. Fictional CVs built here (a PDF
@@ -2143,7 +2152,12 @@ index c03201e..6bee532 100644
 -import { llmConfig, retryDelay } from '/api/llm.ts'
 -import { replayForDemo, withAiScope } from '/api/lib/ai-context.ts'
 +import { llmConfig } from '/api/llm.ts'
-+import { approvedAssessment, call, signup } from '/api/lib/journey-test.js'
++import {
++  approvedAssessment,
++  call,
++  signup,
++  withModel,
++} from '/api/lib/journey-test.js'
  import { cvText, inCv, readCv, readLocally } from '/api/cv.ts'
 -import { cvs } from '/fixtures/cv/cvs.ts'
  
@@ -2169,11 +2183,7 @@ index c03201e..6bee532 100644
 +  'thomas.garcia@example.org',
 +  'Data engineer, five years on Spark pipelines.',
 +]
- 
--const file = (name) =>
--  Deno.readFileSync(new URL(`../fixtures/cv/${name}`, import.meta.url))
--const cv = (name) => cvs.find((c) => c.file === name)
--const answer = (fields) => [200, JSON.stringify(fields)]
++
 +const pdf = async (lines) => {
 +  const doc = await PDFDocument.create()
 +  const page = doc.addPage([595, 842])
@@ -2188,7 +2198,11 @@ index c03201e..6bee532 100644
 +  )
 +  return await doc.save()
 +}
-+
+ 
+-const file = (name) =>
+-  Deno.readFileSync(new URL(`../fixtures/cv/${name}`, import.meta.url))
+-const cv = (name) => cvs.find((c) => c.file === name)
+-const answer = (fields) => [200, JSON.stringify(fields)]
 +const docx = (lines) => {
 +  const escape = (t) =>
 +    t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -2204,40 +2218,10 @@ index c03201e..6bee532 100644
  
  /** a 400 of the API, with its message for the recruiter */
  const refused = async (fn, text) => {
-@@ -21,50 +66,91 @@ const refused = async (fn, text) => {
+@@ -21,50 +71,61 @@ const refused = async (fn, text) => {
    eq(body?.message?.includes(text), true, body?.message ?? String(err))
  }
  
-+/** a mock of the model: `answer` is the content of its reply */
-+const withModel = async (answer, fn) => {
-+  const calls = []
-+  const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
-+    calls.push(await req.json())
-+    if (answer === undefined) return new Response('down', { status: 503 })
-+    return Response.json({
-+      choices: [{
-+        message: { content: JSON.stringify(answer) },
-+        finish_reason: 'stop',
-+      }],
-+      usage: { prompt_tokens: 10, completion_tokens: 5 },
-+    })
-+  })
-+  const saved = { ...llmConfig }
-+  Object.assign(llmConfig, {
-+    key: 'test-key',
-+    baseUrl: `http://localhost:${server.addr.port}/v1`,
-+    retryDelayMs: 0,
-+    maxRetryAfterMs: 0,
-+    retries: 0,
-+  })
-+  try {
-+    return await fn(calls)
-+  } finally {
-+    Object.assign(llmConfig, saved)
-+    await server.shutdown()
-+  }
-+}
-+
 +const LEA_FIELDS = {
 +  firstName: 'Lea',
 +  lastName: 'Moreau',
@@ -2324,7 +2308,7 @@ index c03201e..6bee532 100644
      eq([fields.firstName, fields.email], [
        'Thomas',
        'thomas.garcia@example.org',
-@@ -85,76 +171,90 @@ test('cv local reading', async (step) => {
+@@ -85,76 +146,90 @@ test('cv local reading', async (step) => {
  
  test('cv reading by a model', async (step) => {
    await step('the fields the model read, each found in the CV', async () => {
@@ -2384,6 +2368,13 @@ index c03201e..6bee532 100644
 -    eq(reading.by, 'local')
 -    eq(reading.fields.email, 'karim.benali@example.net')
 -    eq(reading.note?.startsWith('Modèle indisponible'), true)
+-  })
+-
+-  await step('never recorded in the replay cache (personal data)', async () => {
+-    await using _m = mockLlm(() => answer(cv('cv-lea-moreau.pdf').expected))
+-    llmConfig.record = true
+-    await readCv(file('cv-lea-moreau.pdf'))
+-    eq([...Deno.readDirSync(llmConfig.cacheDir)].length, 0)
 +  await step('model down: the local reading, said so', async () => {
 +    await withModel(undefined, async () => {
 +      const reading = await readCv(docx(KARIM))
@@ -2393,11 +2384,14 @@ index c03201e..6bee532 100644
 +    })
    })
  
--  await step('never recorded in the replay cache (personal data)', async () => {
--    await using _m = mockLlm(() => answer(cv('cv-lea-moreau.pdf').expected))
--    llmConfig.record = true
--    await readCv(file('cv-lea-moreau.pdf'))
--    eq([...Deno.readDirSync(llmConfig.cacheDir)].length, 0)
+-  await step('the demo space reads locally, without any call', async () => {
+-    await using m = mockLlm(() => answer({}))
+-    const reading = await withAiScope(() => {
+-      replayForDemo(true)
+-      return readCv(file('cv-lea-moreau.pdf'))
+-    })
+-    eq([reading.by, m.calls.length], ['local', 0])
+-    eq(reading.fields.lastName, 'Moreau')
 +  await step('without a key: the local reading, no call', async () => {
 +    const saved = llmConfig.key
 +    llmConfig.key = ''
@@ -2410,16 +2404,6 @@ index c03201e..6bee532 100644
 +    }
    })
  
--  await step('the demo space reads locally, without any call', async () => {
--    await using m = mockLlm(() => answer({}))
--    const reading = await withAiScope(() => {
--      replayForDemo(true)
--      return readCv(file('cv-lea-moreau.pdf'))
--    })
--    eq([reading.by, m.calls.length], ['local', 0])
--    eq(reading.fields.lastName, 'Moreau')
--  })
--
 -  await step('a scan needs a Gemini model', async () => {
 -    await using _m = mockLlm(() => answer({}))
 -    llmConfig.keys = { nvidia: 'test-key', gemini: '' }
@@ -2469,7 +2453,7 @@ index c03201e..6bee532 100644
 +  )
 +})
 diff --git a/api/cv.ts b/api/cv.ts
-index 490ed67..1cfc752 100644
+index 490ed67..8484cfa 100644
 --- a/api/cv.ts
 +++ b/api/cv.ts
 @@ -1,18 +1,15 @@
@@ -2604,14 +2588,11 @@ index 490ed67..1cfc752 100644
  
  const FIELDS = [
    'firstName',
-@@ -261,72 +256,54 @@ const FIELDS = [
+@@ -261,72 +256,58 @@ const FIELDS = [
    'headline',
  ] as const
  
 -/** The model's reading, unchecked: from the text, or from the file of a scan */
--export const askCvFields = (
--  cv: { text: string } | { document: Uint8Array },
--) =>
 +const nullable = { type: ['string', 'null'] }
 +const schema = {
 +  name: 'cv_fields',
@@ -2624,13 +2605,18 @@ index 490ed67..1cfc752 100644
 +}
 +
 +/** The model's reading, unchecked */
-+export const askCvFields = (text: string) =>
+ export const askCvFields = (
+-  cv: { text: string } | { document: Uint8Array },
++  text: string,
++  effort?: 'minimal' | 'low' | 'medium',
+ ) =>
    ask({
      task: 'cv-extract',
 -    tier: 'super',
 -    personal: true,
 -    temperature: 0,
 -    maxTokens: 400,
++    effort,
 +    maxTokens: 2_000,
      system: SYSTEM,
 -    ...('text' in cv
@@ -2702,7 +2688,7 @@ index 490ed67..1cfc752 100644
      const fields: CvFields = {}
      const discarded: (keyof CvFields)[] = []
      for (const f of FIELDS) {
-@@ -342,17 +319,11 @@ export const readCv = async (bytes: Uint8Array): Promise<CvReading> => {
+@@ -342,17 +323,11 @@ export const readCv = async (bytes: Uint8Array): Promise<CvReading> => {
    } catch (err) {
      if (!(err instanceof AiError)) throw err
      log.warn('cv-extract-failed', { reason: err.message })
@@ -5466,7 +5452,7 @@ index 8d00735..4e73220 100644
    }
    pending.set(email, (pending.get(email) ?? 0) + 1)
 diff --git a/api/recovery.ts b/api/recovery.ts
-index 952c4db..7941608 100644
+index 952c4db..9626751 100644
 --- a/api/recovery.ts
 +++ b/api/recovery.ts
 @@ -1,14 +1,14 @@
@@ -5487,18 +5473,19 @@ index 952c4db..7941608 100644
    ...progress,
    steps: (progress?.steps ?? []).map((s) =>
      s.state === 'run' ? { state: 'error' } : s
-@@ -22,25 +22,10 @@ const generating = Assessment.sql`
+@@ -22,24 +22,26 @@ const generating = Assessment.sql`
  
  const preparing = Candidate.sql`
    SELECT * FROM candidate
 -  WHERE candidateSubmittedAt IS NOT NULL AND candidateQuestions IS NULL
--`.all
--
--const reporting = Candidate.sql`
++  WHERE candidateSubmittedAt IS NOT NULL AND candidateResults IS NULL
+ `.all
+ 
+ const reporting = Candidate.sql`
 -  SELECT * FROM candidate
 -  WHERE candidateFinishedAt IS NOT NULL
 -    AND (candidateReport IS NULL OR json_extract(candidateReport, '$.status') = 'pending')
-+  WHERE candidateSubmittedAt IS NOT NULL AND candidateResults IS NULL
++  SELECT * FROM candidate WHERE candidateReport IS NOT NULL
  `.all
  
  export const recoverInterruptedJobs = () => {
@@ -5508,13 +5495,23 @@ index 952c4db..7941608 100644
 -      assessmentId: a.assessmentId,
 -      assessmentStatus: a.assessmentSpec ? 'draft' : 'failed',
 -      assessmentGeneration: interrupt(json<Progress>(a.assessmentGeneration)),
--    })
++  for (const c of reporting()) {
++    const stored = json<{ status: string }>(c.candidateReport)
++    if (stored?.status !== 'pending') continue
++    Candidate.update({
++      candidateId: c.candidateId,
++      candidateReport: {
++        status: 'failed',
++        error: INTERRUPTED,
++        at: new Date().toISOString(),
++      },
+     })
 -    log.warn('job-interrupted', { assessmentId: a.assessmentId })
--  }
++    log.warn('job-interrupted', { candidateId: c.candidateId })
+   }
    for (const c of preparing()) {
      const progress = json<Progress>(c.candidatePreparation)
-     if (progress?.error) continue
-@@ -48,13 +33,15 @@ export const recoverInterruptedJobs = () => {
+@@ -48,13 +50,15 @@ export const recoverInterruptedJobs = () => {
        candidateId: c.candidateId,
        candidatePreparation: interrupt(progress),
      })
@@ -5759,15 +5756,18 @@ index 58b4786..65ba5b5 100644
    log.info('reference-check', {
      passed: results.filter((r) => r.passed).length,
 diff --git a/api/report.test.js b/api/report.test.js
-deleted file mode 100644
-index f8db3f1..0000000
+index f8db3f1..eec60cc 100644
 --- a/api/report.test.js
-+++ /dev/null
-@@ -1,161 +0,0 @@
--import { eq, test } from '/api/lib/test.ts'
++++ b/api/report.test.js
+@@ -1,161 +1,471 @@
++// The report on the real routes, against a local mock of the model: the facts
++// the server measures, the evidence of the model checked against what exists,
++// the failure and its retry, the human decision, and the start of the report
++// when the interview ends.
+ import { eq, test } from '/api/lib/test.ts'
 -import { mockLlm } from '/api/lib/llm-mock.ts'
 -import { retryDelay } from '/api/llm.ts'
--import {
+ import {
 -  anchoredInAnswer,
 -  buildReport,
 -  confirmContradictions,
@@ -5782,22 +5782,52 @@ index f8db3f1..0000000
 -
 -const files = { 'src/app.ts': 'export const handler = () => new Response()\n' }
 -const claims = [
--  {
++  approvedAssessment,
++  call,
++  signup,
++  submittedCandidate,
++  withModel,
++} from '/api/lib/journey-test.js'
++import { json } from '/api/assessment.ts'
++import { Assessment, Candidate } from '/api/schema.ts'
++import { finishInterview } from '/api/candidate.ts'
++import { candidateVoice } from '/api/interview.ts'
++import { buildReport } from '/api/report.ts'
++
++const TRANSCRIPT = [
++  { who: 'ai', text: 'Hello, I am Oracle. How did you approach the task?' },
++  {
++    who: 'candidate',
++    text:
++      'I split it in three files: the handler, the validation and an in-memory repository.',
++  },
++  {
++    who: 'ai',
++    text: 'What happens if the address starts with something else?',
++  },
+   {
 -    id: '8-0',
 -    answer: 'a',
 -    quote: 'le code renvoie 400',
 -    claim: 'le code renvoie 400',
 -    why: 'il renvoie 201',
--  },
--  {
++    who: 'candidate',
++    text:
++      'My check only builds a URL object, so anything that parses is accepted, even javascript.',
+   },
++  { who: 'ai', text: 'And two requests with the same alias at once?' },
+   {
 -    id: '9-0',
 -    answer: 'b',
 -    quote: 'une Map',
 -    claim: 'une Map',
 -    why: 'un tableau',
--  },
--]
--
++    who: 'candidate',
++    text: 'I am not sure, I did not think about that one.',
+   },
++  { who: 'ai', text: 'Thank you, that is all. [END]' },
+ ]
+ 
 -test('contradictions need a second key (AUD-004)', async (step) => {
 -  await step('confirmed and refused by the second model', async () => {
 -    await using _m = mockLlm(() => [
@@ -5807,23 +5837,147 @@ index f8db3f1..0000000
 -    const { confirmed, unavailable } = await confirmContradictions(
 -      files,
 -      claims,
--    )
++const skillNames = (assessment) =>
++  json(Assessment.require(assessment).assessmentSpec).skills.map((s) => s.name)
++
++/** what the model would answer, with the evidence of each skill */
++const answer = (names, skills = {}) => ({
++  understanding: {
++    summary: 'They explain the structure well and admit what they missed.',
++    confidence: 'high',
++  },
++  skills: names.map((name, i) => ({
++    skill: name,
++    status: 'Demonstrated',
++    confidence: 'high',
++    summary: `Reading of ${name}.`,
++    words: 'agree',
++    quotes: [],
++    code: [],
++    tests: [],
++    ...skills[i],
++  })),
++  followUp: ['Ask how they would make the alias check safe.'],
++  limits: ['Only three answers.'],
++})
++
++const setup = async (name) => {
++  const member = await signup(name)
++  const assessment = await approvedAssessment(member)
++  const candidate = await submittedCandidate(member, assessment)
++  return { member, assessment, ...candidate }
++}
++
++const view = async (member, candidateId) =>
++  await (await call('GET', '/api/report', { candidate: candidateId }, member))
++    .json()
++
++test('report: facts, then the reading of the model checked', async (step) => {
++  const { member, assessment, candidateId } = await setup('Reports')
++  const names = skillNames(assessment)
++  const row = () => Candidate.require(candidateId)
++
++  await step('the facts are measured before any model is asked', async () => {
++    finishInterview(row(), TRANSCRIPT, true)
++    const v = await view(member, candidateId)
++    eq(v.status, 'waiting')
++    eq([v.facts.passed, v.facts.total], [10, 11])
++    eq(
++      v.facts.tests.filter((t) => !t.passed).map((t) => [t.id, t.visibility]),
++      [['T9', 'hidden']],
+     )
 -    eq([[...confirmed], unavailable], [['8-0'], undefined])
--  })
--
++    eq(v.facts.declaredTools, ['Claude'])
++    eq([v.facts.candidateTurns, v.facts.interviewCompleted], [3, true])
++    eq(v.facts.candidateWords > 20, true)
++    eq(v.reading, undefined)
++    eq(v.transcript.length, TRANSCRIPT.length)
++    eq(v.identity.firstName, 'Awa')
+   })
+ 
 -  await step('second model down: nothing confirmed, reasons kept', async () => {
 -    await using m = mockLlm(() => [503])
 -    const { confirmed, unavailable } = await confirmContradictions(
 -      files,
 -      claims,
--    )
++  await step(
++    'every piece of evidence is checked, the rest removed',
++    async () => {
++      await withModel(
++        answer(names, [
++          {
++            // a real quote, a real range of lines and a real test: all kept
++            quotes: [
++              'My check only builds a URL object, so anything that parses is accepted',
++            ],
++            code: [{
++              file: 'src/validation.ts',
++              from: 8,
++              to: 14,
++              note: 'check',
++            }],
++            tests: ['T9'],
++          },
++          {
++            // nothing the model gives can be found: no interpretation left
++            quotes: ['I wrote all of it by hand in one evening'],
++            code: [{
++              file: 'src/validation.ts',
++              from: 900,
++              to: 905,
++              note: 'x',
++            }],
++            tests: ['T99'],
++          },
++        ]),
++        async () => {
++          await buildReport(candidateId)
++        },
++      )
++      const { reading, status } = await view(member, candidateId)
++      eq(status, 'ready')
++      const [first, second] = reading.skills
++      eq(first.skill, names[0])
++      eq(first.quotes.length, 1)
++      eq(first.code.length, 1)
++      eq(first.tests, ['T9'])
++      eq(first.status, 'Demonstrated')
++      eq(second.status, 'Not assessed')
++      eq([second.quotes, second.code, second.tests], [[], [], []])
++      eq(reading.discarded, 3)
++      eq(reading.limits.some((l) => l.includes('3 pieces of evidence')), true)
++    },
++  )
++
++  await step('the confidence follows the evidence, not the model', async () => {
++    const { reading } = await view(member, candidateId)
++    // three kinds of evidence agree: "high" stays
++    eq(reading.skills[0].confidence, 'high')
++    // few answers cannot support a firm reading of the understanding
++    eq(reading.understanding.confidence, 'medium')
++    eq(reading.trace.model.length > 0, true)
++  })
++
++  await step('a single kind of evidence never gives a "high"', async () => {
++    await withModel(
++      answer(names, [{
++        quotes: [
++          'My check only builds a URL object, so anything that parses is accepted',
++        ],
++      }]),
++      async () => {
++        await buildReport(candidateId)
++      },
+     )
 -    eq(confirmed.size, 0)
 -    eq(unavailable.at(-1).reason, 'service surchargé (503)')
 -    // AUD-010: the second key never falls back on Ultra, the first key's model
 -    eq(m.calls.some((c) => c.model === 'model-precise'), false)
--  })
++    const { reading } = await view(member, candidateId)
++    eq(reading.skills[0].confidence, 'medium')
+   })
 -})
--
+ 
 -test('QCM with a disputed key are not counted (AUD-003)', () => {
 -  const qcm = [
 -    { isCorrect: true, check: 'execution' },
@@ -5833,11 +5987,41 @@ index f8db3f1..0000000
 -  eq(qcmScore(qcm), '1/2 (1 clé contestée, non comptée)')
 -  eq(qcmScore(qcm.slice(0, 2)), '1/2')
 -})
--
++  await step('a skill the model forgot is not assessed', async () => {
++    await withModel(answer(names.slice(0, 1)), async () => {
++      await buildReport(candidateId)
++    })
++    const { reading } = await view(member, candidateId)
++    eq(reading.skills.length, names.length)
++    if (names.length > 1) {
++      eq(reading.skills[1].status, 'Not assessed')
++    }
++  })
+ 
 -test('a contradiction is anchored in the answer (LIVE-004)', async (step) => {
 -  const answer =
 -    'Je conteste la prémisse : la chaîne fait 31 caractères, pas 33. Une chaîne de 33 caractères retourne bien 400.'
--
++  await step('a skill that is not assessed shows no evidence', async () => {
++    await withModel(
++      answer(names, [{
++        status: 'Not assessed',
++        confidence: 'low',
++        quotes: [
++          'My check only builds a URL object, so anything that parses is accepted',
++        ],
++        tests: ['T9'],
++      }]),
++      async () => {
++        await buildReport(candidateId)
++      },
++    )
++    const { reading } = await view(member, candidateId)
++    const [first] = reading.skills
++    eq(first.status, 'Not assessed')
++    eq([first.quotes, first.code, first.tests], [[], [], []])
++    eq(reading.discarded, 0)
++  })
+ 
 -  await step('words the candidate wrote', () => {
 -    eq(anchoredInAnswer(answer, 'la chaîne fait 31 caractères, pas 33'), true)
 -    // apostrophes, spaces and case of the copy do not matter
@@ -5847,9 +6031,38 @@ index f8db3f1..0000000
 -        "je valide  déjà que l'URL",
 -      ),
 -      true,
--    )
--  })
--
++  await step(
++    'words that do not match the code lower a "Demonstrated"',
++    async () => {
++      const quote =
++        'My check only builds a URL object, so anything that parses is accepted'
++      await withModel(
++        answer(names, [{ words: 'disagree', quotes: [quote], tests: ['T9'] }]),
++        async () => {
++          await buildReport(candidateId)
++        },
++      )
++      const [first] = (await view(member, candidateId)).reading.skills
++      eq([first.status, first.words], ['Partial', 'disagree'])
++      eq(first.capped.includes('does not match the code'), true)
++    },
++  )
++
++  await step('a skill read in the interview needs their words', async () => {
++    // code and tests alone do not defend a skill the interview reads
++    const spec = json(Assessment.require(assessment).assessmentSpec)
++    const index = spec.skills.findIndex((s) => s.methods.includes('Interview'))
++    await withModel(
++      answer(names, { [index]: { words: 'none', tests: ['T1'] } }),
++      async () => {
++        await buildReport(candidateId)
++      },
+     )
++    const skill = (await view(member, candidateId)).reading.skills[index]
++    eq([skill.status, skill.words], ['Partial', 'none'])
++    eq(skill.capped.includes('read in the interview'), true)
+   })
+ 
 -  await step('words the model made up are refused', () => {
 -    eq(
 -      anchoredInAnswer(
@@ -5857,11 +6070,58 @@ index f8db3f1..0000000
 -        'Le test T6 envoie un alias de 33 caractères et reçoit 201',
 -      ),
 -      false,
--    )
++  await step(
++    'tests and code are enough where they are the measure',
++    async () => {
++      const spec = json(Assessment.require(assessment).assessmentSpec)
++      const index = spec.skills.findIndex((s) =>
++        !s.methods.includes('Interview')
++      )
++      await withModel(
++        answer(names, {
++          [index]: {
++            words: 'none',
++            confidence: 'high',
++            tests: ['T1'],
++            code: [{
++              file: 'src/validation.ts',
++              from: 8,
++              to: 14,
++              note: 'check',
++            }],
++          },
++        }),
++        async () => {
++          await buildReport(candidateId)
++        },
++      )
++      const skill = (await view(member, candidateId)).reading.skills[index]
++      // still "Demonstrated", with less certainty: nobody spoke about it
++      eq([skill.status, skill.confidence, skill.capped], [
++        'Demonstrated',
++        'medium',
++        undefined,
++      ])
++    },
++  )
++
++  await step('words count only when a quote of theirs was found', async () => {
++    await withModel(
++      answer(names, [{
++        words: 'agree',
++        quotes: ['I rebuilt the whole thing twice before lunch today'],
++        tests: ['T1'],
++      }]),
++      async () => {
++        await buildReport(candidateId)
++      },
+     )
 -    eq(anchoredInAnswer(answer, undefined), false)
 -    eq(anchoredInAnswer(answer, '33'), false) // too short to carry a claim
--  })
--
++    const [first] = (await view(member, candidateId)).reading.skills
++    eq(first.words, 'none')
+   })
+ 
 -  await step('the second key reads the quote', async () => {
 -    await using m = mockLlm(() => [
 -      200,
@@ -5871,9 +6131,21 @@ index f8db3f1..0000000
 -    const prompt = m.calls[0].messages.at(-1).content
 -    eq(prompt.includes('"quote":"le code renvoie 400"'), true)
 -    eq(prompt.includes('vérifie d’abord l’attribution'), true)
--  })
--})
--
++  await step('words of the interviewer are not evidence', async () => {
++    await withModel(
++      answer(names, [{
++        quotes: ['What happens if the address starts with something else'],
++      }]),
++      async () => {
++        await buildReport(candidateId)
++      },
++    )
++    const { reading } = await view(member, candidateId)
++    eq(reading.skills[0].status, 'Not assessed')
++    eq(reading.discarded, 1)
+   })
+ })
+ 
 -test('a disputed QCM is neither right nor wrong for the evaluator (LIVE-007)', async (step) => {
 -  await step('no verdict nor key in what the evaluator reads', () => {
 -    const [disputed, counted] = qcmForEvaluator([
@@ -5901,9 +6173,51 @@ index f8db3f1..0000000
 -      chosen: 'a',
 -      correct: 'a',
 -      isCorrect: true,
--    })
--  })
--
++test('report: failure, retry, no transcript', async (step) => {
++  const { member, assessment, candidateId } = await setup('Failures')
++  const names = skillNames(assessment)
++  const row = () => Candidate.require(candidateId)
++
++  await step('nobody spoke: nothing to read, said plainly', async () => {
++    await buildReport(candidateId)
++    const v = await view(member, candidateId)
++    eq(v.status, 'failed')
++    eq(v.error.includes('no transcript'), true)
++    eq(v.facts.total, 11)
++  })
++
++  await step(
++    'a model that is down fails the report, the facts stay',
++    async () => {
++      finishInterview(row(), TRANSCRIPT, true)
++      await withModel(undefined, async () => {
++        await buildReport(candidateId)
++      })
++      const v = await view(member, candidateId)
++      eq(v.status, 'failed')
++      eq(typeof v.error, 'string')
++      eq(v.facts.passed, 10)
++      eq(v.reading, undefined)
++    },
++  )
++
++  await step('retry reads the interview again', async () => {
++    await withModel(answer(names), async () => {
++      const res = await call(
++        'POST',
++        '/api/report/retry',
++        { candidate: candidateId },
++        member,
++      )
++      eq(res.status, 204)
++      for (let i = 0; i < 100; i++) {
++        if ((await view(member, candidateId)).status === 'ready') break
++        await new Promise((r) => setTimeout(r, 50))
++      }
+     })
++    eq((await view(member, candidateId)).status, 'ready')
+   })
+ 
 -  await step('no note of fault on a disputed key', async () => {
 -    const assessmentId = seedDemoAssessment(randomToken(10))
 -    const candidateId = seedFinishedCandidate(assessmentId, randomToken(24))
@@ -5915,22 +6229,142 @@ index f8db3f1..0000000
 -      candidateId,
 -      candidateQuestions: questions,
 -      candidateReport: null,
--    })
++  await step(
++    'an answer that is not the expected shape is refused',
++    async () => {
++      await withModel({ nothing: true }, async () => {
++        await buildReport(candidateId)
++      })
++      eq((await view(member, candidateId)).status, 'failed')
++    },
++  )
++})
++
++test('report: its events follow only the owner', async (step) => {
++  const { member, candidateId } = await setup('Follows')
++  const stream = (who) =>
++    call('GET', '/api/events', { candidate: String(candidateId) }, who, {
++      accept: 'text/event-stream',
+     })
 -    await buildReport(candidateId)
 -    const { status, report } = JSON.parse(
 -      Candidate.require(candidateId).candidateReport,
--    )
++
++  await step('the owner opens the stream', async () => {
++    const res = await stream(member)
++    eq(res.status, 200)
++    eq(res.headers.get('content-type')?.includes('text/event-stream'), true)
++    await res.body.cancel()
++  })
++
++  await step('another company and a stranger do not', async () => {
++    eq((await stream(await signup('Watchers'))).status, 404)
++    eq((await stream({})).status, 401)
++  })
++})
++
++test('report: decision and access', async (step) => {
++  const { member, candidateId } = await setup('Decides')
++  finishInterview(Candidate.require(candidateId), TRANSCRIPT, true)
++
++  await step('the recruiter writes the decision down', async () => {
++    const res = await call('POST', '/api/report/decision', {
++      candidate: candidateId,
++      choice: 'more',
++      note: 'Ask about concurrency in a second call.',
++    }, member)
++    eq(res.status, 200)
++    const decision = await res.json()
++    eq([decision.choice, decision.note.startsWith('Ask about')], ['more', true])
++    eq((await view(member, candidateId)).decision.choice, 'more')
++  })
++
++  await step('a decision is one of three words', async () => {
++    const res = await call('POST', '/api/report/decision', {
++      candidate: candidateId,
++      choice: 'hire',
++    }, member)
++    eq(res.status, 400)
++  })
++
++  await step('another company sees nothing and decides nothing', async () => {
++    const other = await signup('Intruders')
++    eq(
++      (await call('GET', '/api/report', { candidate: candidateId }, other))
++        .status,
++      404,
++    )
++    eq(
++      (await call('POST', '/api/report/decision', {
++        candidate: candidateId,
++        choice: 'decline',
++      }, other)).status,
++      404,
++    )
++    eq(
++      (await call(
++        'POST',
++        '/api/report/retry',
++        { candidate: candidateId },
++        other,
++      ))
++        .status,
++      404,
+     )
 -    eq(status, 'ready')
 -    const q1 = report.qcm.find((q) => q.n === 1)
 -    eq([q1.check, q1.isCorrect, q1.aiNote], ['disputed', false, undefined])
--  })
--})
+   })
++
++  await step('without a session nothing is open', async () => {
++    eq(
++      (await call('GET', '/api/report', { candidate: candidateId })).status,
++      401,
++    )
++  })
++})
++
++test('report: it starts when the interview ends', async (step) => {
++  const { member, assessment, candidateId, cookies } = await setup('Starts')
++  const names = skillNames(assessment)
++
++  await step('Oracle closes the interview: the report follows', async () => {
++    await withModel(answer(names), async () => {
++      const req = new Request('http://localhost/api/voice', {
++        headers: { cookie: `dfd_candidate=${cookies.dfd_candidate}` },
++      })
++      candidateVoice.onFinish(req, TRANSCRIPT, true)
++      for (let i = 0; i < 100; i++) {
++        if ((await view(member, candidateId)).status === 'ready') break
++        await new Promise((r) => setTimeout(r, 50))
++      }
++    })
++    const v = await view(member, candidateId)
++    eq(v.status, 'ready')
++    eq(v.facts.interviewCompleted, true)
++  })
++
++  await step(
++    'a candidate who leaves gets no report by themselves',
++    async () => {
++      const other = await setup('Leaves')
++      const req = new Request('http://localhost/api/voice', {
++        headers: { cookie: `dfd_candidate=${other.cookies.dfd_candidate}` },
++      })
++      candidateVoice.onFinish(req, TRANSCRIPT.slice(0, 3), false)
++      await new Promise((r) => setTimeout(r, 200))
++      const v = await view(other.member, other.candidateId)
++      eq(v.status, 'waiting')
++      eq(v.facts.interviewCompleted, false)
++      eq(v.transcript.length, 3)
++    },
++  )
+ })
 diff --git a/api/report.ts b/api/report.ts
-deleted file mode 100644
-index 75d54dc..0000000
+index 75d54dc..dd53d45 100644
 --- a/api/report.ts
-+++ /dev/null
-@@ -1,1032 +0,0 @@
++++ b/api/report.ts
+@@ -1,1032 +1,510 @@
 -import { contentLang, tc, withContentLang } from '/api/lib/content-lang.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import { companyOfAssessment } from '/api/schema.ts'
@@ -5940,7 +6374,16 @@ index 75d54dc..0000000
 -// Its citations are checked like the analysis ones; a skill evaluated only by
 -// questions cannot go above a medium confidence (brief R6). No global score.
 -import { APP_ENV } from '/api/lib/env.ts'
--import { respond } from '@01edu/api/response'
++// The report of a candidate, built when the interview ends.
++// - The facts are measured here (tests, type check, durations, tools, what was
++//   said): no model takes part.
++// - The model reads the transcript and the code and gives interpretations. Each
++//   one is checked against what exists: a quote must be found in the words of
++//   the candidate, a range of lines must exist in the code, a test must exist.
++//   Evidence that cannot be found is removed and counted; an interpretation
++//   left with no evidence becomes "Not assessed"; the confidence is capped by
++//   the evidence that remains. No global score. The decision stays human.
+ import { respond } from '@01edu/api/response'
 -import { Assessment, Candidate, type CandidateRow, Entry } from '/api/schema.ts'
 -import { json, toCandidateSummary } from '/api/assessment.ts'
 -import { questionsOf, type StoredAnswer } from '/api/candidate.ts'
@@ -5952,9 +6395,13 @@ index 75d54dc..0000000
 -  refuteProofs,
 -  verifyCitation,
 -} from '/api/analysis.ts'
--import { AiError, aiErrorText, ask } from '/api/llm.ts'
--import { log } from '/api/lib/log.ts'
--import {
++import { json } from '/api/assessment.ts'
++import type { StoredResults } from '/api/candidate.ts'
++import { candidateBriefText } from '/api/reference.ts'
+ import { AiError, aiErrorText, ask } from '/api/llm.ts'
++import { arr, obj, oneOf, optStr, str } from '/api/lib/check.ts'
+ import { log } from '/api/lib/log.ts'
+ import {
 -  arr,
 -  bool,
 -  num,
@@ -5973,14 +6420,28 @@ index 75d54dc..0000000
 -  QcmQuestion,
 -  Question,
 -} from '/fixtures/questions.ts'
--import type {
--  AiFailure,
++  REPORTER,
++  type ReportInput,
++  reportPrompt,
++  reportSchema,
++} from '/api/prompts.ts'
++import {
++  Assessment,
++  Candidate,
++  type CandidateRow,
++  companyOfAssessment,
++  Entry,
++} from '/api/schema.ts'
++import { toCandidateSummary } from '/api/assessment.ts'
+ import type {
+   AiFailure,
 -  AiTrace,
--  AssessmentSpec,
--  CandidateFiles,
+   AssessmentSpec,
+   CandidateFiles,
 -  CandidateIdentity,
 -  CandidateResults,
--  Confidence,
++  CodeRef,
+   Confidence,
 -  DimensionStatusValue,
 -  FreeReview,
 -  IntegrityEvent,
@@ -5989,8 +6450,17 @@ index 75d54dc..0000000
 -  ReportDimension,
 -  TestCase,
 -  TraceRow,
--} from '/web/types.ts'
--
++  Decision,
++  DecisionChoice,
++  InterviewLine,
++  Reading,
++  ReportFacts,
++  ReportView,
++  SkillReading,
++  SkillStatus,
++  Words,
+ } from '/web/types.ts'
+ 
 -export type DecisionChoice = 'go' | 'no' | 'info'
 -export type Decision = { choice: DecisionChoice; note: string; at: string }
 -
@@ -6001,17 +6471,21 @@ index 75d54dc..0000000
 -  pseudonym: string
 -  /** shown to the company that invited the candidate (U4, D7: visible) */
 -  identity?: CandidateIdentity
--  status: 'pending' | 'ready' | 'failed'
--  error?: string
++/** what is kept on the candidate: the state of the job and its result */
++type StoredReport = {
+   status: 'pending' | 'ready' | 'failed'
++  reading?: Reading
+   error?: string
 -  /** why the report failed, attempt by attempt */
--  failures?: AiFailure[]
+   failures?: AiFailure[]
 -  report?: Report
 -  results?: CandidateResults
 -  tests: TestCase[]
 -  files: CandidateFiles
 -  decision?: Decision
--}
--
++  at: string
+ }
+ 
 -/* ---------- overlap with the assistant (facts) ---------- */
 -
 -type Token = { word: string; start: number; end: number }
@@ -6049,7 +6523,43 @@ index 75d54dc..0000000
 -    if (!copied[i]) {
 -      i++
 -      continue
--    }
++const CONFIDENCE = ['low', 'medium', 'high'] as const
++const WORDS = ['agree', 'partly', 'disagree', 'none'] as const
++const STATUS = [
++  'Demonstrated',
++  'Partial',
++  'Not demonstrated',
++  'Not assessed',
++] as const
++
++const specOf = (c: CandidateRow) =>
++  json<AssessmentSpec>(Assessment.require(c.assessmentId).assessmentSpec)!
++
++const transcriptOf = (c: CandidateRow) =>
++  json<InterviewLine[]>(c.candidateInterview) ?? []
++
++const minutes = (from?: number | null, to?: number | null) =>
++  from && to ? Math.max(1, Math.round((to - from) / 60_000)) : undefined
++
++/* ---------- facts ---------- */
++
++/** what the server measured, from what it stored: the same every time */
++export const reportFacts = (c: CandidateRow): ReportFacts => {
++  const spec = specOf(c)
++  const results = json<StoredResults>(c.candidateResults)
++  const byId = new Map(spec.tests.map((t) => [t.id, t]))
++  const lines = transcriptOf(c).filter((l) => l.who === 'candidate')
++  const tests = (results?.tests ?? []).map((r) => {
++    const t = byId.get(r.id)
++    return {
++      id: r.id,
++      title: t?.title ?? '',
++      visibility: t?.visibility ?? 'public',
++      passed: r.passed,
++      expected: r.expected,
++      received: r.received,
++      request: r.request,
+     }
 -    let j = i
 -    while (j + 1 < words.length && copied[j + 1]) j++
 -    const start = words[i].start
@@ -6090,7 +6600,27 @@ index 75d54dc..0000000
 -    return `${numbers.length > 1 ? 'questions' : 'question'} ${
 -      numbers.join(', ')
 -    }`
--  }
++  })
++  return {
++    tests,
++    passed: tests.filter((t) => t.passed).length,
++    total: tests.length,
++    typeErrors: (results?.problems ?? []).map((p) => `${p.file}: ${p.message}`),
++    ownTests: results?.own ?? { passed: 0, failed: 0 },
++    buildMinutes: minutes(c.candidateStartedAt, c.candidateSubmittedAt),
++    interviewMinutes: minutes(
++      c.candidateInterviewStartedAt,
++      c.candidateFinishedAt,
++    ),
++    declaredTools: json<string[]>(c.candidateTools) ?? [],
++    autoSubmitted: !!c.candidateAutoSubmitted,
++    interviewCompleted: !!c.candidateFinishedAt,
++    candidateTurns: lines.length,
++    candidateWords: lines.reduce(
++      (n, l) => n + l.text.trim().split(/\s+/).filter(Boolean).length,
++      0,
++    ),
+   }
 -  const leaves = of('page-leave')
 -  const pastes = of('paste-blocked')
 -  const exits = of('fullscreen-exit')
@@ -6145,14 +6675,17 @@ index 75d54dc..0000000
 -      ),
 -    },
 -  ]
--}
--
+ }
+ 
 -/* ---------- traces (facts) ---------- */
--
++/* ---------- the reading of the model, checked ---------- */
+ 
 -const traceRow = (step: string, traces: AiTrace[]): TraceRow | undefined => {
 -  if (!traces.length) return undefined
 -  const [first] = traces
--  return {
++const parseCode = (v: unknown, path: string): CodeRef => {
++  const o = obj(v, path)
+   return {
 -    step,
 -    // a step may have fallen back to the other model
 -    model: [...new Set(traces.map((t) => t.model))].join(' + '),
@@ -6164,17 +6697,30 @@ index 75d54dc..0000000
 -      formatInt(traces.reduce((s, t) => s + t.tokensOut, 0))
 -    }`,
 -    failures: failureLines(traces),
--  }
--}
--
++    file: str(o.file, `${path}.file`, 200),
++    from: Math.round(Number(o.from)),
++    to: Math.round(Number(o.to)),
++    note: optStr(o.note, `${path}.note`, 300) ?? '',
+   }
+ }
+ 
 -/** "Nemotron 3 Super : service surchargé (503) · 0,4 s", in order */
 -const failureLines = (traces: AiTrace[]) => {
 -  const lines = traces.flatMap((t) => t.failures ?? []).map((f) =>
 -    `${f.model} : ${f.reason} · ${formatLatency(f.ms)}`
 -  )
 -  return lines.length ? lines : undefined
--}
--
++type RawSkill = {
++  skill: string
++  status: SkillStatus
++  confidence: Confidence
++  summary: string
++  words: Words
++  quotes: string[]
++  code: CodeRef[]
++  tests: string[]
+ }
+ 
 -const sumTraces = (traces: AiTrace[]): AiTrace[] =>
 -  traces.length
 -    ? [{
@@ -6226,11 +6772,21 @@ index 75d54dc..0000000
 -  }[]
 -  interviewPoints: string[]
 -  debrief: Report['debrief']
--}
--
++type Raw = {
++  understanding: { summary: string; confidence: Confidence }
++  skills: RawSkill[]
++  followUp: string[]
++  limits: string[]
+ }
+ 
 -const parseEvaluation = (v: unknown): Evaluation => {
 -  const o = obj(v, 'réponse')
--  return {
++/** the shape of the answer, nothing more: the evidence is checked after */
++export const parseReading = (v: unknown): Raw => {
++  const o = obj(v, 'answer')
++  const understanding = obj(o.understanding, 'understanding')
++  const text = (x: unknown, path: string) => str(x, path, 400)
+   return {
 -    free: arr(o.free, 'free', (x, p) => {
 -      const f = obj(x, p)
 -      return {
@@ -6300,14 +6856,44 @@ index 75d54dc..0000000
 -    }),
 -    debrief: arr(o.debrief, 'debrief', (x, p) => {
 -      const d = obj(x, p)
--      return {
++    understanding: {
++      summary: str(understanding.summary, 'understanding.summary', 1200),
++      confidence: oneOf(
++        understanding.confidence,
++        CONFIDENCE,
++        'understanding.confidence',
++      ),
++    },
++    skills: arr(o.skills, 'skills', (x, path) => {
++      const s = obj(x, path)
+       return {
 -        question: str(d.question, `${p}.question`, 300),
 -        goodAnswer: str(d.goodAnswer, `${p}.goodAnswer`, 400),
--      }
++        skill: str(s.skill, `${path}.skill`, 120),
++        status: oneOf(s.status, STATUS, `${path}.status`),
++        confidence: oneOf(s.confidence, CONFIDENCE, `${path}.confidence`),
++        summary: optStr(s.summary, `${path}.summary`, 500) ?? '',
++        words: oneOf(s.words, WORDS, `${path}.words`),
++        quotes: arr(s.quotes ?? [], `${path}.quotes`, text, {
++          max: 4,
++          clip: true,
++        }),
++        code: arr(s.code ?? [], `${path}.code`, parseCode, {
++          max: 4,
++          clip: true,
++        }),
++        tests: arr(s.tests ?? [], `${path}.tests`, text, {
++          max: 6,
++          clip: true,
++        }),
+       }
 -    }, { min: 1, max: 4 }),
--  }
--}
--
++    }, { max: 20, clip: true }),
++    followUp: arr(o.followUp ?? [], 'followUp', text, { max: 4, clip: true }),
++    limits: arr(o.limits ?? [], 'limits', text, { max: 6, clip: true }),
+   }
+ }
+ 
 -// the words of the brief's answers that carry its contradictions
 -const demoAnswerQuotes: Record<'fr' | 'en', Record<number, string>> = {
 -  fr: { 7: 'Je valide déjà que l’URL est en http ou https dans isValidUrl' },
@@ -6355,14 +6941,20 @@ index 75d54dc..0000000
 -
 -const EVALUATION_SYSTEM =
 -  'Tu aides un recruteur à lire les réponses d’un candidat sur son propre code. Tu sépares les faits de tes interprétations, tu ne donnes aucune note globale, tu ne recommandes aucune décision et tu ne devines pas si une réponse a été écrite par une IA. Tu parles du candidat à la troisième personne et tu le vouvoies dans les questions de débrief. Réponds uniquement en JSON, en français.'
--
++/** lower case, no accents, no punctuation, single spaces: how words are matched */
++const fold = (text: string) =>
++  text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
++    .replace(/[^a-z0-9]+/g, ' ').trim()
+ 
 -const choiceLabel = (q: QcmQuestion, choice?: number | 'idk') =>
 -  choice === 'idk'
 -    ? 'Je ne sais pas'
 -    : choice === undefined
 -    ? 'Pas de réponse'
 -    : q.options[choice]?.label ?? 'Pas de réponse'
--
++const lowerConfidence = (c: Confidence, max: Confidence): Confidence =>
++  CONFIDENCE.indexOf(c) > CONFIDENCE.indexOf(max) ? max : c
+ 
 -/** "Conception d'API REST" is "Conception d’API REST" */
 -const nameKey = (name: string) =>
 -  name.normalize('NFD').replace(/\p{M}/gu, '').replace(/[’'`]/g, "'")
@@ -6397,11 +6989,13 @@ index 75d54dc..0000000
 -}
 -
 -/** "5/6", or "4/5 (1 clé contestée, non comptée)" */
--/**
+ /**
 - * The QCMs as the evaluator reads them: a disputed key decides nothing, for
 - * the evaluator too (LIVE-007); a prediction checked by running its
 - * requests is a fact
-- */
++ * Keeps what can be found, drops the rest and counts it. The model reads
++ * exactly the skills of the assessment, in their order.
+  */
 -export const qcmForEvaluator = (qcm: QcmReview[]) =>
 -  qcm.map(({ n, prompt, chosen, correct, isCorrect, check, requests }) => ({
 -    n,
@@ -6414,7 +7008,17 @@ index 75d54dc..0000000
 -      }, le code renvoie réellement « ${correct} »`,
 -    }),
 -  }))
--
++export const verifyReading = (
++  raw: Raw,
++  c: CandidateRow,
++): Omit<Reading, 'trace'> =>
++  checkReading(raw, {
++    spec: specOf(c),
++    files: json<CandidateFiles>(c.candidateFiles) ?? {},
++    transcript: transcriptOf(c),
++    facts: reportFacts(c),
++  })
+ 
 -export const qcmScore = (qcm: QcmReview[]) => {
 -  const counted = qcm.filter((q) => q.check !== 'disputed')
 -  const disputed = qcm.length - counted.length
@@ -6427,8 +7031,14 @@ index 75d54dc..0000000
 -      })`
 -      : ''
 -  }`
--}
--
++/** what a reading is checked against: everything that exists */
++export type Evidence = {
++  spec: AssessmentSpec
++  files: CandidateFiles
++  transcript: InterviewLine[]
++  facts: Pick<ReportFacts, 'tests' | 'interviewCompleted' | 'candidateTurns'>
+ }
+ 
 -/** measured facts, so the model never counts nor invents a number */
 -const factsText = (
 -  spec: AssessmentSpec,
@@ -6445,7 +7055,56 @@ index 75d54dc..0000000
 -      return `${r.id} « ${t?.title} » (attendu ${
 -        r.expected ?? t?.expected
 -      }, reçu ${r.received ?? '?'})`
--    })
++export const checkReading = (
++  raw: Raw,
++  { spec, files, transcript, facts }: Evidence,
++): Omit<Reading, 'trace'> => {
++  const said = fold(
++    transcript.filter((l) => l.who === 'candidate').map((l) => l.text)
++      .join(' . '),
++  )
++  const known = new Set(facts.tests.map((t) => t.id))
++  let discarded = 0
++
++  const skills: SkillReading[] = spec.skills.map((wanted) => {
++    const given = raw.skills.find((s) => fold(s.skill) === fold(wanted.name))
++    const base = {
++      skill: wanted.name,
++      methods: wanted.methods,
++    }
++    if (!given) {
++      return {
++        ...base,
++        status: 'Not assessed' as const,
++        confidence: 'low' as const,
++        summary: 'The model did not read this skill.',
++        words: 'none' as const,
++        quotes: [],
++        code: [],
++        tests: [],
++      }
++    }
++    // "Not assessed" says there is nothing to read: it shows no evidence
++    if (given.status === 'Not assessed') {
++      return {
++        ...base,
++        status: 'Not assessed' as const,
++        confidence: 'low' as const,
++        summary: given.summary ||
++          'Nothing in the interview or the code speaks to this skill.',
++        words: 'none' as const,
++        quotes: [],
++        code: [],
++        tests: [],
++      }
++    }
++    const quotes = given.quotes.filter((q) => {
++      const words = fold(q)
++      // a quote of a word or two proves nothing
++      const found = words.split(' ').length >= 3 && said.includes(words)
++      if (!found) discarded++
++      return found
+     })
 -  return [
 -    `- Tests d’évaluation publics réussis : ${
 -      count(results.publicTests)
@@ -6507,34 +7166,124 @@ index 75d54dc..0000000
 -            confirmed: bool(o.confirmed, `${p}.confirmed`),
 -          }
 -        }),
--    })
++    const code = given.code.filter((r) => {
++      const lines = files[r.file]?.split('\n').length
++      const found = !!lines && r.from >= 1 && r.to >= r.from && r.to <= lines
++      if (!found) discarded++
++      return found
+     })
 -    for (const v of data.filter((v) => !v.confirmed)) {
 -      log.info('contradiction-not-confirmed', { id: v.id })
--    }
++    const tests = [...new Set(given.tests)].filter((id) => {
++      if (!known.has(id)) discarded++
++      return known.has(id)
++    })
++    const kinds = [quotes, code, tests].filter((e) => e.length).length
++    // no evidence left, no interpretation
++    if (!kinds) {
++      return {
++        ...base,
++        status: 'Not assessed' as const,
++        confidence: 'low' as const,
++        summary: 'No evidence could be checked for this skill.',
++        words: 'none' as const,
++        quotes,
++        code,
++        tests,
++      }
+     }
 -    return {
 -      confirmed: new Set(data.filter((v) => v.confirmed).map((v) => v.id)),
 -      trace,
--    }
++    let confidence = given.confidence
++    // two kinds of evidence for a "high"; the interview alone is never above "medium"
++    if (kinds < 2) confidence = lowerConfidence(confidence, 'medium')
++    if (wanted.methods.every((m) => m === 'Interview')) {
++      confidence = lowerConfidence(confidence, 'medium')
++    }
++    // the words count only when a quote of theirs was found
++    const words: Words = quotes.length ? given.words : 'none'
++    let status = given.status
++    let capped: string | undefined
++    if (status === 'Demonstrated') {
++      if (words === 'partly' || words === 'disagree') {
++        // good code does not make up for words that do not match it
++        status = 'Partial'
++        capped = 'Lowered: what they said about it does not match the code.'
++      } else if (words === 'none') {
++        if (wanted.methods.includes('Interview')) {
++          // this skill is read in the interview: code alone does not defend it
++          status = 'Partial'
++          capped =
++            'Lowered: this skill is read in the interview and they said nothing that supports it.'
++        } else {
++          // tests and code are enough for what they measure, with less certainty
++          confidence = lowerConfidence(confidence, 'medium')
++        }
++      }
+     }
 -  } catch (err) {
 -    // unavailable is not confirmed: the claims are shown as unconfirmed,
 -    // with the reasons, and never counted (AUD-004)
 -    log.warn('contradiction-check-failed', { message: String(err) })
--    return {
+     return {
 -      confirmed: new Set<string>(),
 -      unavailable: err instanceof AiError && err.failures.length
 -        ? err.failures
 -        : [{ model: 'Contre-vérification', reason: aiErrorText(err), ms: 0 }],
--    }
--  }
--}
--
++      ...base,
++      status,
++      confidence,
++      summary: given.summary,
++      words,
++      capped,
++      quotes,
++      code,
++      tests,
+     }
++  })
++
++  const limits = [...raw.limits]
++  if (!facts.interviewCompleted) {
++    limits.unshift('The candidate left before Oracle closed the interview.')
++  }
++  if (facts.candidateTurns < 3) {
++    limits.unshift('The conversation is short: there are few answers to read.')
++  }
++  if (discarded) {
++    limits.push(
++      `${discarded} piece${
++        discarded > 1 ? 's' : ''
++      } of evidence given by the model could not be found and ${
++        discarded > 1 ? 'were' : 'was'
++      } removed.`,
++    )
++  }
++  return {
++    understanding: {
++      summary: raw.understanding.summary,
++      // a few answers cannot support a firm reading
++      confidence: facts.candidateTurns < 4
++        ? lowerConfidence(raw.understanding.confidence, 'medium')
++        : raw.understanding.confidence,
++    },
++    skills,
++    followUp: raw.followUp,
++    limits,
++    discarded,
+   }
+ }
+ 
 -/* ---------- job ---------- */
--
++/* ---------- the job ---------- */
+ 
 -const pace = (trace: AiTrace) =>
 -  trace.replay && APP_ENV !== 'test'
 -    ? new Promise((r) => setTimeout(r, 800))
 -    : Promise.resolve()
--
++const store = (candidateId: number, report: StoredReport) =>
++  Candidate.update({ candidateId, candidateReport: report })
+ 
 -const LIMITS = () => [
 -  tc(
 -    'Les réponses sont écrites sans surveillance vidéo.',
@@ -6553,10 +7302,40 @@ index 75d54dc..0000000
 -    'A skill assessed by questions only does not go beyond medium confidence.',
 -  ),
 -]
--
++const storedOf = (c: CandidateRow) => json<StoredReport>(c.candidateReport)
+ 
 -const sectionOf = (methods: string[]) =>
 -  methods[0] === 'Tests' ? 's2' : methods[0] === 'Analyse du code' ? 's3' : 's4'
--
++const inputOf = (c: CandidateRow): ReportInput => {
++  const spec = specOf(c)
++  const facts = reportFacts(c)
++  return {
++    brief: candidateBriefText(spec),
++    skills: spec.skills.map((s) => ({
++      name: s.name,
++      importance: s.importance,
++      methods: s.methods,
++    })),
++    tests: facts.tests.map((t) => ({
++      id: t.id,
++      visibility: t.visibility,
++      title: t.title,
++      passed: t.passed,
++      detail: `expected ${t.expected ?? '?'}, received ${t.received ?? '?'}${
++        t.request ? ` for "${t.request}"` : ''
++      }`,
++    })),
++    typeErrors: facts.typeErrors,
++    ownTests: facts.ownTests.passed + facts.ownTests.failed
++      ? `${facts.ownTests.passed} pass, ${facts.ownTests.failed} fail`
++      : 'none written',
++    declaredTools: facts.declaredTools,
++    files: json<CandidateFiles>(c.candidateFiles) ?? {},
++    transcript: transcriptOf(c),
++    interviewCompleted: facts.interviewCompleted,
++  }
++}
+ 
 -/** R6 job, in the language of the assessment */
 -export const buildReport = (candidateId: number) =>
 -  withContentLang(
@@ -6564,9 +7343,18 @@ index 75d54dc..0000000
 -      .assessmentLanguage,
 -    () => writeReport(candidateId),
 -  )
--
++/** tells the page the report changed state: it refetches and shows it */
++const announce = (c: CandidateRow) =>
++  Entry.insert.CANDIDATE_REPORT_READY({
++    companyId: companyOfAssessment(c.assessmentId),
++    assessmentId: c.assessmentId,
++    candidateId: c.candidateId,
++  })
+ 
 -const writeReport = async (candidateId: number) => {
--  const c = Candidate.require(candidateId)
++/** reads the interview and stores the report; a failure is stored, never thrown */
++export const buildReport = async (candidateId: number) => {
+   const c = Candidate.require(candidateId)
 -  const a = Assessment.require(c.assessmentId)
 -  const spec = json<AssessmentSpec>(a.assessmentSpec)!
 -  const files = json<CandidateFiles>(c.candidateFiles) ?? {}
@@ -6754,7 +7542,13 @@ index 75d54dc..0000000
 -        signals: e?.signals ?? [],
 -        contradiction,
 -      }
--    })
++  const at = new Date().toISOString()
++  if (!transcriptOf(c).some((l) => l.who === 'candidate')) {
++    store(candidateId, {
++      status: 'failed',
++      error: 'The candidate said nothing: there is no transcript to read.',
++      at,
+     })
 -    for (const note of evaluation.qcmNotes) {
 -      const q = qcm.find((x) => x.n === note.n)
 -      // no note of fault on a disputed key (LIVE-007)
@@ -6794,7 +7588,22 @@ index 75d54dc..0000000
 -          : d?.note,
 -        section: sectionOf(methods),
 -      }
--    })
++    return
++  }
++  store(candidateId, { status: 'pending', at })
++  announce(c)
++  try {
++    const { data, trace } = await ask({
++      task: 'report',
++      system: REPORTER,
++      prompt: reportPrompt(inputOf(c)),
++      schema: reportSchema,
++      parse: parseReading,
++      stream: true,
++      maxTokens: 14_000,
++      timeoutMs: 180_000,
++      effort: 'low',
+     })
 -
 -    const events = integrityEvents({ candidateId }).map((row) =>
 -      json<
@@ -6882,8 +7691,13 @@ index 75d54dc..0000000
 -    Candidate.update({
 -      candidateId,
 -      candidateReport: { status: 'ready', report },
--    })
--  } catch (err) {
++    store(candidateId, {
++      status: 'ready',
++      reading: { ...verifyReading(data, c), trace },
++      at: new Date().toISOString(),
+     })
++    announce(c)
+   } catch (err) {
 -    Candidate.update({
 -      candidateId,
 -      candidateReport: {
@@ -6891,15 +7705,22 @@ index 75d54dc..0000000
 -        error: aiErrorText(err),
 -        failures: err instanceof AiError ? err.failures : undefined,
 -      },
--    })
--  }
++    log.warn('report-failed', { candidateId, message: String(err) })
++    store(candidateId, {
++      status: 'failed',
++      error: aiErrorText(err),
++      failures: err instanceof AiError ? err.failures : undefined,
++      at: new Date().toISOString(),
+     })
++    announce(c)
+   }
 -  Entry.insert.CANDIDATE_REPORT_READY({
 -    companyId: companyOfAssessment(c.assessmentId),
 -    assessmentId: c.assessmentId,
 -    candidateId,
 -  })
--}
--
+ }
+ 
 -/* ---------- read, decision ---------- */
 -
 -type StoredReport = {
@@ -6907,31 +7728,49 @@ index 75d54dc..0000000
 -  report?: Report
 -  error?: string
 -  failures?: AiFailure[]
--}
--
++/** in the background: the page follows the events */
++export const startReport = (candidateId: number) => {
++  const stored = storedOf(Candidate.require(candidateId))
++  if (stored?.status === 'pending') return
++  buildReport(candidateId).catch((err) =>
++    log.warn('report-crashed', { candidateId, message: String(err) })
++  )
+ }
+ 
 -export const getReport = (candidateId: number): ReportView => {
 -  const c = Candidate.require(candidateId)
 -  const spec = json<AssessmentSpec>(
 -    Assessment.require(c.assessmentId).assessmentSpec,
 -  )!
 -  const stored = json<StoredReport>(c.candidateReport)
--  return {
++/* ---------- what the pages read ---------- */
++
++export const reportView = (c: CandidateRow): ReportView => {
++  const stored = storedOf(c)
++  const a = Assessment.require(c.assessmentId)
+   return {
 -    candidateId,
--    assessmentId: c.assessmentId,
++    candidateId: c.candidateId,
+     assessmentId: c.assessmentId,
 -    assessmentTitle: spec.title,
--    pseudonym: c.candidatePseudonym,
--    identity: toCandidateSummary(c).identity,
++    assessmentTitle: specOf(c).title ?? a.assessmentTitle,
+     pseudonym: c.candidatePseudonym,
+     identity: toCandidateSummary(c).identity,
 -    status: stored?.status ?? 'pending',
--    error: stored?.error,
--    failures: stored?.failures,
++    status: stored?.status ?? 'waiting',
+     error: stored?.error,
+     failures: stored?.failures,
 -    report: stored?.report,
 -    results: json<CandidateResults>(c.candidateResults),
 -    tests: spec.tests,
--    files: json<CandidateFiles>(c.candidateFiles) ?? {},
--    decision: json<Decision>(c.candidateDecision),
--  }
--}
--
++    facts: reportFacts(c),
++    reading: stored?.reading,
++    transcript: transcriptOf(c),
+     files: json<CandidateFiles>(c.candidateFiles) ?? {},
+     decision: json<Decision>(c.candidateDecision),
+   }
+ }
+ 
 -export const retryReport = (candidateId: number) => {
 -  const c = Candidate.require(candidateId)
 -  if (!c.candidateFinishedAt) {
@@ -6942,7 +7781,8 @@ index 75d54dc..0000000
 -}
 -
 -/** Human decision only: the system never recommends one (brief R6) */
--export const saveDecision = (
++/** the human decision: it is never computed, only written down */
+ export const saveDecision = (
 -  candidateId: number,
 -  { choice, note }: { choice: DecisionChoice; note: string },
 -): Decision => {
@@ -6950,24 +7790,41 @@ index 75d54dc..0000000
 -  const decision = {
 -    choice,
 -    note: note.slice(0, 2000),
--    at: new Date().toISOString(),
--  }
++  c: CandidateRow,
++  input: { choice: DecisionChoice; note: string },
++) => {
++  if (!c.candidateFinishedAt && !transcriptOf(c).length) {
++    throw new respond.BadRequestError({
++      message: 'There is nothing to decide on yet.',
++    })
++  }
++  const decision: Decision = {
++    choice: input.choice,
++    note: input.note.trim().slice(0, 2000),
+     at: new Date().toISOString(),
+   }
 -  Candidate.update({ candidateId, candidateDecision: decision })
--  Entry.insert.DECISION_SAVED({
--    companyId: companyOfAssessment(c.assessmentId),
--    assessmentId: c.assessmentId,
++  Candidate.update({
++    candidateId: c.candidateId,
++    candidateDecision: decision,
++  })
+   Entry.insert.DECISION_SAVED({
+     companyId: companyOfAssessment(c.assessmentId),
+     assessmentId: c.assessmentId,
 -    candidateId,
 -    data: { choice },
--  })
--  return decision
--}
++    candidateId: c.candidateId,
++    data: { choice: decision.choice },
+   })
+   return decision
+ }
 -
 -export type { Question }
 diff --git a/api/routes.ts b/api/routes.ts
-index 20228a8..db16273 100644
+index 20228a8..21ea16b 100644
 --- a/api/routes.ts
 +++ b/api/routes.ts
-@@ -3,25 +3,16 @@ import type { RequestContext } from '@01edu/api/context'
+@@ -3,25 +3,17 @@ import type { RequestContext } from '@01edu/api/context'
  import { makeRouter, route } from '@01edu/api/router'
  import { respond } from '@01edu/api/response'
  import { metrics } from '@01edu/db'
@@ -6989,6 +7846,7 @@ index 20228a8..db16273 100644
  import { FILES, JSON_OF } from '/api/lib/validator.ts'
 +import { CV_MAX_BYTES, type CvReading, readCv } from '/api/cv.ts'
 +import { type LinkSent, sendCandidateLink } from '/api/email.ts'
++import { reportView, saveDecision, startReport } from '/api/report.ts'
  import {
    Assessment,
    Candidate,
@@ -6997,7 +7855,7 @@ index 20228a8..db16273 100644
    demoMemberId,
    entryInsertListeners,
    type EntryListener,
-@@ -49,86 +40,90 @@ import {
+@@ -49,86 +41,94 @@ import {
    updateAssessment,
  } from '/api/assessment.ts'
  import {
@@ -7036,7 +7894,9 @@ index 20228a8..db16273 100644
    AssessmentState,
 -  AssistantMessage,
    CandidateView,
++  Decision,
    Invitation,
++  ReportView,
    TestResult,
  } from '/web/types.ts'
  
@@ -7093,6 +7953,7 @@ index 20228a8..db16273 100644
    }
    return assessmentId
  }
+-const ownedCandidate = (ctx: RequestContext, value: string | number) => {
 +const ownedAssessment = (ctx: RequestContext, value: string | number) =>
 +  ownedBy(memberOf(ctx), value)
 +/* ---------- candidate session ---------- */
@@ -7105,21 +7966,24 @@ index 20228a8..db16273 100644
 +  (ctx as RequestContext & { session: ReturnType<typeof withCandidate> })
 +    .session
 +/** a candidate of another company answers 404, as if they did not exist */
- const ownedCandidate = (ctx: RequestContext, value: string | number) => {
++const candidateOwnedBy = (session: MemberSession, value: string | number) => {
    const candidateId = id(value)
    const row = Candidate.get(candidateId)
    if (!row) {
 -    throw new respond.NotFoundError({ message: 'Candidat introuvable.' })
 +    throw new respond.NotFoundError({ message: 'Candidate not found.' })
    }
-   ownedAssessment(ctx, row.assessmentId)
+-  ownedAssessment(ctx, row.assessmentId)
++  ownedBy(session, row.assessmentId)
    return candidateId
  }
++const ownedCandidate = (ctx: RequestContext, value: string | number) =>
++  candidateOwnedBy(memberOf(ctx), value)
 +
  // Same host only: behind a TLS proxy the server sees http:// while the
  // browser sends Origin: https://, so the scheme is not compared.
  const checkOrigin = (ctx: RequestContext) => {
-@@ -138,13 +133,13 @@ const checkOrigin = (ctx: RequestContext) => {
+@@ -138,13 +138,13 @@ const checkOrigin = (ctx: RequestContext) => {
      host = origin ? new URL(origin).host : undefined
    } catch { /* malformed Origin: refused below */ }
    if (origin && host !== ctx.url.host) {
@@ -7135,7 +7999,7 @@ index 20228a8..db16273 100644
    }
    const response = respond.OK(memberView(session.memberId))
    setCookie(response.headers, {
-@@ -160,32 +155,13 @@ const sessionResponse = async (token: string) => {
+@@ -160,32 +160,13 @@ const sessionResponse = async (token: string) => {
    return response
  }
  
@@ -7169,7 +8033,7 @@ index 20228a8..db16273 100644
  // The framework's default validator report echoes invalid values. Auth fields
  // must never be echoed, even when a password has an unexpected JSON type.
  const signupInput = {
-@@ -246,7 +222,7 @@ const defs = {
+@@ -246,7 +227,7 @@ const defs = {
    'POST/api/demo/session': route({
      fn: async (ctx) => {
        if (!demoAccess()) {
@@ -7178,7 +8042,7 @@ index 20228a8..db16273 100644
        }
        checkOrigin(ctx)
        return sessionResponse(await generateSession(demoMemberId))
-@@ -256,7 +232,7 @@ const defs = {
+@@ -256,7 +237,7 @@ const defs = {
    'GET/api/demo': route({
      fn: () => ({ available: demoAccess() }),
      output: OBJ({ available: BOOL('Demo account available (DEMO_ACCESS)') }),
@@ -7187,7 +8051,7 @@ index 20228a8..db16273 100644
    }),
    'GET/api/health': route({
      fn: () => ({ status: 'ok', env: APP_ENV }),
-@@ -267,13 +243,13 @@ const defs = {
+@@ -267,13 +248,13 @@ const defs = {
      description: 'Healthcheck used by docker and the dev tooling',
    }),
  
@@ -7203,7 +8067,7 @@ index 20228a8..db16273 100644
    }),
  
    'GET/api/assessment': route({
-@@ -281,7 +257,7 @@ const defs = {
+@@ -281,7 +262,7 @@ const defs = {
      fn: (ctx, { id: value }) => getAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: STR('Assessment id') }),
      output: ASSESSMENT,
@@ -7212,7 +8076,7 @@ index 20228a8..db16273 100644
    }),
  
    'POST/api/assessment/prefill': route({
-@@ -293,35 +269,30 @@ const defs = {
+@@ -293,35 +274,30 @@ const defs = {
        skills: ARR(STR('Skill name'), 'Suggested skills, 5 at most'),
        trace: TRACE,
      }),
@@ -7255,7 +8119,7 @@ index 20228a8..db16273 100644
          memberOf(ctx),
        )
      },
-@@ -331,20 +302,16 @@ const defs = {
+@@ -331,20 +307,16 @@ const defs = {
        durationMin: NUM('60, 90 or 120 minutes'),
        skills: ARR(STR('Skill name'), '1 to 5 skills'),
        domain: optional(STR('Business domain')),
@@ -7278,7 +8142,7 @@ index 20228a8..db16273 100644
    }),
  
    'POST/api/assessment/update': route({
-@@ -360,7 +327,7 @@ const defs = {
+@@ -360,7 +332,7 @@ const defs = {
        mission: optional(STR('New mission, as the candidate reads it')),
      }),
      output: ASSESSMENT,
@@ -7287,7 +8151,7 @@ index 20228a8..db16273 100644
    }),
  
    'POST/api/assessment/deleted-tests': route({
-@@ -374,7 +341,7 @@ const defs = {
+@@ -374,7 +346,7 @@ const defs = {
        testIds: ARR(STR('Test id'), 'Tests removed before approval'),
      }),
      output: ASSESSMENT,
@@ -7296,7 +8160,7 @@ index 20228a8..db16273 100644
    }),
  
    'POST/api/assessment/regenerate': route({
-@@ -385,7 +352,7 @@ const defs = {
+@@ -385,7 +357,7 @@ const defs = {
        id: NUM('Assessment id'),
        instruction: STR('Recruiter instruction'),
      }),
@@ -7305,7 +8169,7 @@ index 20228a8..db16273 100644
    }),
  
    'POST/api/assessment/approve': route({
-@@ -393,10 +360,10 @@ const defs = {
+@@ -393,10 +365,10 @@ const defs = {
      fn: (ctx, { id: value }) => approveAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: NUM('Assessment id') }),
      output: ASSESSMENT,
@@ -7318,7 +8182,7 @@ index 20228a8..db16273 100644
  
    'POST/api/candidate/invite': route({
      authorize: withMember,
-@@ -424,9 +391,10 @@ const defs = {
+@@ -424,9 +396,10 @@ const defs = {
      output: OBJ({
        candidateId: NUM('Invited candidate'),
        invitation: STR('Token of the personal link'),
@@ -7330,7 +8194,7 @@ index 20228a8..db16273 100644
    }),
  
    'POST/api/candidate/send-link': route({
-@@ -435,7 +403,7 @@ const defs = {
+@@ -435,7 +408,7 @@ const defs = {
        sendCandidateLink(Candidate.require(ownedCandidate(ctx, candidate))),
      input: OBJ({ candidate: NUM('Candidate id') }),
      output: JSON_OF<LinkSent>('Sent, or the reason of the failure'),
@@ -7339,7 +8203,7 @@ index 20228a8..db16273 100644
    }),
  
    'POST/api/candidate/cv': route({
-@@ -445,14 +413,14 @@ const defs = {
+@@ -445,14 +418,14 @@ const defs = {
        // base64 of 5 MB at most: the file never leaves this request
        if (data.length > Math.ceil(CV_MAX_BYTES / 3) * 4 + 4) {
          throw new respond.BadRequestError({
@@ -7356,7 +8220,7 @@ index 20228a8..db16273 100644
        }
        return readCv(bytes)
      },
-@@ -460,60 +428,32 @@ const defs = {
+@@ -460,60 +433,32 @@ const defs = {
        assessment: NUM('Assessment id the candidate will be invited to'),
        data: STR('The CV file (PDF or DOCX), base64'),
      }),
@@ -7370,11 +8234,7 @@ index 20228a8..db16273 100644
      authorize: withMember,
 -    fn: (ctx, { candidate }) =>
 -      revokeInvitation(ownedCandidate(ctx, candidate)),
-+    fn: (ctx, { candidate }) => {
-+      revokeInvitation(ownedCandidate(ctx, candidate))
-+      return respond.NoContent()
-+    },
-     input: OBJ({ candidate: NUM('Candidate id') }),
+-    input: OBJ({ candidate: NUM('Candidate id') }),
 -    description: 'R5 « Révoquer le lien » of a candidate',
 -  }),
 -
@@ -7386,16 +8246,20 @@ index 20228a8..db16273 100644
 -    input: OBJ({ candidate: STR('Candidate id') }),
 -    output: JSON_OF<ReportView>('Report of a candidate, once generated'),
 -    description: 'R6 report, results, code and decision',
-+    description: 'The link stops working, the report stays',
-   }),
- 
+-  }),
+-
 -  'POST/api/report/retry': route({
 -    authorize: withMember,
 -    fn: (ctx, { candidate }) => retryReport(ownedCandidate(ctx, candidate)),
--    input: OBJ({ candidate: NUM('Candidate id') }),
++    fn: (ctx, { candidate }) => {
++      revokeInvitation(ownedCandidate(ctx, candidate))
++      return respond.NoContent()
++    },
+     input: OBJ({ candidate: NUM('Candidate id') }),
 -    description: 'R6 « Réessayer » after a failed report',
--  }),
--
++    description: 'The link stops working, the report stays',
+   }),
+ 
 -  'POST/api/decision': route({
 -    authorize: withMember,
 -    fn: (ctx, { candidate, choice, note }) =>
@@ -7429,7 +8293,7 @@ index 20228a8..db16273 100644
        const response = respond.OK(toView(findCandidate(token)))
        setCookie(response.headers, {
          name: CANDIDATE_COOKIE,
-@@ -526,12 +466,9 @@ const defs = {
+@@ -526,12 +471,9 @@ const defs = {
        })
        return response
      },
@@ -7444,7 +8308,7 @@ index 20228a8..db16273 100644
    }),
  
    'GET/api/candidate/me': route({
-@@ -545,18 +482,15 @@ const defs = {
+@@ -545,18 +487,15 @@ const defs = {
      authorize: withCandidate,
      fn: (ctx, { files }) => saveFiles(candidateOf(ctx), files),
      input: OBJ({ files: FILES }),
@@ -7466,7 +8330,7 @@ index 20228a8..db16273 100644
        files: FILES,
      }),
      output: JSON_OF<{
-@@ -565,7 +499,7 @@ const defs = {
+@@ -565,7 +504,7 @@ const defs = {
        own?: OwnTestsRun
        results?: TestResult[]
      }>('Output of the sandbox'),
@@ -7475,7 +8339,7 @@ index 20228a8..db16273 100644
    }),
  
    'POST/api/candidate/check': route({
-@@ -573,7 +507,7 @@ const defs = {
+@@ -573,7 +512,7 @@ const defs = {
      fn: (_ctx, { files }) => checkCode(files),
      input: OBJ({ files: FILES }),
      output: JSON_OF<CodeProblem[]>('Type errors of deno check'),
@@ -7484,7 +8348,7 @@ index 20228a8..db16273 100644
    }),
  
    'POST/api/candidate/submit': route({
-@@ -582,7 +516,7 @@ const defs = {
+@@ -582,7 +521,7 @@ const defs = {
        const c = candidateOf(ctx)
        if (!tools.length) {
          throw new respond.BadRequestError({
@@ -7493,7 +8357,7 @@ index 20228a8..db16273 100644
          })
        }
        if (files && !c.candidateSubmittedAt) saveFiles(c, files)
-@@ -594,76 +528,17 @@ const defs = {
+@@ -594,76 +533,54 @@ const defs = {
      },
      input: OBJ({
        tools: ARR(STR('AI tool'), 'Declared AI tools'),
@@ -7510,8 +8374,9 @@ index 20228a8..db16273 100644
      authorize: withCandidate,
      fn: (ctx) => retryPreparation(candidateOf(ctx).candidateId),
 -    description: 'C4 « Réessayer » after a failed preparation',
--  }),
--
++    description: 'Retry after a failed preparation of the interview',
+   }),
+ 
 -  'POST/api/candidate/questions/start': route({
 -    authorize: withCandidate,
 -    fn: (ctx) => startQuestions(candidateOf(ctx)),
@@ -7526,7 +8391,8 @@ index 20228a8..db16273 100644
 -    ),
 -    description: 'C5/C6: one question at a time, no going back',
 -  }),
--
++  /* ---------- report ---------- */
+ 
 -  'POST/api/candidate/answer': route({
 -    authorize: withCandidate,
 -    fn: (ctx, input) => sendAnswer(candidateOf(ctx), input),
@@ -7540,8 +8406,15 @@ index 20228a8..db16273 100644
 -    }),
 -    output: OBJ({ finished: BOOL('Last question answered') }),
 -    description: 'C5/C6 « Valider »',
--  }),
--
++  'GET/api/report': route({
++    authorize: withMember,
++    fn: (ctx, { candidate }) =>
++      reportView(Candidate.require(ownedCandidate(ctx, candidate))),
++    input: OBJ({ candidate: STR('Candidate id') }),
++    output: JSON_OF<ReportView>('Facts, then the reading of the model'),
++    description: 'The report of a candidate: facts and interpretations apart',
+   }),
+ 
 -  'POST/api/candidate/assistant': route({
 -    authorize: withCandidate,
 -    fn: (ctx, input) => askAssistant(candidateOf(ctx), input),
@@ -7555,25 +8428,44 @@ index 20228a8..db16273 100644
 -      left: NUM('Messages left on this question'),
 -    }),
 -    description: 'C6 documentation assistant (no code, no question)',
--  }),
--
++  'POST/api/report/retry': route({
++    authorize: withMember,
++    fn: (ctx, { candidate }) => {
++      startReport(ownedCandidate(ctx, candidate))
++      return respond.NoContent()
++    },
++    input: OBJ({ candidate: NUM('Candidate id') }),
++    description: 'Read the interview again after a failure',
+   }),
+ 
 -  'POST/api/candidate/integrity': route({
 -    authorize: withCandidate,
 -    fn: (ctx, event) => logIntegrity(candidateOf(ctx), event),
--    input: OBJ({
++  'POST/api/report/decision': route({
++    authorize: withMember,
++    fn: (ctx, { candidate, choice, note }) =>
++      saveDecision(Candidate.require(ownedCandidate(ctx, candidate)), {
++        choice,
++        note: note ?? '',
++      }),
+     input: OBJ({
 -      kind: LIST(
 -        ['page-leave', 'paste-blocked', 'fullscreen-exit'],
 -        'Kind of event',
 -      ),
 -      question: NUM('Question number'),
 -      durationSec: optional(NUM('Time away (s)')),
--    }),
++      candidate: NUM('Candidate id'),
++      choice: LIST(['advance', 'more', 'decline'], 'The human decision'),
++      note: optional(STR('Why, in the recruiter words')),
+     }),
 -    description: 'C6 facts for the recruiter, without automatic penalty',
-+    description: 'Retry after a failed preparation of the interview',
++    output: JSON_OF<Decision>('The decision as stored'),
++    description: 'Write down the decision of the recruiter: never computed',
    }),
  
    /* ---------- events ---------- */
-@@ -675,28 +550,19 @@ const defs = {
+@@ -675,27 +592,22 @@ const defs = {
            message: 'Must accept event-stream',
          })
        }
@@ -7598,16 +8490,17 @@ index 20228a8..db16273 100644
 -        if (input.assessment) {
 -          assessmentId = ownedAssessment(scoped, input.assessment)
 -        }
--        if (input.candidate) {
--          candidateId = ownedCandidate(scoped, input.candidate)
--        }
 +        assessmentId = input.assessment
 +          ? ownedBy(session, input.assessment)
 +          : undefined
++        // a recruiter follows the report of one of their candidates
+         if (input.candidate) {
+-          candidateId = ownedCandidate(scoped, input.candidate)
++          candidateId = candidateOwnedBy(session, input.candidate)
+         }
        }
        let listener: EntryListener
-       let ackInterval: ReturnType<typeof setInterval>
-@@ -705,9 +571,9 @@ const defs = {
+@@ -705,9 +617,9 @@ const defs = {
            controller.enqueue(ACK_PAYLOAD)
            ackInterval = setInterval(async () => {
              try {
@@ -7619,7 +8512,7 @@ index 20228a8..db16273 100644
                ) {
                  clearInterval(ackInterval)
                  entryInsertListeners.delete(listener)
-@@ -737,7 +603,6 @@ const defs = {
+@@ -737,7 +649,6 @@ const defs = {
            entryInsertListeners.delete(listener)
          },
        })
@@ -7627,7 +8520,7 @@ index 20228a8..db16273 100644
        return new Response(body, {
          headers: {
            'Content-Type': 'text/event-stream',
-@@ -748,11 +613,10 @@ const defs = {
+@@ -748,11 +659,10 @@ const defs = {
      },
      input: OBJ({
        assessment: optional(STR('Followed assessment')),
@@ -7930,7 +8823,7 @@ index d0468a6..c88a1b5 100644
    const out: Record<string, ProbeResponse[] | undefined> = {}
    for (const s of sequences) {
 diff --git a/api/schema.ts b/api/schema.ts
-index 263037b..5dadf43 100644
+index 263037b..54dcdf8 100644
 --- a/api/schema.ts
 +++ b/api/schema.ts
 @@ -1,16 +1,8 @@
@@ -8039,7 +8932,7 @@ index 263037b..5dadf43 100644
  
    /*
     * Assessment entries
-@@ -175,62 +168,48 @@ export const Entry = initEntries(entries, relations, {
+@@ -175,62 +168,49 @@ export const Entry = initEntries(entries, relations, {
      candidateId: 'invited candidate',
      trigger: sameAssessment,
    },
@@ -8105,11 +8998,12 @@ index 263037b..5dadf43 100644
      companyId: 'owning company',
      assessmentId: 'assessment',
 -    candidateId: 'candidate whose report is generated (R6)',
-+    candidateId: 'candidate whose report is generated',
++    candidateId:
++      'candidate whose report changed state (pending, ready, failed)',
      trigger: sameCandidate,
    },
    DECISION_SAVED: {
-@@ -256,7 +235,7 @@ export type EntryListener = {
+@@ -256,7 +236,7 @@ export type EntryListener = {
  export const entryInsertListeners = Entry.insertListeners
  export const archiveEntry = Entry.archive
  
@@ -8118,7 +9012,7 @@ index 263037b..5dadf43 100644
  const demoEmail = 'demo@defendable.invalid'
  const existingDemo = Member.sql<'memberId' | 'companyId', string>`
    SELECT memberId, companyId FROM member WHERE memberEmail = ?
-@@ -275,12 +254,12 @@ const demoHash = !existingDemo
+@@ -275,12 +255,12 @@ const demoHash = !existingDemo
    : undefined
  const demo = existingDemo ?? db.transaction(() => {
    const companyId = Company.insert({
@@ -8527,7 +9421,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..e069e9e 100644
+index 5f704a5..f474643 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -8567,7 +9461,7 @@ index 5f704a5..e069e9e 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +48,34 @@
+@@ -45,41 +48,36 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
@@ -8592,7 +9486,7 @@ index 5f704a5..e069e9e 100644
 -    },
 -    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts & deno task test --watch api web fixtures --reporter=dot & deno task fmt --watch api web fixtures migrations *.ts & deno task lint --watch api web fixtures migrations *.ts",
 +    "lint": "deno lint",
-+    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-check.ts task-llm-generate.ts task-llm-interview.ts",
++    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-bench.ts task-llm-check.ts task-llm-report-eval.ts task-llm-generate.ts task-llm-interview.ts",
 +    "fmt": "deno fmt",
 +    "test": "deno test --env-file=.env-test -A --no-check",
 +    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts",
@@ -8619,6 +9513,8 @@ index 5f704a5..e069e9e 100644
 -    "qa": "deno run -A qa/scripts/test.ts",
 -    "qa:single": "deno test -A qa/scripts/run.ts --",
 -    "qa:audit": "deno run -A qa/scripts/audit.ts",
++    "llm:bench": "deno run --env-file=.env-test --env-file=.env -A task-llm-bench.ts",
++    "llm:eval": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-report-eval.ts",
      "llm:check": "deno run --env-file=.env-dev --env-file=.env -A task-llm-check.ts",
 -    "llm:bench": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-bench.ts",
 -    "deploy": "deno run -A task-deploy.ts"
@@ -9349,11 +10245,10 @@ index 41b95c1..cf5b5ce 100644
  // DIST_DIR: the folder built by task-prod.ts (QA: dist-qa), default dist
  const dist = `${import.meta.dirname}/${Deno.env.get('DIST_DIR') || 'dist'}`
 diff --git a/task-llm-bench.ts b/task-llm-bench.ts
-deleted file mode 100644
-index 24e2259..0000000
+index 24e2259..887872a 100644
 --- a/task-llm-bench.ts
-+++ /dev/null
-@@ -1,564 +0,0 @@
++++ b/task-llm-bench.ts
+@@ -1,564 +1,233 @@
 -// `deno task llm:bench`: every model on every AI task of Defendable, through
 -// the real code (prompts, validators, sandbox checks), on an in-memory
 -// database. Each flow runs with a single model (withModels: no fallback), and
@@ -9370,13 +10265,21 @@ index 24e2259..0000000
 -// - cv-extract: the fields of the fictional CVs (fixtures/cv/).
 -// Latency and tokens come from each call (llmConfig.onCall); the cost is the
 -// paid price of Gemini (NVIDIA endpoints: free credits of build.nvidia.com).
--//
++// `deno task llm:bench`: the same fictional inputs through several models and
++// reasoning levels, to choose the model of each task on measurements. Prints,
++// per task, the latency, the tokens, whether the answer is valid, and a quality
++// signal (for the report: how much of its evidence survives the checks).
+ //
 -//   deno task llm:bench [--models=ultra,flash] [--only=prefill,cv] [--runs=2]
 -//   --merge: re-run some flows, keep the others; --add: more runs of them
--//
++//   deno task llm:bench [--tasks=prefill,cv,report] [--runs=1]
++//       [--models=muse-spark-1.3,muse-wonder-1.0] [--efforts=minimal,low]
+ //
 -// Writes docs/bench/llm-bench.json and prints the table of the README.
--import { parseArgs } from 'jsr:@std/cli/parse-args'
--import {
++// Only fictional data: never a real candidate.
+ import { parseArgs } from 'jsr:@std/cli/parse-args'
++import { ask, hasAiKey, llmConfig } from '/api/llm.ts'
+ import {
 -  type CallStat,
 -  type Endpoint,
 -  llmConfig,
@@ -9398,18 +10301,32 @@ index 24e2259..0000000
 -} from '/api/schema.ts'
 -import { computeChecks } from '/web/lib/assessment-checks.ts'
 -import { demoJobDescription, skillCatalog } from '/fixtures/demo.ts'
--import { demoFiles } from '/fixtures/demo-files.ts'
++  DESIGNER,
++  prefillPrompt,
++  prefillSchema,
++  REPORTER,
++  reportPrompt,
++  reportSchema,
++} from '/api/prompts.ts'
++import { checkReading, parseReading } from '/api/report.ts'
++import { candidateBriefText } from '/api/reference.ts'
++import { askCvFields } from '/api/cv.ts'
++import { demoAssessment, demoJobDescription } from '/fixtures/demo.ts'
+ import { demoFiles } from '/fixtures/demo-files.ts'
 -import { demoQuestions } from '/fixtures/questions.ts'
 -import { demoReport } from '/fixtures/report.ts'
 -import { cvs } from '/fixtures/cv/cvs.ts'
 -import { seedDemoAssessment, seedFinishedCandidate } from '/fixtures/seed.ts'
 -import { randomToken } from '/api/assessment.ts'
 -import type { Progress, Report } from '/web/types.ts'
--
--const args = parseArgs(Deno.args, {
++import { skillCatalog } from '/web/lib/skills.ts'
++import type { InterviewLine } from '/web/types.ts'
+ 
+ const args = parseArgs(Deno.args, {
 -  string: ['models', 'only', 'runs', 'out'],
 -  boolean: ['merge', 'add'],
--})
++  string: ['tasks', 'models', 'efforts', 'runs'],
+ })
 -
 -/** the models under test (Lightning aside: its free endpoint times out) */
 -const CANDIDATES: Record<string, Endpoint> = {
@@ -9436,7 +10353,10 @@ index 24e2259..0000000
 -  score: number // 0 → 1, quality against the known answer
 -  ms: number // the whole flow
 -  note?: string
--}
++if (!hasAiKey()) {
++  console.error('MODEL_API_KEY is empty: add it to .env')
++  Deno.exit(1)
+ }
 -const results: Run[] = []
 -const calls: (CallStat & { id: string; group: string })[] = []
 -/** the flow being run (one at a time), to merge a partial run */
@@ -9445,7 +10365,7 @@ index 24e2259..0000000
 -/** a JSON column, as stored (a string) or already read */
 -const read = <T>(value: unknown) =>
 -  (typeof value === 'string' ? JSON.parse(value) : value) as T
--
+ 
 -/** the model id of the current flow, for the call statistics */
 -let current = new Map<string, string>() // label → id
 -llmConfig.onCall = (stat) =>
@@ -9484,15 +10404,90 @@ index 24e2259..0000000
 -      (last.ms / 1000).toFixed(1)
 -    } s · score ${last.score.toFixed(2)}${last.note ? ` · ${last.note}` : ''}`,
 -  )
--}
--
++const tasks = (args.tasks ?? 'prefill,cv,report').split(',')
++const models = (args.models ??
++  'muse-spark-1.3,muse-spark-1.2,muse-spark-1.1,muse-wonder-1.0').split(',')
++const efforts = (args.efforts ?? 'minimal,low').split(',')
++const runs = Number(args.runs ?? 1)
++
++/* ---------- the fictional inputs ---------- */
++
++const CV = `Lea MOREAU
++Backend TypeScript developer · 7 years of experience
++lea.moreau@example.com · linkedin.com/in/lea-moreau-dev
++EXPERIENCE
++Senior developer, Acme (2021-2026): Deno and Node APIs, PostgreSQL.
++Referee: marie.petit@acme-example.com`
++
++const TRANSCRIPT: InterviewLine[] = [
++  { who: 'ai', text: 'Hello, I am Oracle. How did you approach the task?' },
++  {
++    who: 'candidate',
++    text:
++      'I split it into a handler, a validation file and an in-memory repository, so each part has one job.',
++  },
++  {
++    who: 'ai',
++    text: 'What happens if the address starts with something else?',
++  },
++  {
++    who: 'candidate',
++    text:
++      'My URL check only builds a URL object, so a javascript scheme would be accepted. I should restrict it to http and https.',
++  },
++  { who: 'ai', text: 'And two requests with the same alias at once?' },
++  {
++    who: 'candidate',
++    text:
++      'Two requests can both pass the check before the write, because there is an await in between. I would remove that gap.',
++  },
++  { who: 'ai', text: 'Where is the data kept?' },
++  {
++    who: 'candidate',
++    text:
++      'It is a Map in memory, so a restart loses everything, which is fine for this exercise.',
++  },
++  { who: 'ai', text: 'Why a 302 for the redirect?' },
++  {
++    who: 'candidate',
++    text:
++      'A 302 is temporary, so browsers do not cache it and every click goes through the server and is counted.',
++  },
++  { who: 'ai', text: 'Thank you, that is all. [END]' },
++]
++
++const tests = demoAssessment.tests.map((t) => ({
++  id: t.id,
++  title: t.title,
++  visibility: t.visibility,
++  // the hidden test about the scheme fails, like in the demo
++  passed: t.id !== 'T9',
++  detail: 'expected 400, received 201',
++}))
++
++const evidence = {
++  spec: demoAssessment,
++  files: demoFiles,
++  transcript: TRANSCRIPT,
++  facts: {
++    tests: tests.map((t) => ({
++      ...t,
++      visibility: t.visibility as 'public' | 'hidden',
++    })),
++    interviewCompleted: true,
++    candidateTurns: 5,
++  },
+ }
+ 
 -/* ---------- flows ---------- */
--
++/* ---------- one run of one task ---------- */
+ 
 -const fold = (t: string) =>
 -  t.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim()
 -const bare = (u: string) =>
 -  fold(u).replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '')
--
++type Outcome = { ms: number; tokens: number; ok: boolean; note: string }
+ 
 -const flows: Record<string, (id: string) => Promise<void>> = {
 -  prefill: (id) =>
 -    measure('prefill', id, async () => {
@@ -9507,7 +10502,8 @@ index 24e2259..0000000
 -          `${data.level}, ${known.length}/${data.skills.length} du catalogue`,
 -      }
 -    }),
--
++const base = (effort: string) => ({ effort: effort as 'minimal' | 'low' })
+ 
 -  cv: async (id) => {
 -    for (const cv of cvs) {
 -      const bytes = await Deno.readFile(`fixtures/cv/${cv.file}`)
@@ -9537,8 +10533,24 @@ index 24e2259..0000000
 -          }`,
 -        }
 -      })
--    }
--  },
++const run: Record<string, (effort: string) => Promise<Outcome>> = {
++  prefill: async (effort) => {
++    const { data, trace } = await ask({
++      task: 'bench-prefill',
++      system: DESIGNER,
++      prompt: prefillPrompt(demoJobDescription, skillCatalog),
++      schema: prefillSchema,
++      parse: (v) => v as { level: string; skills: string[] },
++      ...base(effort),
++    })
++    const known = data.skills.every((s) => skillCatalog.includes(s))
++    return {
++      ms: trace.latencyMs,
++      tokens: trace.tokensOut,
++      ok: known && data.skills.length > 0,
++      note: `${data.level}; ${data.skills.join(', ')}`,
+     }
+   },
 -
 -  'double-key': (id) =>
 -    measure('double-key', id, async () => {
@@ -9590,7 +10602,59 @@ index 24e2259..0000000
 -        score: right.filter(Boolean).length / 2,
 -        note: `vraie ${right[0] ? 'confirmée' : 'manquée'}, fausse ${
 -          right[1] ? 'écartée' : 'retenue'
--        }`,
++  cv: async (effort) => {
++    const { data, trace } = await askCvFields(CV, effort as 'minimal' | 'low')
++    const right = data.lastName?.toLowerCase() === 'moreau' &&
++      data.email === 'lea.moreau@example.com'
++    return {
++      ms: trace.latencyMs,
++      tokens: trace.tokensOut,
++      ok: right,
++      note: `${data.firstName} ${data.lastName}; ${data.email}`,
++    }
++  },
++  report: async (effort) => {
++    const { data, trace } = await ask({
++      task: 'bench-report',
++      system: REPORTER,
++      prompt: reportPrompt({
++        brief: candidateBriefText(demoAssessment),
++        skills: demoAssessment.skills.map((s) => ({
++          name: s.name,
++          importance: s.importance,
++          methods: s.methods,
++        })),
++        tests,
++        typeErrors: [],
++        ownTests: '6 pass, 0 fail',
++        declaredTools: ['Claude'],
++        files: demoFiles,
++        transcript: TRANSCRIPT,
++        interviewCompleted: true,
++      }),
++      schema: reportSchema,
++      parse: parseReading,
++      stream: true,
++      maxTokens: 14_000,
++      timeoutMs: 240_000,
++      ...base(effort),
++    })
++    const r = checkReading(data, evidence)
++    const kept = r.skills.reduce(
++      (n, s) => n + s.quotes.length + s.code.length + s.tests.length,
++      0,
++    )
++    const assessed = r.skills.filter((s) => s.status !== 'Not assessed').length
++    return {
++      ms: trace.latencyMs,
++      tokens: trace.tokensOut,
++      // a skill the interview never touched is rightly "not assessed": what
++      // counts is that the evidence given survives the checks
++      ok: r.discarded === 0 && assessed > 0,
++      note:
++        `kept ${kept}, dropped ${r.discarded}, read ${assessed}/${r.skills.length}; ${
++          r.skills.map((s) => `${s.status[0]}/${s.confidence[0]}`).join(' ')
+         }`,
 -      }
 -    }),
 -
@@ -9614,7 +10678,10 @@ index 24e2259..0000000
 -        note: `contradictions : ${found.join(', ') || 'aucune'}`,
 -      }
 -    }),
--
++    }
++  },
++}
+ 
 -  assistant: (id) =>
 -    measure('assistant', id, async () => {
 -      const assessmentId = seedDemoAssessment(randomToken(10))
@@ -9645,7 +10712,8 @@ index 24e2259..0000000
 -        note: `${text.length} caractères`,
 -      }
 -    }),
--
++/* ---------- the matrix ---------- */
+ 
 -  preparation: (id) =>
 -    measure('preparation', id, async () => {
 -      const assessmentId = seedDemoAssessment(randomToken(10))
@@ -9684,7 +10752,15 @@ index 24e2259..0000000
 -        }, clés contestées ${disputed}/${qcm.length}`,
 -      }
 -    }),
--
++const rows: { task: string; model: string; effort: string; out: string }[] = []
++const jobs = tasks.flatMap((task) =>
++  models.flatMap((model) =>
++    efforts.flatMap((effort) =>
++      Array.from({ length: runs }, () => ({ task, model, effort }))
++    )
++  )
++)
+ 
 -  generation: (id) =>
 -    measure('generation', id, async () => {
 -      const { id: assessmentId } = createAssessment(
@@ -9726,10 +10802,31 @@ index 24e2259..0000000
 -            }`
 -            : ''
 -        }`,
--      }
--    }),
--}
--
++// one model at a time (the configuration is shared), the runs of it together
++for (const model of models) {
++  llmConfig.model = model
++  llmConfig.fallback = ''
++  await Promise.all(
++    jobs.filter((j) => j.model === model).map(async (job) => {
++      try {
++        // the model is read at the call: set per batch above
++        const o = await run[job.task](job.effort)
++        rows.push({
++          ...job,
++          out: `${(o.ms / 1000).toFixed(1)} s · ${o.tokens} tok · ${
++            o.ok ? 'ok' : 'WEAK'
++          } · ${o.note}`,
++        })
++      } catch (err) {
++        rows.push({
++          ...job,
++          out: `FAILED · ${String(err).slice(0, 110)}`,
++        })
+       }
+     }),
++  )
+ }
+ 
 -const only = args.only?.split(',') ?? Object.keys(flows)
 -
 -/** quick flows: every model in parallel; generation: one model at a time */
@@ -9840,8 +10937,12 @@ index 24e2259..0000000
 -      tokensOut: Math.round(tokensOut),
 -      costUsd: cost(id, tokensIn, tokensOut),
 -    })
--  }
--}
++for (const task of tasks) {
++  console.log(`\n== ${task}`)
++  for (const r of rows.filter((x) => x.task === task)) {
++    console.log(`${r.model.padEnd(18)} ${r.effort.padEnd(8)} ${r.out}`)
+   }
+ }
 -
 -/**
 - * The pick of a flow: the best score (within 0.05); among those, the ones
@@ -10069,7 +11170,7 @@ index a1f76fa..bacb112 100644
 +Object.assign(llmConfig, saved)
 +Deno.exit(rows.some((r) => !r.ok) ? 1 : 0)
 diff --git a/web/app.tsx b/web/app.tsx
-index da0b0a9..b6c813f 100644
+index da0b0a9..e7655b9 100644
 --- a/web/app.tsx
 +++ b/web/app.tsx
 @@ -1,6 +1,6 @@
@@ -10081,7 +11182,7 @@ index da0b0a9..b6c813f 100644
  import { buildPreflightTokens, customClasses, semanticColors } from './theme.ts'
  import { url } from '/web/lib/router-signal.ts'
  import { tailwindColors } from '/web/tailwind-colors.ts'
-@@ -13,23 +13,20 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
+@@ -13,23 +13,21 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
  import { makePlaceholder } from '/web/pages/placeholder-page.tsx'
  import { screens } from '/web/screens.ts'
  import { Notifications } from '/web/ui/notifications.tsx'
@@ -10103,14 +11204,15 @@ index da0b0a9..b6c813f 100644
 -import { WorkspacePage } from '/web/pages/workspace/workspace-page.tsx'
 -import { RulesPage } from '/web/pages/candidate/rules-page.tsx'
 -import { QuestionsPage } from '/web/pages/questions/questions-page.tsx'
- import { DonePage } from '/web/pages/candidate/done-page.tsx'
--import { ReportPage } from '/web/pages/report/report-page.tsx'
+-import { DonePage } from '/web/pages/candidate/done-page.tsx'
+ import { ReportPage } from '/web/pages/report/report-page.tsx'
++import { DonePage } from '/web/pages/candidate/done-page.tsx'
 +import { WorkspacePage } from '/web/pages/workspace/workspace-page.tsx'
 +import { DesktopOnly } from '/web/ui/desktop-only.tsx'
  import '/web/ui/themetoggle.tsx'
  
  Object.assign(globalThis, { h, Fragment })
-@@ -54,7 +51,7 @@ setup({
+@@ -54,7 +52,7 @@ setup({
          'wide-narrow': 'minmax(0,1.3fr) minmax(0,1fr)',
          'split': 'minmax(0,1.4fr) minmax(0,1fr)',
          'nav-main': '168px minmax(0,1fr)',
@@ -10119,7 +11221,7 @@ index da0b0a9..b6c813f 100644
          'report': '168px minmax(0,880px) 280px',
          'report-md': 'minmax(0,1fr) 264px',
          'cards': 'repeat(auto-fill, minmax(min(340px, 100%), 1fr))',
-@@ -75,23 +72,25 @@ setup({
+@@ -75,23 +73,26 @@ setup({
    },
  })
  
@@ -10144,7 +11246,7 @@ index da0b0a9..b6c813f 100644
    [paths.newAssessment]: NewAssessmentPage,
    [paths.review]: ReviewPage,
    [paths.assessment]: AssessmentPage,
--  [paths.report]: ReportPage,
+   [paths.report]: ReportPage,
 -  [paths.candidate]: ConsentPage,
 -  [paths.workspace]: WorkspacePage,
 -  [paths.rules]: RulesPage,
@@ -10152,7 +11254,7 @@ index da0b0a9..b6c813f 100644
    [paths.done]: DonePage,
  }
  
-@@ -111,14 +110,7 @@ const App = () => {
+@@ -111,14 +112,7 @@ const App = () => {
          : screen?.space === 'candidate'
          ? <CandidateTopBar />
          : <PublicHeader />)}
@@ -10794,23 +11896,26 @@ index 0f131b9..d42ded1 100644
 +  return `The password must contain ${missing.map((r) => r.label).join(', ')}.`
  }
 diff --git a/web/lib/report-store.ts b/web/lib/report-store.ts
-deleted file mode 100644
-index 3101eb6..0000000
+index 3101eb6..e21558b 100644
 --- a/web/lib/report-store.ts
-+++ /dev/null
-@@ -1,56 +0,0 @@
++++ b/web/lib/report-store.ts
+@@ -1,56 +1,47 @@
 -// R6 report of `?candidate=`, from the API (api/report.ts), refreshed when
 -// the report is generated. The decision is human only: the system never
 -// recommends one.
--import { computed, effect } from '@preact/signals'
--import { api } from '/web/lib/api.ts'
--import { onEvent } from '/web/lib/events.ts'
--import { url } from '/web/lib/router-signal.ts'
--import { paths } from '/web/paths.ts'
++// The report of the candidate followed through `?candidate=`, refetched on its
++// server events (the report written or failed, the decision saved).
+ import { computed, effect } from '@preact/signals'
+ import { api } from '/web/lib/api.ts'
+ import { onEvent } from '/web/lib/events.ts'
+ import { url } from '/web/lib/router-signal.ts'
+ import { paths } from '/web/paths.ts'
 -import type { Decision, DecisionChoice, ReportView } from '/api/report.ts'
--
++import type { DecisionChoice } from '/web/types.ts'
+ 
 -export type { Decision, DecisionChoice, ReportView }
--
++const current = api['GET/api/report'].signal()
+ 
 -const report = api['GET/api/report'].signal()
 -
 -const followed = () =>
@@ -10820,25 +11925,47 @@ index 3101eb6..0000000
 -  const candidate = followed()
 -  if (candidate) report.fetch({ candidate })
 -})
--
--const refresh = () => {
++export const report = computed(() => current.$.value.data)
++export const reportLoading = computed(() =>
++  !current.$.value.data && !current.$.value.error
++)
++export const reportError = computed(() => current.$.value.error?.message)
+ 
+ const refresh = () => {
 -  const candidate = followed()
 -  if (candidate) report.fetch({ candidate })
--}
++  const id = url.params.candidate
++  if (id && url.path === paths.report) current.fetch({ candidate: id })
+ }
 -onEvent(['CANDIDATE_REPORT_READY', 'DECISION_SAVED'], refresh)
--
+ 
 -export const reportView = computed((): ReportView | undefined => {
 -  const data = report.$.value.data
 -  return data && data.candidateId === Number(followed()) ? data : undefined
--})
--
++effect(() => {
++  if (url.path === paths.report && url.params.candidate) refresh()
+ })
+ 
 -export const reportError = computed(() => report.$.value.error?.message)
--
--export const saveDecision = async (
++onEvent([
++  'CANDIDATE_REPORT_READY',
++  'CANDIDATE_FINISHED',
++  'DECISION_SAVED',
++], refresh)
+ 
++/** read the interview again after a failure */
++export const retryReport = async (candidate: number) => {
++  await api['POST/api/report/retry'].fetch({ candidate })
++  refresh()
++}
++
++/** the decision of the recruiter, written down as it is */
+ export const saveDecision = async (
 -  candidateId: number,
--  choice: DecisionChoice,
--  note: string,
--) => {
++  candidate: number,
+   choice: DecisionChoice,
+   note: string,
+ ) => {
 -  const decision = await api['POST/api/decision'].fetch({
 -    candidate: candidateId,
 -    choice,
@@ -10853,8 +11980,9 @@ index 3101eb6..0000000
 -
 -export const retryReport = async (candidateId: number) => {
 -  await api['POST/api/report/retry'].fetch({ candidate: candidateId })
--  refresh()
--}
++  await api['POST/api/report/decision'].fetch({ candidate, choice, note })
+   refresh()
+ }
 diff --git a/web/lib/router-signal.ts b/web/lib/router-signal.ts
 index d8af0ba..3d05a98 100644
 --- a/web/lib/router-signal.ts
@@ -14451,27 +15579,39 @@ index a38b80c..0e4a60d 100644
              )}
            </AnchorLink>
 diff --git a/web/pages/report/report-page.tsx b/web/pages/report/report-page.tsx
-deleted file mode 100644
-index 6370463..0000000
+index 6370463..80ce7b8 100644
 --- a/web/pages/report/report-page.tsx
-+++ /dev/null
-@@ -1,222 +0,0 @@
--import { paths } from '/web/paths.ts'
--import {
--  reportError,
++++ b/web/pages/report/report-page.tsx
+@@ -1,222 +1,568 @@
++// The report of a candidate. Two kinds of content, never mixed: what the
++// server measured (verified facts) and what the AI read (interpretations, each
++// with the evidence that was checked and a confidence). There is no global
++// score: the decision is the recruiter's, written down at the side.
++import { useState } from 'preact/hooks'
+ import { paths } from '/web/paths.ts'
+ import {
++  report,
+   reportError,
 -  type ReportView,
 -  reportView,
--  retryReport,
--} from '/web/lib/report-store.ts'
++  reportLoading,
+   retryReport,
++  saveDecision,
+ } from '/web/lib/report-store.ts'
 -import type { Report } from '/web/types.ts'
 -import { AiErrorBanner } from '/web/ui/stepper.tsx'
--import { Spinner } from '/web/ui/spinner.tsx'
++import { formatDateTime, formatMinutes } from '/web/lib/format.ts'
+ import { Spinner } from '/web/ui/spinner.tsx'
 -import { formatDate, formatMinutes } from '/web/lib/format.ts'
 -import { AnchorLink, BackLink, navLinkTw } from '/web/ui/page.tsx'
 -import { useActiveSection } from '/web/lib/scroll-spy.ts'
 -import { CodeDrawer } from '/web/ui/code-view.tsx'
--import { NotFoundPage } from '/web/pages/not-found-page.tsx'
--import {
++import { ConfidenceMeter, MethodBadge, NatureBadge } from '/web/ui/evidence.tsx'
++import { Collapsible, MetaTag, Panel } from '/web/ui/page.tsx'
++import { Label, Textarea } from '/web/ui/form.tsx'
++import { BackLink } from '/web/ui/page.tsx'
+ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
+ import {
 -  CodeAnalysis,
 -  Debrief,
 -  Execution,
@@ -14489,7 +15629,17 @@ index 6370463..0000000
 -  Mail,
 -  MessagesSquare,
 -  Scale,
--} from '/web/assets/icons.tsx'
++  Check,
++  CircleCheck,
++  CircleHelp,
++  CircleX,
++  Clock,
++  FileCode,
++  Minus,
++  Sparkles,
++  Timer,
++  TriangleAlert,
+ } from '/web/assets/icons.tsx'
 -import { t, tv } from '/web/lib/i18n.ts'
 -
 -const candidateName = (view: ReportView) =>
@@ -14509,13 +15659,160 @@ index 6370463..0000000
 -      <span tw='text-content-tertiary text-[13px]'>
 -        {t('Rapport d’évaluation', 'Assessment report')} · {formatDate(r.date)}
 -      </span>
--    </div>
++import type {
++  CodeRef,
++  DecisionChoice,
++  ReportView,
++  SkillReading,
++  SkillStatus,
++  Words,
++} from '/web/types.ts'
++
++const STATUS: Record<SkillStatus, { tw: string; Icon: typeof Check }> = {
++  'Demonstrated': { tw: 'text-ok bg-ok-soft', Icon: CircleCheck },
++  'Partial': { tw: 'text-warn bg-warn-soft', Icon: TriangleAlert },
++  'Not demonstrated': { tw: 'text-err bg-err-soft', Icon: CircleX },
++  'Not assessed': {
++    tw: 'text-content-secondary bg-surface-sunken',
++    Icon: Minus,
++  },
++}
++
++/** how their words compare with the code, in the words of the page */
++const WORDS: Record<Words, string> = {
++  agree: 'Their words match the code',
++  partly: 'Their words match the code only in part',
++  disagree: 'Their words do not match the code',
++  none: 'They did not talk about it',
++}
++
++/** the status of a skill: an icon and a label, never a color alone */
++const StatusPill = ({ status }: { status: SkillStatus }) => {
++  const { tw, Icon } = STATUS[status]
++  return (
++    <span
++      tw={[
++        'inline-flex items-center gap-[5px] h-[22px] px-2 rounded-md text-[12px] font-semibold whitespace-nowrap',
++        tw,
++      ]}
++    >
++      <Icon tw='w-3 h-3' />
++      {status}
++    </span>
++  )
++}
++
++const Stat = (
++  { label, children, ok }: {
++    label: string
++    children: preact.ComponentChildren
++    ok?: boolean
++  },
++) => (
++  <div tw='px-3.5 py-3 rounded-[10px] border border-border-primary bg-surface-page'>
++    <div tw='text-[12px] text-content-tertiary'>{label}</div>
++    <div
++      tw={[
++        'mt-0.5 font-mono font-bold text-[17px]',
++        ok === undefined ? '' : ok ? 'text-ok' : 'text-err',
++      ]}
++    >
++      {children}
+     </div>
 -    {view.identity && (
 -      // U4, D7: the company sees who took the assessment, never the models
 -      <div
 -        data-test='candidate-identity'
 -        tw='flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-content-secondary items-center'
--      >
++  </div>
++)
++
++const SectionTitle = (
++  { title, nature, children }: {
++    title: string
++    nature: 'fact' | 'ai'
++    children?: preact.ComponentChildren
++  },
++) => (
++  <div tw='flex items-center gap-3 flex-wrap'>
++    <h2 tw='m-0 text-[17px] font-semibold'>{title}</h2>
++    <NatureBadge nature={nature} />
++    {children}
++  </div>
++)
++
++/** the lines of the code a reading relies on */
++const CodeExcerpt = ({ ref_, files }: {
++  ref_: CodeRef
++  files: Record<string, string>
++}) => {
++  const lines = (files[ref_.file] ?? '').split('\n').slice(
++    ref_.from - 1,
++    ref_.to,
++  )
++  return (
++    <details tw='rounded-lg border border-border-primary bg-surface-sunken'>
++      <summary tw='cursor-pointer px-3 py-2 text-[12.5px] flex items-center gap-2 list-none'>
++        <FileCode tw='w-3.5 h-3.5 flex-none text-content-tertiary' />
++        <span tw='font-mono'>{ref_.file} · lines {ref_.from}–{ref_.to}</span>
++        <span tw='text-content-secondary truncate'>{ref_.note}</span>
++        <Check tw='w-3.5 h-3.5 flex-none text-ok ml-auto' />
++        <span tw='text-ok'>checked</span>
++      </summary>
++      <pre tw='m-0 px-3 py-2 overflow-x-auto font-mono text-[12px] leading-[1.6] border-t border-border-primary'>
++        {lines.map((l, i) => (
++          <div key={i}>
++            <span tw='text-content-tertiary select-none'>
++              {String(ref_.from + i).padStart(3)}{'  '}
++            </span>
++            {l}
++          </div>
++        ))}
++      </pre>
++    </details>
++  )
++}
++
++const SkillCard = (
++  { skill, v }: { skill: SkillReading; v: ReportView },
++) => (
++  <article
++    data-test='skill-card'
++    tw='card px-[18px] py-4 flex flex-col gap-3'
++  >
++    <header tw='flex items-center gap-2 flex-wrap'>
++      <h3 tw='m-0 text-[15px] font-semibold'>{skill.skill}</h3>
++      <StatusPill status={skill.status} />
++      <ConfidenceMeter level={skill.confidence} />
++      <span tw='flex gap-1 flex-wrap ml-auto'>
++        {skill.methods.map((m) => <MethodBadge key={m} method={m} />)}
++      </span>
++    </header>
++    <p tw='m-0 text-[13.5px] text-content-secondary'>
++      <Sparkles tw='inline w-3 h-3 mr-1.5 text-ai align-[-1px]' />
++      {skill.summary}
++    </p>
++    <p
++      data-test='skill-words'
++      tw={[
++        'm-0 text-[12.5px] flex items-center gap-1.5',
++        skill.words === 'disagree' || skill.words === 'partly'
++          ? 'text-warn'
++          : 'text-content-tertiary',
++      ]}
++    >
++      {skill.words === 'agree'
++        ? <Check tw='w-3 h-3' />
++        : skill.words === 'none'
++        ? <Minus tw='w-3 h-3' />
++        : <TriangleAlert tw='w-3 h-3' />}
++      {WORDS[skill.words]}
++    </p>
++    {skill.capped && (
++      <p
++        data-test='skill-capped'
++        tw='m-0 px-3 py-2 rounded-lg bg-warn-soft text-[12.5px]'
+       >
 -        <span tw='inline-flex items-center gap-1.5'>
 -          <Mail tw='w-3.5 h-3.5 text-content-tertiary' />
 -          <a href={`mailto:${view.identity.email}`}>{view.identity.email}</a>
@@ -14533,14 +15830,47 @@ index 6370463..0000000
 -        )}
 -        <span tw='text-content-tertiary'>
 -          {t('Pseudonyme :', 'Pseudonym:')} {view.pseudonym}
--        </span>
++        {skill.capped}
++      </p>
++    )}
++    {skill.quotes.map((q) => (
++      <blockquote
++        key={q}
++        tw='m-0 pl-3 border-l-2 border-ai-line text-[13px] italic'
++      >
++        “{q}”
++        <span tw='not-italic text-[11.5px] text-ok ml-2'>
++          <Check tw='inline w-3 h-3 align-[-2px]' /> found in the transcript
+         </span>
 -        {view.identity.note && (
 -          <span tw='basis-full'>
 -            {t('Note interne :', 'Internal note:')} {view.identity.note}
 -          </span>
 -        )}
--      </div>
--    )}
++      </blockquote>
++    ))}
++    {skill.code.map((r) => (
++      <CodeExcerpt key={`${r.file}${r.from}`} ref_={r} files={v.files} />
++    ))}
++    {skill.tests.length > 0 && (
++      <div tw='flex gap-1.5 flex-wrap text-[12px]'>
++        {skill.tests.map((id) => {
++          const t = v.facts.tests.find((x) => x.id === id)
++          return (
++            <span
++              key={id}
++              tw='inline-flex items-center gap-1 h-6 px-2 rounded-md border border-border-strong'
++            >
++              {t?.passed
++                ? <CircleCheck tw='w-3 h-3 text-ok' />
++                : <CircleX tw='w-3 h-3 text-err' />}
++              {id}
++              {t ? ` · ${t.visibility}` : ''}
++            </span>
++          )
++        })}
+       </div>
+     )}
 -    <div tw='flex flex-wrap gap-x-5 gap-y-2 text-[13px] text-content-secondary items-center'>
 -      <span tw='inline-flex items-center gap-1.5'>
 -        <Hammer tw='w-3.5 h-3.5 text-content-tertiary' />
@@ -14562,8 +15892,140 @@ index 6370463..0000000
 -        {r.declaredTools.map((tool) => (
 -          <span key={tool} tw='badge badge-neutral h-[22px]'>{tv(tool)}</span>
 -        ))}
--      </span>
--    </div>
++  </article>
++)
++
++const Facts = ({ v }: { v: ReportView }) => {
++  const f = v.facts
++  const failed = f.tests.filter((t) => !t.passed)
++  return (
++    <section tw='flex flex-col gap-3' aria-label='Verified facts'>
++      <SectionTitle title='Measured by the server' nature='fact' />
++      <div tw='grid grid-cols-2 md:grid-cols-4 gap-2.5'>
++        <Stat label='Evaluation tests' ok={f.total > 0 && f.passed === f.total}>
++          {f.passed}/{f.total}
++        </Stat>
++        <Stat label='Type check' ok={!f.typeErrors.length}>
++          {f.typeErrors.length ? `${f.typeErrors.length} errors` : 'clean'}
++        </Stat>
++        <Stat
++          label='Tests they wrote'
++          ok={f.ownTests.passed + f.ownTests.failed
++            ? !f.ownTests.failed
++            : undefined}
++        >
++          {f.ownTests.passed + f.ownTests.failed
++            ? `${f.ownTests.passed}/${f.ownTests.passed + f.ownTests.failed}`
++            : 'none'}
++        </Stat>
++        <Stat label='AI tools declared'>
++          <span tw='font-main font-semibold text-[14px]'>
++            {f.declaredTools.join(', ') || 'none'}
++          </span>
++        </Stat>
++        <Stat label='Building'>
++          {f.buildMinutes ? formatMinutes(f.buildMinutes) : '–'}
++          {f.autoSubmitted && (
++            <span tw='font-main font-normal text-[11.5px] text-warn ml-1.5'>
++              time was up
++            </span>
++          )}
++        </Stat>
++        <Stat label='Interview'>
++          {f.interviewMinutes ? formatMinutes(f.interviewMinutes) : '–'}
++        </Stat>
++        <Stat label='Answers spoken'>{f.candidateTurns}</Stat>
++        <Stat label='Words spoken'>{f.candidateWords}</Stat>
++      </div>
++      {failed.length > 0 && (
++        <div tw='card px-4 py-3 flex flex-col gap-2'>
++          <h3 tw='m-0 text-[13.5px] font-semibold'>Failing tests</h3>
++          {failed.map((t) => (
++            <div key={t.id} tw='text-[13px] flex flex-col gap-0.5'>
++              <span tw='flex items-center gap-1.5'>
++                <CircleX tw='w-3.5 h-3.5 text-err flex-none' />
++                <strong tw='font-mono'>{t.id}</strong> {t.title}
++                <span tw='badge h-[18px] px-1.5 text-[11px]'>
++                  {t.visibility}
++                </span>
++              </span>
++              <span tw='text-content-secondary pl-5 font-mono text-[12px]'>
++                {t.request ? `${t.request} → ` : ''}expected {t.expected ??
++                  '?'}, received {t.received ?? '?'}
++              </span>
++            </div>
++          ))}
++        </div>
++      )}
++      {f.typeErrors.length > 0 && (
++        <div tw='card px-4 py-3 flex flex-col gap-1'>
++          <h3 tw='m-0 text-[13.5px] font-semibold'>Type errors</h3>
++          {f.typeErrors.map((e) => <code key={e} tw='text-[12px]'>{e}</code>)}
++        </div>
++      )}
++    </section>
++  )
++}
++
++/** what is going on while there is no reading yet */
++const Waiting = ({ v }: { v: ReportView }) => {
++  const [retrying, setRetrying] = useState(false)
++  if (v.status === 'failed') {
++    return (
++      <div
++        role='alert'
++        data-test='report-failed'
++        tw='flex items-start gap-3 px-4 py-3.5 rounded-lg bg-warn-soft border border-warn-line text-[13.5px]'
++      >
++        <TriangleAlert tw='w-4 h-4 flex-none mt-0.5 text-warn' />
++        <div tw='flex-1'>
++          <strong tw='font-semibold'>The interview could not be read.</strong>
++          {' '}
++          {v.error} The facts above stay valid.
++        </div>
++        <button
++          type='button'
++          tw='btn btn-secondary h-8 px-3 text-[13px]'
++          disabled={retrying}
++          onClick={async () => {
++            setRetrying(true)
++            try {
++              await retryReport(v.candidateId)
++            } finally {
++              setRetrying(false)
++            }
++          }}
++        >
++          Try again
++        </button>
++      </div>
++    )
++  }
++  return (
++    <div
++      data-test='report-pending'
++      tw='flex items-center gap-3 px-4 py-3.5 rounded-lg card text-[13.5px]'
++    >
++      {v.status === 'pending'
++        ? <Spinner tw='w-4 h-4 text-accent' />
++        : <Clock tw='w-4 h-4 text-content-tertiary' />}
++      <span>
++        {v.status === 'pending'
++          ? 'The interview is being read. This takes a few seconds.'
++          : v.facts.interviewCompleted
++          ? 'The report starts in a moment.'
++          : 'The interview is not over: the reading starts when Oracle closes it.'}
+       </span>
++      {v.status === 'waiting' && v.transcript.length > 0 && (
++        <button
++          type='button'
++          tw='btn btn-secondary h-8 px-3 text-[13px] ml-auto'
++          onClick={() => retryReport(v.candidateId)}
++        >
++          Read it now
++        </button>
++      )}
+     </div>
 -    <div tw='flex items-center gap-2 flex-wrap px-3.5 py-2.5 rounded-[10px] border border-border-strong bg-surface-sunken text-[13px] text-content-secondary'>
 -      <Scale tw='w-[15px] h-[15px] flex-none text-content-primary' />
 -      <strong tw='font-semibold text-content-primary'>
@@ -14575,11 +16037,84 @@ index 6370463..0000000
 -      {t(
 -        'Chaque dimension est présentée avec ses preuves ; la décision vous revient.',
 -        'Each dimension comes with its evidence; the decision is yours.',
--      )}
--    </div>
++  )
++}
++
++const Reading = ({ v }: { v: ReportView }) => {
++  const r = v.reading!
++  return (
++    <>
++      <section tw='flex flex-col gap-3' aria-label='Understanding'>
++        <SectionTitle title='Do they understand their own code?' nature='ai'>
++          <ConfidenceMeter level={r.understanding.confidence} />
++        </SectionTitle>
++        <p
++          data-test='understanding'
++          tw='m-0 card px-[18px] py-4 text-[14px] leading-[1.6]'
++        >
++          {r.understanding.summary}
++        </p>
++      </section>
++
++      <section tw='flex flex-col gap-3' aria-label='Skills'>
++        <SectionTitle title='Skill by skill' nature='ai'>
++          <span tw='text-[12.5px] text-content-tertiary'>
++            Every quote, line and test below was checked.
++          </span>
++        </SectionTitle>
++        {r.skills.map((s) => <SkillCard key={s.skill} skill={s} v={v} />)}
++      </section>
++
++      {r.followUp.length > 0 && (
++        <section tw='flex flex-col gap-3' aria-label='To ask next'>
++          <SectionTitle title='To ask next' nature='ai' />
++          <ul tw='m-0 card px-[18px] py-3.5 pl-9 text-[13.5px] flex flex-col gap-1.5'>
++            {r.followUp.map((q) => <li key={q}>{q}</li>)}
++          </ul>
++        </section>
+       )}
++
++      <section tw='flex flex-col gap-2' aria-label='Limits'>
++        <h2 tw='m-0 text-[15px] font-semibold flex items-center gap-2'>
++          <CircleHelp tw='w-4 h-4 text-content-tertiary' />
++          What this report cannot say
++        </h2>
++        <ul tw='m-0 pl-5 text-[13px] text-content-secondary flex flex-col gap-1'>
++          {r.limits.map((l) => <li key={l}>{l}</li>)}
++          <li>
++            Read by{' '}
++            {r.trace.model}. An interpretation is a reading, not a verdict.
++          </li>
++        </ul>
++      </section>
++    </>
++  )
++}
++
++const Transcript = ({ v }: { v: ReportView }) => (
++  <Collapsible
++    id='transcript'
++    title='Transcript of the interview'
++    count={`${v.transcript.length} turns`}
++    open={false}
++  >
++    <div tw='flex flex-col gap-2.5 px-1 py-2'>
++      {v.transcript.map((l, i) => (
++        <p key={i} tw='m-0 text-[13.5px] leading-[1.55]'>
++          <strong
++            tw={['font-semibold', l.who === 'ai' ? 'text-ai' : '']}
++          >
++            {l.who === 'ai' ? 'Oracle' : 'Candidate'}
++            {l.interrupted ? ' (interrupted)' : ''}:{' '}
++          </strong>
++          {l.text}
++        </p>
++      ))}
+     </div>
 -  </header>
--)
--
++  </Collapsible>
+ )
+ 
 -/**
 - * R6 — the report. Anchors on the left, 880 px of content, sticky decision
 - * column on the right (below 1280 px the anchors hide, below 1024 px the
@@ -14601,13 +16136,91 @@ index 6370463..0000000
 -          onRetry={() => retryReport(view.candidateId)}
 -          message={view.error}
 -          failures={view.failures}
--        />
++const CHOICES: { value: DecisionChoice; label: string }[] = [
++  { value: 'advance', label: 'Move forward' },
++  { value: 'more', label: 'I need more information' },
++  { value: 'decline', label: 'Do not move forward' },
++]
++
++/** the decision: written down by a person, never computed */
++const DecisionPanel = ({ v }: { v: ReportView }) => {
++  const [choice, setChoice] = useState<DecisionChoice | undefined>(
++    v.decision?.choice,
++  )
++  const [note, setNote] = useState(v.decision?.note ?? '')
++  const [saving, setSaving] = useState(false)
++  const [error, setError] = useState('')
++  return (
++    <Panel title='Your decision'>
++      <p tw='m-0 text-[12.5px] text-content-secondary'>
++        There is no score. Nothing here decides for you.
++      </p>
++      <div role='radiogroup' tw='flex flex-col gap-1.5'>
++        {CHOICES.map((c) => (
++          <label
++            key={c.value}
++            tw={[
++              'flex items-center gap-2 h-9 px-2.5 rounded-lg border text-[13px] cursor-pointer',
++              choice === c.value
++                ? 'border-accent bg-accent-soft'
++                : 'border-border-primary bg-surface-elevated',
++            ]}
++          >
++            <input
++              type='radio'
++              name='decision'
++              data-test={`decision-${c.value}`}
++              checked={choice === c.value}
++              onChange={() => setChoice(c.value)}
++              style={{ accentColor: 'var(--color-accent)' }}
++            />
++            {c.label}
++          </label>
++        ))}
++      </div>
++      <div tw='flex flex-col gap-1.5'>
++        <Label for='decision-note'>Your note</Label>
++        <Textarea
++          id='decision-note'
++          name='decision-note'
++          rows={4}
++          maxLength={2000}
++          value={note}
++          onInput={(e) => setNote(e.currentTarget.value)}
++          placeholder='Why, in your words (visible to your team only)'
+         />
 -      )
 -      : (
 -        <div
 -          role='status'
 -          tw='card px-5 py-4 flex items-center gap-3 text-[14px]'
--        >
++      </div>
++      {error && <p role='alert' tw='m-0 text-[13px] text-err'>{error}</p>}
++      <button
++        type='button'
++        data-test='save-decision'
++        tw='btn btn-primary h-9'
++        disabled={!choice || saving}
++        onClick={async () => {
++          if (!choice) return
++          setSaving(true)
++          setError('')
++          try {
++            await saveDecision(v.candidateId, choice, note)
++          } catch (err) {
++            setError(err instanceof Error ? err.message : String(err))
++          } finally {
++            setSaving(false)
++          }
++        }}
++      >
++        Save my decision
++      </button>
++      {v.decision && (
++        <p
++          data-test='decision-saved'
++          tw='m-0 text-[12px] text-content-tertiary flex items-center gap-1.5'
+         >
 -          <Spinner tw='w-4 h-4' />
 -          {view
 -            ? t(
@@ -14620,17 +16233,36 @@ index 6370463..0000000
 -            )
 -            : t('Chargement du rapport…', 'Loading the report…')}
 -        </div>
--      )}
++          <Timer tw='w-3 h-3' /> Saved {formatDateTime(v.decision.at)}
++        </p>
+       )}
 -  </main>
 -)
--
--export const ReportPage = () => {
++    </Panel>
++  )
++}
+ 
++/** Report of a candidate: facts, then interpretations, then the decision */
+ export const ReportPage = () => {
 -  const view = reportView.value
 -  const active = useActiveSection(SECTION_IDS)
 -  if (!view) return reportError.value ? <NotFoundPage /> : <Waiting />
 -  const r = view.report
 -  if (view.status !== 'ready' || !r) return <Waiting view={view} />
--  return (
++  const v = report.value
++  if (!v) {
++    return reportLoading.value
++      ? (
++        <main tw='flex-1 flex items-center justify-center py-16'>
++          <Spinner tw='w-5 h-5 text-content-tertiary' />
++        </main>
++      )
++      : <NotFoundPage />
++  }
++  const who = v.identity
++    ? `${v.identity.firstName} ${v.identity.lastName}`
++    : v.pseudonym
+   return (
 -    <div tw='w-full max-w-[1400px] mx-auto px-4 sm:px-8 pt-7 pb-16 grid grid-cols-1 lg:grid-cols-report-md xl:grid-cols-report justify-center gap-8'>
 -      <nav
 -        aria-label={t('Sections du rapport', 'Report sections')}
@@ -14660,7 +16292,38 @@ index 6370463..0000000
 -          <Execution
 -            results={view.results}
 -            tests={view.tests}
--          />
++    <main tw='w-full max-w-[1120px] mx-auto px-4 sm:px-8 pt-7 pb-16 flex flex-col gap-5'>
++      <BackLink href={`${paths.assessment}?id=${v.assessmentId}`}>
++        {v.assessmentTitle}
++      </BackLink>
++      <header tw='flex flex-col gap-2'>
++        <h1 tw='m-0 text-[22px] sm:text-[26px] font-semibold'>{who}</h1>
++        <div tw='flex gap-1.5 flex-wrap'>
++          <MetaTag>{v.pseudonym}</MetaTag>
++          {v.identity?.email && <MetaTag>{v.identity.email}</MetaTag>}
++          <MetaTag>{v.assessmentTitle}</MetaTag>
++        </div>
++        <p tw='m-0 text-[13px] text-content-secondary max-w-[760px]'>
++          Two kinds of content, kept apart. Verified facts are measured by the
++          server. AI interpretations are readings of the interview and of the
++          code: each one shows the evidence it rests on, which was checked, and
++          a confidence. The decision is yours.
++        </p>
++      </header>
++      {reportError.value && (
++        <p role='alert' tw='m-0 text-[13px] text-err'>{reportError.value}</p>
++      )}
++      <div tw='grid grid-cols-1 lg:grid-cols-report-md gap-6 items-start'>
++        <div tw='flex flex-col gap-7 min-w-0'>
++          <Facts v={v} />
++          {v.reading ? <Reading v={v} /> : <Waiting v={v} />}
++          {v.transcript.length > 0 && <Transcript v={v} />}
++        </div>
++        <aside tw='lg:sticky lg:top-6'>
++          <DecisionPanel
++            key={`${v.candidateId}-${v.decision?.at ?? ''}`}
++            v={v}
+           />
 -        )}
 -        <CodeAnalysis report={r} />
 -        <QuestionsAnswers report={r} />
@@ -14676,8 +16339,11 @@ index 6370463..0000000
 -      />
 -      <CodeDrawer files={view.files} />
 -    </div>
--  )
--}
++        </aside>
++      </div>
++    </main>
+   )
+ }
 diff --git a/web/pages/workspace/console-panel.tsx b/web/pages/workspace/console-panel.tsx
 index 4d32287..4130a96 100644
 --- a/web/pages/workspace/console-panel.tsx
@@ -15908,7 +17574,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..8ab7f0c 100644
+index 83f3535..0e22fb8 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,13 @@
@@ -16175,7 +17841,7 @@ index 83f3535..8ab7f0c 100644
    /** server clock, to align the timers */
    now: number
    assessment: {
-@@ -233,157 +245,10 @@ export type CandidateView = {
+@@ -233,157 +245,100 @@ export type CandidateView = {
    submittedAt?: number
    autoSubmitted?: boolean
    declaredTools: string[]
@@ -16188,8 +17854,8 @@ index 83f3535..8ab7f0c 100644
 +  interviewStartedAt?: number
    finishedAt?: number
 -  answeredCount: number
--}
--
+ }
+ 
 -export type ReferenceCheck = {
 -  code: string // src/app.ts
 -  results: {
@@ -16204,7 +17870,8 @@ index 83f3535..8ab7f0c 100644
 -  excluded: { id: string; reason: string }[]
 -  traces: AiTrace[]
 -}
--
++/* ---------- report ---------- */
+ 
 -export type AssessmentState = {
 -  id: number
 -  spec: AssessmentSpec
@@ -16222,22 +17889,46 @@ index 83f3535..8ab7f0c 100644
 -  invitation?: string // token of the candidate link, once approved
 -  candidates: CandidateSummary[]
 -}
--
++/** what the evidence of a skill says: never a score */
++export type SkillStatus =
++  | 'Demonstrated'
++  | 'Partial'
++  | 'Not demonstrated'
++  | 'Not assessed'
+ 
 -/* ---------- report (R6) ---------- */
--
++/** lines of the submitted code an interpretation relies on */
++export type CodeRef = { file: string; from: number; to: number; note: string }
+ 
 -export type Confidence = 'faible' | 'moyenne' | 'élevée'
 -export type DimensionStatusValue =
 -  | 'Démontré'
 -  | 'Partiel'
 -  | 'Non démontré'
 -  | 'Non évalué'
--
++/** how what the candidate said about a skill compares with the code */
++export type Words = 'agree' | 'partly' | 'disagree' | 'none'
+ 
 -export type ReportDimension = {
 -  name: string
 -  status: DimensionStatusValue
--  confidence: Confidence
++/** an interpretation of the AI, with the evidence it was checked against */
++export type SkillReading = {
++  skill: string
++  status: SkillStatus
+   confidence: Confidence
 -  proofs: number
--  methods: Method[]
++  summary: string
++  words: Words
++  /** why the status was lowered by the checks, when it was */
++  capped?: string
++  /** words of the candidate, found verbatim in the transcript */
++  quotes: string[]
++  /** lines of the code that exist */
++  code: CodeRef[]
++  /** ids of the evaluation tests that exist */
++  tests: string[]
+   methods: Method[]
 -  note?: string
 -  section: string // anchor of the proofs, e.g. "s2"
 -}
@@ -16247,8 +17938,8 @@ index 83f3535..8ab7f0c 100644
 -  lines: [number, number]
 -  verified: boolean
 -  reason?: string // why a citation could not be verified
--}
--
+ }
+ 
 -export type CodeObservation = {
 -  kind: 'Décision' | 'Risque' | 'Point positif'
 -  title: string
@@ -16256,8 +17947,31 @@ index 83f3535..8ab7f0c 100644
 -  citation: Citation
 -  explanation: string
 -  link?: { label: string; section: string }
--}
--
++/** what the server measured: no model took part */
++export type ReportFacts = {
++  tests: {
++    id: string
++    title: string
++    visibility: Visibility
++    passed: boolean
++    expected?: string
++    received?: string
++    request?: string
++  }[]
++  passed: number
++  total: number
++  typeErrors: string[]
++  ownTests: { passed: number; failed: number }
++  buildMinutes?: number
++  interviewMinutes?: number
++  declaredTools: string[]
++  autoSubmitted: boolean
++  /** Oracle closed the interview (otherwise the candidate left it) */
++  interviewCompleted: boolean
++  candidateTurns: number
++  candidateWords: number
+ }
+ 
 -export type QcmReview = {
 -  n: number
 -  kind: string
@@ -16275,8 +17989,17 @@ index 83f3535..8ab7f0c 100644
 -  requests?: [HttpMethod, string, string][]
 -  /** answered after the time: recorded unanswered */
 -  expired?: boolean
--}
--
++/** what the model read in the code and the transcript */
++export type Reading = {
++  understanding: { summary: string; confidence: Confidence }
++  skills: SkillReading[]
++  followUp: string[]
++  limits: string[]
++  /** quotes, lines or tests the model gave that could not be verified */
++  discarded: number
++  trace: AiTrace
+ }
+ 
 -export type SignalState = 'present' | 'partial' | 'absent'
 -
 -export type FreeReview = {
@@ -16302,7 +18025,8 @@ index 83f3535..8ab7f0c 100644
 -    unconfirmed?: string
 -  }
 -}
--
++export type ReportStatus = 'waiting' | 'pending' | 'ready' | 'failed'
+ 
 -export type TraceRow = {
 -  step: string
 -  model: string
@@ -16312,7 +18036,9 @@ index 83f3535..8ab7f0c 100644
 -  /** failed attempts before the answer: "Super : service surchargé (503)" */
 -  failures?: string[]
 -}
--
++export type DecisionChoice = 'advance' | 'more' | 'decline'
++export type Decision = { choice: DecisionChoice; note: string; at: string }
+ 
 -export type Report = {
 -  candidate: string
 -  date: string
@@ -16334,6 +18060,20 @@ index 83f3535..8ab7f0c 100644
 -  debrief: { question: string; goodAnswer: string }[]
 -  limits: string[]
 -  trace: TraceRow[]
++export type ReportView = {
++  candidateId: number
++  assessmentId: number
++  assessmentTitle: string
++  pseudonym: string
++  identity?: CandidateIdentity
++  status: ReportStatus
++  error?: string
++  failures?: AiFailure[]
++  facts: ReportFacts
++  reading?: Reading
++  transcript: InterviewLine[]
++  files: CandidateFiles
++  decision?: Decision
  }
 diff --git a/web/ui/ai-trace.tsx b/web/ui/ai-trace.tsx
 index e9f7c70..0768d4d 100644

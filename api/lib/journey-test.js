@@ -3,8 +3,10 @@
 import { eq } from '/api/lib/test.ts'
 import { routeHandler } from '/api/routes.ts'
 import { demoJobDescription } from '/fixtures/demo.ts'
+import { demoFiles } from '/fixtures/demo-files.ts'
+import { llmConfig } from '/api/llm.ts'
 
-export const call = async (method, path, input, cookies = {}) => {
+export const call = async (method, path, input, cookies = {}, headers = {}) => {
   const url = new URL(`http://localhost${path}`)
   if (method === 'GET') {
     for (const [k, v] of Object.entries(input ?? {})) {
@@ -15,7 +17,7 @@ export const call = async (method, path, input, cookies = {}) => {
     return await routeHandler({
       req: new Request(url, {
         method,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...headers },
         body: method === 'POST' ? JSON.stringify(input ?? {}) : undefined,
       }),
       url,
@@ -74,4 +76,76 @@ export const invite = async (member, assessment, patch = {}) => {
     ...patch,
   }, member)
   return { res, body: res.ok ? await res.json() : undefined }
+}
+
+/** the preparation of the interview, once it is over */
+export const prepared = async (cookies) => {
+  for (let i = 0; i < 600; i++) {
+    const view = await (await call('GET', '/api/candidate/me', {}, cookies))
+      .json()
+    const steps = view.preparation?.steps ?? []
+    if (steps.at(-1)?.state === 'done' || view.preparation?.error) return view
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  throw Error('the preparation did not finish')
+}
+
+/** a candidate who built the demo solution and submitted it, interview ready */
+export const submittedCandidate = async (member, assessment) => {
+  const { body } = await invite(member, assessment)
+  const started = await call('POST', '/api/candidate/start', {
+    invitation: body.invitation,
+  })
+  const cookies = { dfd_candidate: cookieOf(started, 'dfd_candidate') }
+  await call('POST', '/api/candidate/files', { files: demoFiles }, cookies)
+  await call('POST', '/api/candidate/submit', { tools: ['Claude'] }, cookies)
+  await prepared(cookies)
+  return { cookies, candidateId: body.candidateId, invitation: body.invitation }
+}
+
+/** a mock of the model: `answer` is the content of its reply (undefined: down) */
+export const withModel = async (answer, fn) => {
+  const calls = []
+  const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
+    const body = await req.json()
+    calls.push(body)
+    const content = typeof answer === 'function' ? answer(calls.length) : answer
+    if (content === undefined) return new Response('down', { status: 503 })
+    if (body.stream) {
+      // a long step is streamed: one chunk with the answer, then the usage
+      const chunks = [
+        { choices: [{ delta: { content: JSON.stringify(content) } }] },
+        {
+          choices: [{ delta: {}, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        },
+      ]
+      return new Response(
+        chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') +
+          'data: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
+    }
+    return Response.json({
+      choices: [{
+        message: { content: JSON.stringify(content) },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    })
+  })
+  const saved = { ...llmConfig }
+  Object.assign(llmConfig, {
+    key: 'test-key',
+    baseUrl: `http://localhost:${server.addr.port}/v1`,
+    retryDelayMs: 0,
+    maxRetryAfterMs: 0,
+    retries: 0,
+  })
+  try {
+    return await fn(calls)
+  } finally {
+    Object.assign(llmConfig, saved)
+    await server.shutdown()
+  }
 }

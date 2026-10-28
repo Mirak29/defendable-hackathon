@@ -23,11 +23,12 @@ Built for the Meta Global AI Developer Hackathon, with Meta's models.
 | Meta Model API client (streaming, retries, fallback, schemas)          | done  |
 | Generation of an assessment from a job offer (4 steps, fairness check) | done  |
 | Sandbox: runs the candidate's code, judges the tests on the server     | done  |
-| Recruiter pages (list, new assessment, review, approval)               | next  |
-| Candidate journey (link, consent, editor, submission)                  | next  |
+| Recruiter pages (list, new assessment, review, approval, invitation)   | done  |
+| Candidate journey (link, consent, editor, submission)                  | done  |
 | Voice interview: server, interviewer prompt, test page (`/dev/voice`)  | done  |
-| Voice interview inside the candidate journey                           | next  |
-| Report and decision                                                    | next  |
+| Voice interview inside the candidate journey (Oracle)                  | done  |
+| Report (facts, checked interpretations) and human decision             | done  |
+| E-mail of the personal link, CV import                                 | done  |
 
 ## How an assessment is generated
 
@@ -77,6 +78,8 @@ without any key.
 | ---------------------------------------- | --------------------------------------------------------------------- |
 | `deno task llm:check`                    | one small call per model and reasoning level: key, billing, latency   |
 | `deno task llm:generate --out=generated` | one real generation, step by step, with cost; writes a readable `.md` |
+| `deno task llm:bench`                    | the same fictional inputs through several models and efforts: latency |
+| `deno task llm:eval`                     | the report on six fictional candidates whose right reading is known   |
 | `deno task all`                          | type-check, lint and tests                                            |
 
 `llm:generate` takes `--file=fixtures/offers/roomly.txt` (or `stockly.txt`),

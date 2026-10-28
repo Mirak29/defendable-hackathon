@@ -10,6 +10,7 @@ import {
 import { candidateBriefText } from '/api/reference.ts'
 import type { InterviewFacts } from '/api/prompts.ts'
 import { Assessment, type CandidateRow } from '/api/schema.ts'
+import { startReport } from '/api/report.ts'
 import { voiceConfig } from '/api/voice.ts'
 import type {
   AssessmentSpec,
@@ -70,8 +71,10 @@ export const candidateVoice = {
     transcript: InterviewLine[],
     completed: boolean,
   ) => {
-    if (transcript.length) {
-      finishInterview(candidateOf(req), transcript, completed)
-    }
+    if (!transcript.length) return
+    const c = candidateOf(req)
+    finishInterview(c, transcript, completed)
+    // the interview is over: the report is written in the background
+    if (completed) startReport(c.candidateId)
   },
 }
