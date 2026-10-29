@@ -336,7 +336,7 @@ index e207b60..0000000
 -VOLUME /app/data
 -CMD ["deno", "run", "-A", "--unstable-ffi", "prod-server.ts"]
 diff --git a/api/assessment.ts b/api/assessment.ts
-index 46b79c9..daf5aa5 100644
+index 46b79c9..76c0cc9 100644
 --- a/api/assessment.ts
 +++ b/api/assessment.ts
 @@ -1,17 +1,15 @@
@@ -361,7 +361,7 @@ index 46b79c9..daf5aa5 100644
    demoCompanyId,
    demoMemberId,
    Entry,
-@@ -23,7 +21,19 @@ import { checkReference } from '/api/reference.ts'
+@@ -23,16 +21,30 @@ import { checkReference } from '/api/reference.ts'
  import { normalizeSteps, parseStep } from '/api/test-steps.ts'
  import { arr, num, obj, oneOf, optStr, str, strItem } from '/api/lib/check.ts'
  import { computeChecks } from '/web/lib/assessment-checks.ts'
@@ -382,7 +382,26 @@ index 46b79c9..daf5aa5 100644
  import type {
    AiTrace,
    ApiRoute,
-@@ -53,21 +63,21 @@ const iso = (ms?: number | null) => ms ? new Date(ms).toISOString() : undefined
++  AssessmentKind,
+   AssessmentSpec,
+   AssessmentState,
+   CandidateFiles,
+   CandidateStatus,
+   CandidateSummary,
+   GenerationInput,
++  Language,
+   Level,
+   Method,
+   Progress,
+@@ -41,6 +53,7 @@ import type {
+   Skill,
+   TestCase,
+ } from '/web/types.ts'
++import { LANGUAGES } from '/web/types.ts'
+ 
+ export const json = <T>(value: unknown): T | undefined =>
+   value == null
+@@ -53,21 +66,21 @@ const iso = (ms?: number | null) => ms ? new Date(ms).toISOString() : undefined
  
  /* ---------- read ---------- */
  
@@ -412,7 +431,7 @@ index 46b79c9..daf5aa5 100644
  
  const minutes = (from?: number | null, to?: number | null) =>
    from && to ? Math.max(1, Math.round((to - from) / 60_000)) : undefined
-@@ -82,14 +92,13 @@ export const toCandidateSummary = (c: CandidateRow): CandidateSummary => ({
+@@ -82,14 +95,13 @@ export const toCandidateSummary = (c: CandidateRow): CandidateSummary => ({
        email: c.candidateEmail,
        profileUrl: c.candidateProfileUrl ?? undefined,
        note: c.candidateNote ?? undefined,
@@ -429,7 +448,7 @@ index 46b79c9..daf5aa5 100644
      c.candidateFinishedAt,
    ),
    date: iso(
-@@ -118,7 +127,7 @@ const EMPTY_TRACE: AiTrace = {
+@@ -118,7 +130,7 @@ const EMPTY_TRACE: AiTrace = {
  
  export const toState = (row: AssessmentRow): AssessmentState => {
    const spec = json<AssessmentSpec>(row.assessmentSpec) ?? {
@@ -438,7 +457,7 @@ index 46b79c9..daf5aa5 100644
      title: row.assessmentTitle,
      tests: [],
      requirements: [],
-@@ -135,7 +144,6 @@ export const toState = (row: AssessmentRow): AssessmentState => {
+@@ -135,7 +147,6 @@ export const toState = (row: AssessmentRow): AssessmentState => {
        durationMin: row.assessmentDuration,
        skills: json<string[]>(row.assessmentSkills) ?? [],
        domain: row.assessmentDomain ?? undefined,
@@ -446,7 +465,7 @@ index 46b79c9..daf5aa5 100644
      },
      createdAt: iso(row.assessmentCreatedAt) ?? new Date().toISOString(),
      approvedAt: iso(row.assessmentApprovedAt),
-@@ -165,16 +173,22 @@ export const listCompanyAssessments = (companyId: number) =>
+@@ -165,16 +176,22 @@ export const listCompanyAssessments = (companyId: number) =>
  
  export const getAssessment = (id: number) => toState(Assessment.require(id))
  
@@ -472,7 +491,7 @@ index 46b79c9..daf5aa5 100644
      })
    }
    return row
-@@ -183,8 +197,8 @@ const requireDraft = (id: number) => {
+@@ -183,8 +200,8 @@ const requireDraft = (id: number) => {
  /* ---------- model answers ---------- */
  
  const LEVELS = ['junior', 'intermediate', 'senior'] as const
@@ -483,7 +502,7 @@ index 46b79c9..daf5aa5 100644
  const HTTP = ['GET', 'POST', 'DELETE'] as const
  
  const parseSkill = (v: unknown, p: string): Skill => {
-@@ -207,14 +221,14 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
+@@ -207,14 +224,14 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
    // "/rooms/{id}" → "/rooms/:id", without query string
    const path = str(o.path, `${p}.path`, 80).split('?')[0]
      .replace(/\{(\w+)\}/g, ':$1')
@@ -500,7 +519,7 @@ index 46b79c9..daf5aa5 100644
        return code
      }, { min: 1, max: 6 }),
    }
-@@ -223,7 +237,7 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
+@@ -223,7 +240,7 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
  const parseRequirement = (v: unknown, p: string): Requirement => {
    const o = obj(v, p)
    const id = str(o.id, `${p}.id`, 5)
@@ -509,7 +528,7 @@ index 46b79c9..daf5aa5 100644
    return {
      id,
      title: str(o.title, `${p}.title`, 100),
-@@ -236,7 +250,7 @@ const parseRequirement = (v: unknown, p: string): Requirement => {
+@@ -236,7 +253,7 @@ const parseRequirement = (v: unknown, p: string): Requirement => {
  const parseTest = (v: unknown, p: string): TestCase => {
    const o = obj(v, p)
    const id = str(o.id, `${p}.id`, 5)
@@ -518,7 +537,7 @@ index 46b79c9..daf5aa5 100644
    const steps = arr(o.steps, `${p}.steps`, (s, sp) => {
      const step = obj(s, sp)
      const parsed = {
-@@ -246,7 +260,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
+@@ -246,7 +263,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
      try {
        parseStep(parsed)
      } catch (err) {
@@ -527,7 +546,7 @@ index 46b79c9..daf5aa5 100644
      }
      return parsed
    }, { min: 1, max: 6 })
-@@ -258,7 +272,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
+@@ -258,7 +275,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
      expected: str(o.expected, `${p}.expected`, 60),
      visibility: oneOf(
        o.visibility,
@@ -536,7 +555,7 @@ index 46b79c9..daf5aa5 100644
        `${p}.visibility`,
      ),
      requirementIds: arr(o.requirementIds, `${p}.requirementIds`, strItem, {
-@@ -272,11 +286,20 @@ const parseTest = (v: unknown, p: string): TestCase => {
+@@ -272,11 +289,20 @@ const parseTest = (v: unknown, p: string): TestCase => {
  
  type NeedAnalysis = { level: Level; skills: Skill[]; domain?: string }
  
@@ -560,7 +579,7 @@ index 46b79c9..daf5aa5 100644
      domain: optStr(o.domain, 'domain', 60),
    }
  }
-@@ -293,9 +316,29 @@ type Scenario = Pick<
+@@ -293,9 +319,29 @@ type Scenario = Pick<
    | 'requirements'
  >
  
@@ -592,7 +611,7 @@ index 46b79c9..daf5aa5 100644
    return {
      title: str(o.title, 'title', 80),
      company: str(o.company, 'company', 40),
-@@ -319,101 +362,52 @@ const parseScenario = (v: unknown): Scenario => {
+@@ -319,101 +365,125 @@ const parseScenario = (v: unknown): Scenario => {
    }
  }
  
@@ -630,10 +649,46 @@ index 46b79c9..daf5aa5 100644
  }
  
 -/* ---------- prompts ---------- */
--
++/* ---------- starter code ---------- */
++
++export const kindOf = (spec: AssessmentSpec): AssessmentKind =>
++  spec.kind ?? 'api'
++
++/** the languages a candidate can choose: the first is the default */
++export const languagesOf = (spec: AssessmentSpec): Language[] =>
++  kindOf(spec) === 'program' && spec.languages?.length
++    ? spec.languages
++    : kindOf(spec) === 'program'
++    ? [...LANGUAGES]
++    : ['typescript']
++
++/** the program of a candidate: it prints nothing, so every test fails */
++const programStarter = (
++  spec: AssessmentSpec,
++  language: Language,
++): CandidateFiles => {
++  const note = spec.io
++    ? `Input: ${spec.io.input}\nOutput: ${spec.io.output}`
++    : 'Read the input on the standard input, write the result on the standard output.'
++  if (language === 'python') {
++    const comment = note.split('\n').map((l) => `# ${l}`).join('\n')
++    return {
++      'main.py': `${comment}
++import sys
++
++data = sys.stdin.read()
++
++# TODO: write the result with print()
++`,
++      'test_main.py': `import unittest
++
+ 
 -const SYSTEM =
 -  'Tu conçois des épreuves techniques pour recruter des développeurs à l’ère de l’IA : le candidat code librement avec une IA, puis doit défendre son code. Réponds uniquement avec un objet JSON valide, sans texte autour, en français (vouvoiement), sans nom de personne réel.'
--
++class Example(unittest.TestCase):
++    def test_example(self):
++        self.assertEqual(1 + 1, 2)
+ 
 -const inputText = (input: GenerationInput) =>
 -  [
 -    `Description du poste :\n${input.jobDescription}`,
@@ -643,17 +698,26 @@ index 46b79c9..daf5aa5 100644
 -    input.domain && `Domaine métier : ${input.domain}`,
 -    'Format imposé : API HTTP en TypeScript (Deno), stockage en mémoire, pas de base de données ni de réseau.',
 -  ].filter(Boolean).join('\n')
--
+ 
 -const needAnalysisPrompt = (input: GenerationInput) =>
 -  `${inputText(input)}
--
++if __name__ == "__main__":
++    unittest.main()
++`,
++    }
++  }
++  const comment = note.split('\n').map((l) => `// ${l}`).join('\n')
++  return {
++    'src/main.ts': `${comment}
+ 
 -Analyse le besoin. Pour chaque compétence choisie (5 au plus), indique son importance et comment l’évaluer dans une API Deno sans base de données (une ou plusieurs méthodes) :
 -- "Tests" si des tests HTTP d’évaluation peuvent la vérifier (comportement de l’API) ; ces tests sont séquentiels et instantanés : la concurrence, les délais et l’expiration relèvent de l’analyse du code et des questions ;
 -- "Analyse du code" si elle se voit dans le code rendu (structure, lisibilité, tests écrits par le candidat : « Tests automatisés » relève de l’analyse du code, pas des tests HTTP) ;
 -- "Questions" si la vérifier demande d’interroger le candidat sur son code (choix, compréhension), ou si l’environnement ne permet pas de l’observer (ex. une base de données absente).
 -JSON attendu :
 -{"level":"junior|intermediate|senior","domain":"…","skills":[{"name":"…","importance":"haute|moyenne|basse","methods":["Tests"],"justification":"une phrase"}]}`
--
++const input = await new Response(Deno.stdin.readable).text();
+ 
 -const scenarioPrompt = (
 -  input: GenerationInput,
 -  analysis: NeedAnalysis,
@@ -681,7 +745,25 @@ index 46b79c9..daf5aa5 100644
 -      requirements: scenario.requirements,
 -      constraints: scenario.constraints,
 -    })
--  }
++// TODO: write the result with console.log()
++void input;
++`,
++    'src/main_test.ts': `import { assertEquals } from "@std/assert";
++
++Deno.test("example", () => {
++  assertEquals(1 + 1, 2);
++});
++`,
++    'deno.json': `{
++  "tasks": {
++    "test": "deno test src/"
++  },
++  "imports": {
++    "@std/assert": "jsr:@std/assert@1"
++  }
++}
++`,
+   }
 -${instruction ? `Consigne du recruteur : ${instruction}\n` : ''}
 -Écris 8 à 12 tests d’évaluation HTTP. Chaque exigence est couverte par au moins un test ; 2 ou 3 tests sont cachés ("caché") et portent sur des exigences visibles. Chaque test part d’un état vide (seules les données de référence des contraintes existent).
 -Le candidat ne lit que les exigences, les routes et les contraintes : un test n’attend que ce qu’elles disent explicitement (code de statut écrit dans l’exigence, format écrit dans les contraintes). Pas de cas limite ambigu (ex. une date sans fuseau, que le format ISO 8601 accepte). Les requêtes d’un test s’enchaînent en quelques millisecondes : aucun test ne dépend du temps qui passe (expiration, délai) ni de requêtes simultanées ; ces règles relèvent de l’analyse du code et des questions.
@@ -694,10 +776,15 @@ index 46b79c9..daf5aa5 100644
 -{"tests":[{"id":"T1","title":"titre court","route":"POST /links","condition":"avec une URL valide","expected":"201 + id","visibility":"public","requirementIds":["R1"],"steps":[{"request":"…","response":"…"}]}]}`
 -
 -/* ---------- starter code (C2) ---------- */
-+/* ---------- starter code ---------- */
++}
  
  /** Code given to the candidate: every route answers 501, so every test fails */
- export const starterFiles = (spec: AssessmentSpec): CandidateFiles => {
+-export const starterFiles = (spec: AssessmentSpec): CandidateFiles => {
++export const starterFiles = (
++  spec: AssessmentSpec,
++  language: Language = 'typescript',
++): CandidateFiles => {
++  if (kindOf(spec) === 'program') return programStarter(spec, language)
    const [first] = spec.routes
    const routes = spec.routes
 -    .map((r) => `//   ${r.method} ${r.path} : ${r.description}`)
@@ -719,7 +806,7 @@ index 46b79c9..daf5aa5 100644
      { status: 501 },
    );
  }
-@@ -421,7 +415,7 @@ export async function handler(req: Request): Promise<Response> {
+@@ -421,7 +491,7 @@ export async function handler(req: Request): Promise<Response> {
      'src/app_test.ts': `import { assertEquals } from "@std/assert";
  import { handler } from "./app.ts";
  
@@ -728,7 +815,7 @@ index 46b79c9..daf5aa5 100644
    const res = await handler(new Request("http://localhost/"));
    assertEquals(typeof res.status, "number");
  });
-@@ -429,7 +423,7 @@ Deno.test("exemple : l’API répond", async () => {
+@@ -429,7 +499,7 @@ Deno.test("exemple : l’API répond", async () => {
      'playground.ts': `import { handler } from "./src/app.ts";
  
  const res = await handler(new Request("http://localhost${
@@ -737,7 +824,7 @@ index 46b79c9..daf5aa5 100644
      }", {
    method: "${first?.method ?? 'GET'}",
  }));
-@@ -449,7 +443,7 @@ console.log(res.status, await res.text());
+@@ -449,7 +519,7 @@ console.log(res.status, await res.text());
  ## Tests
  deno task test
  
@@ -746,7 +833,7 @@ index 46b79c9..daf5aa5 100644
  - `,
    }
  }
-@@ -467,31 +461,20 @@ const saveProgress = (id: number, progress: Progress) => {
+@@ -467,31 +537,20 @@ const saveProgress = (id: number, progress: Progress) => {
    })
  }
  
@@ -779,7 +866,7 @@ index 46b79c9..daf5aa5 100644
    const result = await ask({
      ...options,
      onFallback: (reason) => {
-@@ -541,36 +524,29 @@ const repairInstruction = (d: Draft) => {
+@@ -541,36 +600,29 @@ const repairInstruction = (d: Draft) => {
        const test = spec.tests.find((t) => t.id === r.id)
        const why = reference!.excluded.find((e) => e.id === r.id)?.reason ??
          r.reason ?? ''
@@ -823,7 +910,7 @@ index 46b79c9..daf5aa5 100644
  ) => {
    const progress: Progress = {
      kind: instruction ? 'regeneration' : 'generation',
-@@ -579,63 +555,55 @@ const runGeneration = async (
+@@ -579,63 +631,55 @@ const runGeneration = async (
    }
    const previous = json<AssessmentSpec>(Assessment.require(id).assessmentSpec)
    try {
@@ -914,7 +1001,7 @@ index 46b79c9..daf5aa5 100644
          durationMin: input.durationMin,
          level: analysis.data.level,
          jobDescription: input.jobDescription,
-@@ -665,7 +633,6 @@ const runGeneration = async (
+@@ -665,7 +709,6 @@ const runGeneration = async (
        if (repaired && problemsOf(repaired) < problemsOf(best)) best = repaired
      }
      const { spec, starter, starterFails, reference } = best
@@ -922,7 +1009,7 @@ index 46b79c9..daf5aa5 100644
      progress.steps[3] = {
        state: 'done',
        ...(reference && { trace: reference.traces.at(-1) }),
-@@ -676,7 +643,7 @@ const runGeneration = async (
+@@ -676,7 +719,7 @@ const runGeneration = async (
        assessmentTitle: spec.title,
        assessmentLevel: spec.level,
        assessmentSpec: spec,
@@ -931,7 +1018,7 @@ index 46b79c9..daf5aa5 100644
        assessmentChecks: { starterFails, reference },
        assessmentStarterFiles: starter,
        assessmentDeletedTests: reference?.excluded.map((e) => e.id) ?? [],
-@@ -697,19 +664,17 @@ const runGeneration = async (
+@@ -697,19 +740,17 @@ const runGeneration = async (
    }
  }
  
@@ -953,7 +1040,7 @@ index 46b79c9..daf5aa5 100644
      assessmentJobDescription: input.jobDescription,
      assessmentStatus: 'generating',
      assessmentSkills: input.skills,
-@@ -720,42 +685,39 @@ export const createAssessment = (
+@@ -720,42 +761,39 @@ export const createAssessment = (
      companyId: companyOfAssessment(assessmentId),
      assessmentId,
    })
@@ -1008,7 +1095,7 @@ index 46b79c9..daf5aa5 100644
        return {
          level: oneOf(o.level, LEVELS, 'level'),
          skills: arr(o.skills, 'skills', (s, p) => str(s, p, 60), {
-@@ -764,18 +726,18 @@ export const prefillFromDescription = async (jobDescription: string) => {
+@@ -764,18 +802,18 @@ export const prefillFromDescription = async (jobDescription: string) => {
          }),
        }
      },
@@ -1030,7 +1117,7 @@ index 46b79c9..daf5aa5 100644
  export const updateAssessment = (
    id: number,
    { title, context, mission }: {
-@@ -784,7 +746,7 @@ export const updateAssessment = (
+@@ -784,7 +822,7 @@ export const updateAssessment = (
      mission?: string | null
    },
  ) => {
@@ -1039,7 +1126,7 @@ index 46b79c9..daf5aa5 100644
    const spec = json<AssessmentSpec>(row.assessmentSpec)!
    const next: AssessmentSpec = {
      ...spec,
-@@ -807,7 +769,7 @@ export const updateAssessment = (
+@@ -807,7 +845,7 @@ export const updateAssessment = (
  }
  
  export const setDeletedTests = (id: number, testIds: string[]) => {
@@ -1048,7 +1135,7 @@ index 46b79c9..daf5aa5 100644
    const known = new Set(
      json<AssessmentSpec>(row.assessmentSpec)!.tests.map((t) => t.id),
    )
-@@ -825,9 +787,9 @@ export const randomToken = (length: number) =>
+@@ -825,9 +863,9 @@ export const randomToken = (length: number) =>
      (n) => INVITATION_CHARS[n % INVITATION_CHARS.length],
    ).join('')
  
@@ -1060,7 +1147,7 @@ index 46b79c9..daf5aa5 100644
    const state = toState(row)
    const deleted = new Set(state.deletedTests)
    const { blocked } = computeChecks(
-@@ -838,7 +800,7 @@ export const approveAssessment = (id: number) => {
+@@ -838,7 +876,7 @@ export const approveAssessment = (id: number) => {
    )
    if (blocked) {
      throw new respond.BadRequestError({
@@ -1418,10 +1505,10 @@ index 2d5d576..38b9973 100644
    })
  })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..b9ca76e 100644
+index 9a19ccb..4423c91 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
-@@ -1,63 +1,53 @@
+@@ -1,63 +1,68 @@
 -import { companyOfAssessment } from '/api/schema.ts'
 -// Candidate journey (C1 → C7). The candidate is identified by a token in an
 -// httpOnly cookie, set when they start (no account, brief §6). The server is
@@ -1444,7 +1531,21 @@ index 9a19ccb..b9ca76e 100644
 +  companyOfAssessment,
    Entry,
  } from '/api/schema.ts'
- import { json, randomToken, starterFiles } from '/api/assessment.ts'
+-import { json, randomToken, starterFiles } from '/api/assessment.ts'
++import {
++  json,
++  kindOf,
++  languagesOf,
++  randomToken,
++  starterFiles,
++} from '/api/assessment.ts'
++import {
++  checkProgram,
++  type ProgramCase,
++  runProgram,
++  runProgramCases,
++  runProgramOwnTests,
++} from '/api/program-sandbox.ts'
  import {
    checkTypes,
 +  type CodeProblem,
@@ -1469,7 +1570,9 @@ index 9a19ccb..b9ca76e 100644
 +  InterviewLine,
    Invitation,
    InvitationState,
++  Language,
    Progress,
++  TestCase,
 +  TestResult,
  } from '/web/types.ts'
  
@@ -1509,7 +1612,7 @@ index 9a19ccb..b9ca76e 100644
  
  const byInvitation = Candidate.sql`
    SELECT * FROM candidate WHERE candidateInvitation = :invitation
-@@ -90,7 +80,7 @@ const findInvitation = (invitation?: string) => {
+@@ -90,13 +95,24 @@ const findInvitation = (invitation?: string) => {
    const c = invitation ? byInvitation({ invitation }) : undefined
    const a = c && Assessment.get(c.assessmentId)
    if (!c || !a || a.assessmentStatus !== 'approved') {
@@ -1518,7 +1621,30 @@ index 9a19ccb..b9ca76e 100644
    }
    return { c, a }
  }
-@@ -111,9 +101,9 @@ export const getInvitation = (invitation?: string): Invitation => {
+ 
+ const specOf = (row: AssessmentRow) => json<AssessmentSpec>(row.assessmentSpec)!
+ 
++const languageOf = (c: CandidateRow): Language =>
++  c.candidateLanguage === 'python' ? 'python' : 'typescript'
++
++/** a test of a program is one step: the input, then the output it must give */
++const programCases = (tests: TestCase[]): ProgramCase[] =>
++  tests.map((t) => ({
++    id: t.id,
++    stdin: t.steps[0]?.request ?? '',
++    expected: t.steps[0]?.response ?? '',
++  }))
++
+ export const getInvitation = (invitation?: string): Invitation => {
+   const { c, a } = findInvitation(invitation)
+   const spec = specOf(a)
+@@ -108,12 +124,15 @@ export const getInvitation = (invitation?: string): Invitation => {
+     durationMin: a.assessmentDuration,
+     firstName: c.candidateFirstName ?? undefined,
+     state: invitationState(c),
++    kind: kindOf(spec),
++    languages: languagesOf(spec),
++    language: c.candidateLanguage ? languageOf(c) : undefined,
    }
  }
  
@@ -1531,7 +1657,7 @@ index 9a19ccb..b9ca76e 100644
      Array.from(crypto.getRandomValues(new Uint8Array(2)), (n) =>
        n.toString(16).padStart(2, '0')).join('').toUpperCase()
    }`
-@@ -125,15 +115,19 @@ const field = (
+@@ -125,15 +144,19 @@ const field = (
  ) => {
    const clean = (value ?? '').trim()
    if (clean.length > max) {
@@ -1556,7 +1682,7 @@ index 9a19ccb..b9ca76e 100644
  export const inviteCandidate = (
    assessmentId: number,
    memberId: number,
-@@ -143,44 +137,44 @@ export const inviteCandidate = (
+@@ -143,44 +166,44 @@ export const inviteCandidate = (
      email: string
      profileUrl?: string | null
      note?: string | null
@@ -1611,7 +1737,7 @@ index 9a19ccb..b9ca76e 100644
      assessmentId,
      candidateCreatedAt: now,
      candidateInvitation: invitation,
-@@ -191,62 +185,52 @@ export const inviteCandidate = (
+@@ -191,62 +214,62 @@ export const inviteCandidate = (
      candidateEmail: email,
      candidateProfileUrl: profileUrl || undefined,
      candidateNote: note || undefined,
@@ -1649,7 +1775,7 @@ index 9a19ccb..b9ca76e 100644
 + * (another device, a lost cookie).
   */
 -export const startCandidate = (invitation: string, demo: boolean) => {
-+export const startCandidate = (invitation: string) => {
++export const startCandidate = (invitation: string, language?: Language) => {
    const { c, a } = findInvitation(invitation)
    const state = invitationState(c)
    if (state === 'expired' || state === 'revoked') {
@@ -1663,6 +1789,14 @@ index 9a19ccb..b9ca76e 100644
    }
    if (state !== 'invited') return c.candidateToken
    const spec = specOf(a)
++  // chosen before the clock starts, then fixed: the first one is the default
++  const allowed = languagesOf(spec)
++  const chosen = language ?? allowed[0]
++  if (!allowed.includes(chosen)) {
++    throw new respond.BadRequestError({
++      message: `This assessment can be done in: ${allowed.join(', ')}.`,
++    })
++  }
    const now = Date.now()
 -  // guided demo: the draft of the demo, in the language of the assessment
 -  const demoSet = demoOf(a.assessmentLanguage)
@@ -1677,8 +1811,10 @@ index 9a19ccb..b9ca76e 100644
 -    candidateStartedAt: now - (demo ? (72 * 60 + 43) * 1000 : 0),
 -    candidateFiles: files,
 +    candidateStartedAt: now,
-+    candidateFiles: json<CandidateFiles>(a.assessmentStarterFiles) ??
-+      starterFiles(spec),
++    candidateLanguage: chosen,
++    candidateFiles: kindOf(spec) === 'api'
++      ? json<CandidateFiles>(a.assessmentStarterFiles) ?? starterFiles(spec)
++      : starterFiles(spec, chosen),
      candidateSavedAt: now,
 -    candidateRuns: { run: 0, mine: 0, eval: 0, demo } satisfies Runs,
 +    candidateRuns: { run: 0, mine: 0, eval: 0 } satisfies Runs,
@@ -1687,7 +1823,7 @@ index 9a19ccb..b9ca76e 100644
    })
    Entry.insert.CANDIDATE_BUILD_STARTED({
      companyId: companyOfAssessment(a.assessmentId),
-@@ -261,7 +245,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
+@@ -261,7 +284,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
  export const findCandidate = (token?: string) => {
    const row = token ? byToken({ token }) : undefined
    if (!row) {
@@ -1698,7 +1834,7 @@ index 9a19ccb..b9ca76e 100644
    }
    return row
  }
-@@ -272,26 +258,21 @@ const deadline = (c: CandidateRow) =>
+@@ -272,27 +297,24 @@ const deadline = (c: CandidateRow) =>
    (c.candidateStartedAt ?? Date.now()) +
    assessmentOf(c).assessmentDuration * 60_000
  
@@ -1724,9 +1860,12 @@ index 9a19ccb..b9ca76e 100644
      pseudonym: c.candidatePseudonym,
 -    demo: !!runsOf(c).demo,
      now: Date.now(),
++    language: languageOf(c),
++    kind: kindOf(spec),
      assessment: {
        title: spec.title,
-@@ -316,18 +297,17 @@ export const toView = (c: CandidateRow): CandidateView => {
+       company: spec.company,
+@@ -316,18 +338,17 @@ export const toView = (c: CandidateRow): CandidateView => {
      files: json<CandidateFiles>(c.candidateFiles) ?? {},
      savedAt: c.candidateSavedAt ?? undefined,
      preparation: json(c.candidatePreparation),
@@ -1748,7 +1887,7 @@ index 9a19ccb..b9ca76e 100644
      })
    }
  }
-@@ -343,15 +323,16 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
+@@ -343,30 +364,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
    return { savedAt }
  }
  
@@ -1767,9 +1906,37 @@ index 9a19ccb..b9ca76e 100644
    files: CandidateFiles,
  ) => {
    saveFiles(c, files)
-@@ -366,7 +347,22 @@ export const runCode = async (
+   countRun(c, kind)
++  const spec = specOf(assessmentOf(c))
++  const language = languageOf(c)
++  const tests = spec.tests.filter((t) => t.visibility === 'public')
++  if (kindOf(spec) === 'program') {
++    if (kind === 'run') {
++      // the sample input: the first public test
++      const sample = tests[0]?.steps[0]?.request ?? ''
++      return { kind, run: await runProgram(language, files, sample) }
++    }
++    if (kind === 'mine') {
++      return { kind, own: await runProgramOwnTests(language, files) }
++    }
++    return {
++      kind,
++      results: await runProgramCases(language, files, programCases(tests)),
++    }
++  }
+   if (kind === 'run') return { kind, run: await runPlayground(files) }
+   if (kind === 'mine') return { kind, own: await runOwnTests(files) }
+-  const tests = specOf(assessmentOf(c)).tests.filter((t) =>
+-    t.visibility === 'public'
+-  )
+   return { kind, results: await runEvaluation(files, tests) }
+ }
  
- export const checkCode = (files: CandidateFiles) => checkTypes(files)
+-export const checkCode = (files: CandidateFiles) => checkTypes(files)
++export const checkCode = (c: CandidateRow, files: CandidateFiles) =>
++  kindOf(specOf(assessmentOf(c))) === 'program'
++    ? checkProgram(languageOf(c), files)
++    : checkTypes(files)
  
 -/* ---------- submission (C3) → preparation (C4) ---------- */
 +/* ---------- submission and preparation of the interview ---------- */
@@ -1791,7 +1958,7 @@ index 9a19ccb..b9ca76e 100644
  
  export const submitCode = (
    c: CandidateRow,
-@@ -376,261 +372,129 @@ export const submitCode = (
+@@ -376,261 +430,133 @@ export const submitCode = (
      auto?: boolean
    },
  ) => {
@@ -1865,10 +2032,14 @@ index 9a19ccb..b9ca76e 100644
 +  try {
 +    progress.steps[1] = { state: 'run' }
 +    saveProgress(c, progress)
++    const program = kindOf(spec) === 'program'
++    const language = languageOf(c)
 +    const [tests, problems, own] = await Promise.all([
-+      runEvaluation(files, spec.tests),
-+      checkTypes(files),
-+      runOwnTests(files),
++      program
++        ? runProgramCases(language, files, programCases(spec.tests))
++        : runEvaluation(files, spec.tests),
++      program ? checkProgram(language, files) : checkTypes(files),
++      program ? runProgramOwnTests(language, files) : runOwnTests(files),
 +    ])
 +    Candidate.update({
 +      candidateId,
@@ -8031,7 +8202,7 @@ index 75d54dc..5731f61 100644
 -
 -export type { Question }
 diff --git a/api/routes.ts b/api/routes.ts
-index 20228a8..21ea16b 100644
+index 20228a8..e401650 100644
 --- a/api/routes.ts
 +++ b/api/routes.ts
 @@ -3,25 +3,17 @@ import type { RequestContext } from '@01edu/api/context'
@@ -8065,7 +8236,7 @@ index 20228a8..21ea16b 100644
    demoMemberId,
    entryInsertListeners,
    type EntryListener,
-@@ -49,86 +41,94 @@ import {
+@@ -49,86 +41,95 @@ import {
    updateAssessment,
  } from '/api/assessment.ts'
  import {
@@ -8106,6 +8277,7 @@ index 20228a8..21ea16b 100644
    CandidateView,
 +  Decision,
    Invitation,
++  Language,
 +  ReportView,
    TestResult,
  } from '/web/types.ts'
@@ -8193,7 +8365,7 @@ index 20228a8..21ea16b 100644
  // Same host only: behind a TLS proxy the server sees http:// while the
  // browser sends Origin: https://, so the scheme is not compared.
  const checkOrigin = (ctx: RequestContext) => {
-@@ -138,13 +138,13 @@ const checkOrigin = (ctx: RequestContext) => {
+@@ -138,13 +139,13 @@ const checkOrigin = (ctx: RequestContext) => {
      host = origin ? new URL(origin).host : undefined
    } catch { /* malformed Origin: refused below */ }
    if (origin && host !== ctx.url.host) {
@@ -8209,7 +8381,7 @@ index 20228a8..21ea16b 100644
    }
    const response = respond.OK(memberView(session.memberId))
    setCookie(response.headers, {
-@@ -160,32 +160,13 @@ const sessionResponse = async (token: string) => {
+@@ -160,32 +161,13 @@ const sessionResponse = async (token: string) => {
    return response
  }
  
@@ -8243,7 +8415,7 @@ index 20228a8..21ea16b 100644
  // The framework's default validator report echoes invalid values. Auth fields
  // must never be echoed, even when a password has an unexpected JSON type.
  const signupInput = {
-@@ -246,7 +227,7 @@ const defs = {
+@@ -246,7 +228,7 @@ const defs = {
    'POST/api/demo/session': route({
      fn: async (ctx) => {
        if (!demoAccess()) {
@@ -8252,7 +8424,7 @@ index 20228a8..21ea16b 100644
        }
        checkOrigin(ctx)
        return sessionResponse(await generateSession(demoMemberId))
-@@ -256,7 +237,7 @@ const defs = {
+@@ -256,7 +238,7 @@ const defs = {
    'GET/api/demo': route({
      fn: () => ({ available: demoAccess() }),
      output: OBJ({ available: BOOL('Demo account available (DEMO_ACCESS)') }),
@@ -8261,7 +8433,7 @@ index 20228a8..21ea16b 100644
    }),
    'GET/api/health': route({
      fn: () => ({ status: 'ok', env: APP_ENV }),
-@@ -267,13 +248,13 @@ const defs = {
+@@ -267,13 +249,13 @@ const defs = {
      description: 'Healthcheck used by docker and the dev tooling',
    }),
  
@@ -8277,7 +8449,7 @@ index 20228a8..21ea16b 100644
    }),
  
    'GET/api/assessment': route({
-@@ -281,7 +262,7 @@ const defs = {
+@@ -281,7 +263,7 @@ const defs = {
      fn: (ctx, { id: value }) => getAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: STR('Assessment id') }),
      output: ASSESSMENT,
@@ -8286,7 +8458,7 @@ index 20228a8..21ea16b 100644
    }),
  
    'POST/api/assessment/prefill': route({
-@@ -293,35 +274,30 @@ const defs = {
+@@ -293,35 +275,30 @@ const defs = {
        skills: ARR(STR('Skill name'), 'Suggested skills, 5 at most'),
        trace: TRACE,
      }),
@@ -8329,7 +8501,7 @@ index 20228a8..21ea16b 100644
          memberOf(ctx),
        )
      },
-@@ -331,20 +307,16 @@ const defs = {
+@@ -331,20 +308,16 @@ const defs = {
        durationMin: NUM('60, 90 or 120 minutes'),
        skills: ARR(STR('Skill name'), '1 to 5 skills'),
        domain: optional(STR('Business domain')),
@@ -8352,7 +8524,7 @@ index 20228a8..21ea16b 100644
    }),
  
    'POST/api/assessment/update': route({
-@@ -360,7 +332,7 @@ const defs = {
+@@ -360,7 +333,7 @@ const defs = {
        mission: optional(STR('New mission, as the candidate reads it')),
      }),
      output: ASSESSMENT,
@@ -8361,7 +8533,7 @@ index 20228a8..21ea16b 100644
    }),
  
    'POST/api/assessment/deleted-tests': route({
-@@ -374,7 +346,7 @@ const defs = {
+@@ -374,7 +347,7 @@ const defs = {
        testIds: ARR(STR('Test id'), 'Tests removed before approval'),
      }),
      output: ASSESSMENT,
@@ -8370,7 +8542,7 @@ index 20228a8..21ea16b 100644
    }),
  
    'POST/api/assessment/regenerate': route({
-@@ -385,7 +357,7 @@ const defs = {
+@@ -385,7 +358,7 @@ const defs = {
        id: NUM('Assessment id'),
        instruction: STR('Recruiter instruction'),
      }),
@@ -8379,7 +8551,7 @@ index 20228a8..21ea16b 100644
    }),
  
    'POST/api/assessment/approve': route({
-@@ -393,10 +365,10 @@ const defs = {
+@@ -393,10 +366,10 @@ const defs = {
      fn: (ctx, { id: value }) => approveAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: NUM('Assessment id') }),
      output: ASSESSMENT,
@@ -8392,7 +8564,7 @@ index 20228a8..21ea16b 100644
  
    'POST/api/candidate/invite': route({
      authorize: withMember,
-@@ -424,9 +396,10 @@ const defs = {
+@@ -424,9 +397,10 @@ const defs = {
      output: OBJ({
        candidateId: NUM('Invited candidate'),
        invitation: STR('Token of the personal link'),
@@ -8404,7 +8576,7 @@ index 20228a8..21ea16b 100644
    }),
  
    'POST/api/candidate/send-link': route({
-@@ -435,7 +408,7 @@ const defs = {
+@@ -435,7 +409,7 @@ const defs = {
        sendCandidateLink(Candidate.require(ownedCandidate(ctx, candidate))),
      input: OBJ({ candidate: NUM('Candidate id') }),
      output: JSON_OF<LinkSent>('Sent, or the reason of the failure'),
@@ -8413,7 +8585,7 @@ index 20228a8..21ea16b 100644
    }),
  
    'POST/api/candidate/cv': route({
-@@ -445,14 +418,14 @@ const defs = {
+@@ -445,14 +419,14 @@ const defs = {
        // base64 of 5 MB at most: the file never leaves this request
        if (data.length > Math.ceil(CV_MAX_BYTES / 3) * 4 + 4) {
          throw new respond.BadRequestError({
@@ -8430,7 +8602,7 @@ index 20228a8..21ea16b 100644
        }
        return readCv(bytes)
      },
-@@ -460,60 +433,32 @@ const defs = {
+@@ -460,60 +434,35 @@ const defs = {
        assessment: NUM('Assessment id the candidate will be invited to'),
        data: STR('The CV file (PDF or DOCX), base64'),
      }),
@@ -8467,9 +8639,8 @@ index 20228a8..21ea16b 100644
 +    },
      input: OBJ({ candidate: NUM('Candidate id') }),
 -    description: 'R6 « Réessayer » after a failed report',
-+    description: 'The link stops working, the report stays',
-   }),
- 
+-  }),
+-
 -  'POST/api/decision': route({
 -    authorize: withMember,
 -    fn: (ctx, { candidate, choice, note }) =>
@@ -8481,8 +8652,9 @@ index 20228a8..21ea16b 100644
 -    }),
 -    output: JSON_OF<Decision>('Saved decision and its timestamp'),
 -    description: 'R6 « Enregistrer la décision » (decision is human only)',
--  }),
--
++    description: 'The link stops working, the report stays',
+   }),
+ 
 -  /* ---------- candidate (C1 → C7) ---------- */
 +  /* ---------- candidate journey ---------- */
  
@@ -8498,27 +8670,30 @@ index 20228a8..21ea16b 100644
    'POST/api/candidate/start': route({
 -    fn: (_ctx, { invitation, demo }) => {
 -      const token = startCandidate(invitation, demo ?? false)
-+    fn: (_ctx, { invitation }) => {
-+      const token = startCandidate(invitation)
++    fn: (_ctx, { invitation, language }) => {
++      const token = startCandidate(
++        invitation,
++        language ? (language as Language) : undefined,
++      )
        const response = respond.OK(toView(findCandidate(token)))
        setCookie(response.headers, {
          name: CANDIDATE_COOKIE,
-@@ -526,12 +471,9 @@ const defs = {
-       })
-       return response
+@@ -528,10 +477,12 @@ const defs = {
      },
--    input: OBJ({
--      invitation: STR('Token of the candidate link'),
+     input: OBJ({
+       invitation: STR('Token of the candidate link'),
 -      demo: optional(BOOL('Guided demo: clock at 01:12:43 on the draft')),
--    }),
-+    input: OBJ({ invitation: STR('Token of the candidate link') }),
++      language: optional(
++        LIST(['typescript', 'python'], 'Language of the program'),
++      ),
+     }),
      output: CANDIDATE,
 -    description: 'C1 « Commencer la phase de construction »',
 +    description: 'Start the building phase: the clock starts',
    }),
  
    'GET/api/candidate/me': route({
-@@ -545,18 +487,15 @@ const defs = {
+@@ -545,18 +496,15 @@ const defs = {
      authorize: withCandidate,
      fn: (ctx, { files }) => saveFiles(candidateOf(ctx), files),
      input: OBJ({ files: FILES }),
@@ -8540,7 +8715,7 @@ index 20228a8..21ea16b 100644
        files: FILES,
      }),
      output: JSON_OF<{
-@@ -565,7 +504,7 @@ const defs = {
+@@ -565,15 +513,15 @@ const defs = {
        own?: OwnTestsRun
        results?: TestResult[]
      }>('Output of the sandbox'),
@@ -8549,8 +8724,9 @@ index 20228a8..21ea16b 100644
    }),
  
    'POST/api/candidate/check': route({
-@@ -573,7 +512,7 @@ const defs = {
-     fn: (_ctx, { files }) => checkCode(files),
+     authorize: withCandidate,
+-    fn: (_ctx, { files }) => checkCode(files),
++    fn: (ctx, { files }) => checkCode(candidateOf(ctx), files),
      input: OBJ({ files: FILES }),
      output: JSON_OF<CodeProblem[]>('Type errors of deno check'),
 -    description: 'C2 type errors under the code',
@@ -8558,7 +8734,7 @@ index 20228a8..21ea16b 100644
    }),
  
    'POST/api/candidate/submit': route({
-@@ -582,7 +521,7 @@ const defs = {
+@@ -582,7 +530,7 @@ const defs = {
        const c = candidateOf(ctx)
        if (!tools.length) {
          throw new respond.BadRequestError({
@@ -8567,7 +8743,7 @@ index 20228a8..21ea16b 100644
          })
        }
        if (files && !c.candidateSubmittedAt) saveFiles(c, files)
-@@ -594,76 +533,54 @@ const defs = {
+@@ -594,76 +542,54 @@ const defs = {
      },
      input: OBJ({
        tools: ARR(STR('AI tool'), 'Declared AI tools'),
@@ -8675,7 +8851,7 @@ index 20228a8..21ea16b 100644
    }),
  
    /* ---------- events ---------- */
-@@ -675,27 +592,22 @@ const defs = {
+@@ -675,27 +601,22 @@ const defs = {
            message: 'Must accept event-stream',
          })
        }
@@ -8710,7 +8886,7 @@ index 20228a8..21ea16b 100644
          }
        }
        let listener: EntryListener
-@@ -705,9 +617,9 @@ const defs = {
+@@ -705,9 +626,9 @@ const defs = {
            controller.enqueue(ACK_PAYLOAD)
            ackInterval = setInterval(async () => {
              try {
@@ -8722,7 +8898,7 @@ index 20228a8..21ea16b 100644
                ) {
                  clearInterval(ackInterval)
                  entryInsertListeners.delete(listener)
-@@ -737,7 +649,6 @@ const defs = {
+@@ -737,7 +658,6 @@ const defs = {
            entryInsertListeners.delete(listener)
          },
        })
@@ -8730,7 +8906,7 @@ index 20228a8..21ea16b 100644
        return new Response(body, {
          headers: {
            'Content-Type': 'text/event-stream',
-@@ -748,11 +659,10 @@ const defs = {
+@@ -748,11 +668,10 @@ const defs = {
      },
      input: OBJ({
        assessment: optional(STR('Followed assessment')),
@@ -8809,7 +8985,7 @@ index a5ddc2b..d5d0602 100644
 -  })
 -})
 diff --git a/api/sandbox.ts b/api/sandbox.ts
-index d0468a6..c88a1b5 100644
+index d0468a6..8c31fce 100644
 --- a/api/sandbox.ts
 +++ b/api/sandbox.ts
 @@ -1,6 +1,5 @@
@@ -8821,16 +8997,35 @@ index d0468a6..c88a1b5 100644
  // folder, offline modules only (--cached-only), 10 s and 64 KB at most, and
  // a queue so a burst of runs cannot take the whole machine.
  import { join, normalize, toFileUrl } from 'jsr:@std/path'
-@@ -33,7 +32,7 @@ const ANSI = /\u001b\[[0-9;]*m/g
+@@ -19,7 +18,7 @@ import {
  
- const PERMISSIONS = [
+ export const RUN_TIMEOUT_MS = 10_000
+ export const OUTPUT_LIMIT = 64 * 1024
+-const CASE_TIMEOUT_MS = 2_000
++export const CASE_TIMEOUT_MS = 2_000
+ // evaluation runs print the recorded responses: more room than a playground
+ const EVAL_OUTPUT_LIMIT = 4 * 1024 * 1024
+ const BODY_LIMIT = 32 * 1024
+@@ -31,9 +30,9 @@ const nextSlot = makeQueue(2)
+ // deno-lint-ignore no-control-regex
+ const ANSI = /\u001b\[[0-9;]*m/g
+ 
+-const PERMISSIONS = [
++export const PERMISSIONS = [
    '--config',
 -  'deno.json', // written by writeWorkspace, never the candidate's (AUD-002)
 +  'deno.json', // written by writeWorkspace, never the candidate's
    '--cached-only',
    '--no-prompt',
    '--deny-net',
-@@ -75,7 +74,7 @@ export const assertFiles = (files: CandidateFiles) => {
+@@ -69,13 +68,13 @@ export type CodeProblem = {
+ /* ---------- files ---------- */
+ 
+ const isSafePath = (path: string) =>
+-  /^(src\/)?[\w.-]+\.(ts|json|md)$/.test(path) && !path.includes('..')
++  /^(src\/)?[\w.-]+\.(ts|py|json|md)$/.test(path) && !path.includes('..')
+ 
+ export const assertFiles = (files: CandidateFiles) => {
    const entries = Object.entries(files)
    if (entries.length > MAX_FILES) throw Error('Trop de fichiers')
    for (const [path, code] of entries) {
@@ -8887,6 +9082,42 @@ index d0468a6..c88a1b5 100644
        continue
      }
      if (!REMOTE_ALLOWED.test(specifier)) return specifier
+@@ -237,7 +235,7 @@ const readLimited = async (
+   }
+ }
+ 
+-const spawn = async (
++export const spawn = async (
+   dir: string,
+   args: string[],
+   command: string,
+@@ -289,7 +287,7 @@ const spawn = async (
+ }
+ 
+ /** runs `fn` in a fresh workspace, or `onRefused` when its graph leaves it */
+-const inWorkspace = async <T>(
++export const inWorkspace = async <T>(
+   files: CandidateFiles,
+   fn: (dir: string) => Promise<T>,
+   onRefused: (spec: string) => T,
+@@ -306,7 +304,7 @@ const inWorkspace = async <T>(
+   }
+ }
+ 
+-const refused = (command: string, spec: string): SandboxRun => ({
++export const refused = (command: string, spec: string): SandboxRun => ({
+   command,
+   chunks: [],
+   exitCode: 1,
+@@ -316,7 +314,7 @@ const refused = (command: string, spec: string): SandboxRun => ({
+   refusedImport: spec,
+ })
+ 
+-const withImportCheck = (run: SandboxRun): SandboxRun => {
++export const withImportCheck = (run: SandboxRun): SandboxRun => {
+   const err = run.chunks.filter((c) => c.stream === 'err').map((c) => c.text)
+     .join('')
+   const m = err.match(
 @@ -327,7 +325,7 @@ const withImportCheck = (run: SandboxRun): SandboxRun => {
  
  /* ---------- commands ---------- */
@@ -9033,7 +9264,7 @@ index d0468a6..c88a1b5 100644
    const out: Record<string, ProbeResponse[] | undefined> = {}
    for (const s of sequences) {
 diff --git a/api/schema.ts b/api/schema.ts
-index 263037b..54dcdf8 100644
+index 263037b..b47f476 100644
 --- a/api/schema.ts
 +++ b/api/schema.ts
 @@ -1,16 +1,8 @@
@@ -9083,7 +9314,7 @@ index 263037b..54dcdf8 100644
    assessmentInvitation: { type: 'TEXT', optional: true }, // candidate link
    companyId: { type: 'INTEGER', join: Company, optional: true },
    assessmentCreatedBy: { type: 'INTEGER', join: Member, optional: true },
-@@ -57,26 +46,23 @@ export const Candidate = createTable('candidate', {
+@@ -57,26 +46,24 @@ export const Candidate = createTable('candidate', {
    candidateToken: { type: 'TEXT' },
    candidatePseudonym: { type: 'TEXT' }, // e.g. "Candidat A7F3", never a name
    assessmentId: { type: 'INTEGER', join: Assessment },
@@ -9093,6 +9324,7 @@ index 263037b..54dcdf8 100644
 +  candidateStartedAt: { type: 'REAL', optional: true }, // when the candidate starts
    candidateSubmittedAt: { type: 'REAL', optional: true },
    candidateAutoSubmitted: { type: 'INTEGER', optional: true }, // 0 | 1
++  candidateLanguage: { type: 'TEXT', optional: true }, // typescript | python, chosen before the clock starts
    candidateTools: { type: 'JSON', optional: true }, // declared AI tools
    candidateFiles: { type: 'JSON', optional: true }, // CandidateFiles
    candidateSavedAt: { type: 'REAL', optional: true },
@@ -9119,7 +9351,7 @@ index 263037b..54dcdf8 100644
    candidateInvitation: { type: 'TEXT', optional: true }, // token of the link
    candidateInvitedAt: { type: 'REAL', optional: true },
    candidateInvitedBy: { type: 'INTEGER', optional: true }, // memberId
-@@ -87,7 +73,7 @@ export const Candidate = createTable('candidate', {
+@@ -87,7 +74,7 @@ export const Candidate = createTable('candidate', {
    candidateProfileUrl: { type: 'TEXT', optional: true }, // https://
    candidateNote: { type: 'TEXT', optional: true }, // internal, recruiter only
    candidateIdentitySource: { type: 'TEXT', optional: true }, // manual | cv
@@ -9128,7 +9360,7 @@ index 263037b..54dcdf8 100644
    candidateEmailSentAt: { type: 'REAL', optional: true },
    candidateEmailError: { type: 'TEXT', optional: true }, // last failure
  })
-@@ -140,6 +126,13 @@ export const Entry = initEntries(entries, relations, {
+@@ -140,6 +127,13 @@ export const Entry = initEntries(entries, relations, {
    MEMBER_CREATED: { companyId: 'company', memberId: 'member' },
    MEMBER_LOGIN: { companyId: 'company', memberId: 'member' },
    MEMBER_LOGIN_FAILED: { data: 'normalized email only, never a password' },
@@ -9142,7 +9374,7 @@ index 263037b..54dcdf8 100644
  
    /*
     * Assessment entries
-@@ -175,62 +168,49 @@ export const Entry = initEntries(entries, relations, {
+@@ -175,62 +169,49 @@ export const Entry = initEntries(entries, relations, {
      candidateId: 'invited candidate',
      trigger: sameAssessment,
    },
@@ -9213,7 +9445,7 @@ index 263037b..54dcdf8 100644
      trigger: sameCandidate,
    },
    DECISION_SAVED: {
-@@ -256,7 +236,7 @@ export type EntryListener = {
+@@ -256,7 +237,7 @@ export type EntryListener = {
  export const entryInsertListeners = Entry.insertListeners
  export const archiveEntry = Entry.archive
  
@@ -9222,7 +9454,7 @@ index 263037b..54dcdf8 100644
  const demoEmail = 'demo@defendable.invalid'
  const existingDemo = Member.sql<'memberId' | 'companyId', string>`
    SELECT memberId, companyId FROM member WHERE memberEmail = ?
-@@ -275,12 +255,12 @@ const demoHash = !existingDemo
+@@ -275,12 +256,12 @@ const demoHash = !existingDemo
    : undefined
  const demo = existingDemo ?? db.transaction(() => {
    const companyId = Company.insert({
@@ -9631,7 +9863,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..3b5e870 100644
+index 5f704a5..3352c99 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -9671,7 +9903,7 @@ index 5f704a5..3b5e870 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +48,38 @@
+@@ -45,41 +48,39 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
@@ -9683,6 +9915,7 @@ index 5f704a5..3b5e870 100644
      "@01edu/signal-router": "jsr:@01edu/signal-router@^0.2.3",
      "fflate": "npm:fflate@^0.8.3",
 -    "unpdf": "npm:unpdf@^1.8.1"
++    "pyodide": "npm:pyodide@0.28.2",
 +    "unpdf": "npm:unpdf@^1.8.1",
 +    "preact/": "npm:/preact@10.29.8/",
 +    "npm:@preact/signals@^2.9.0": "npm:@preact/signals@2.11.3",
@@ -9696,7 +9929,7 @@ index 5f704a5..3b5e870 100644
 -    },
 -    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts & deno task test --watch api web fixtures --reporter=dot & deno task fmt --watch api web fixtures migrations *.ts & deno task lint --watch api web fixtures migrations *.ts",
 +    "lint": "deno lint",
-+    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-bench.ts task-llm-check.ts task-llm-report-eval.ts task-llm-generate.ts task-llm-interview.ts task-llm-interview-eval.ts task-llm-extraction-eval.ts",
++    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-bench.ts task-llm-check.ts task-llm-report-eval.ts task-llm-generate.ts task-llm-interview.ts task-llm-interview-eval.ts task-llm-extraction-eval.ts api/py-runner.ts",
 +    "fmt": "deno fmt",
 +    "test": "deno test --env-file=.env-test -A --no-check",
 +    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts",
@@ -11967,7 +12200,7 @@ index afdabfc..1b8a3f9 100644
    api['POST/api/candidate/cv'].fetch({ assessment, data: await base64(file) })
  
 diff --git a/web/lib/candidate-store.ts b/web/lib/candidate-store.ts
-index ed969e7..144c216 100644
+index ed969e7..4599ca8 100644
 --- a/web/lib/candidate-store.ts
 +++ b/web/lib/candidate-store.ts
 @@ -1,23 +1,18 @@
@@ -11987,7 +12220,7 @@ index ed969e7..144c216 100644
 -  CandidateView,
 -  IntegrityKind,
 -} from '/web/types.ts'
-+import type { CandidateFiles, CandidateView } from '/web/types.ts'
++import type { CandidateFiles, CandidateView, Language } from '/web/types.ts'
  
  const meApi = api['GET/api/candidate/me'].signal()
  const clockOffset = signal(0)
@@ -12024,12 +12257,15 @@ index ed969e7..144c216 100644
  
  const invitationApi = api['GET/api/invitation'].signal()
  export const invitation = computed(() => invitationApi.$.value.data)
-@@ -74,18 +70,16 @@ effect(() => {
+@@ -74,18 +70,24 @@ effect(() => {
    invitationApi.fetch({ invitation: url.params.invitation ?? '' })
  })
  
 -/** C1 "Commencer": creates the session, the clock starts on the server */
 -export const startBuild = async (demo = false) => {
++/** the language chosen on the welcome page: fixed once the clock starts */
++export const chosenLanguage = signal<Language | undefined>()
++
 +/** "Begin": creates the session, the clock starts on the server */
 +export const startBuild = async () => {
    const token = invitation.peek()?.invitation
@@ -12037,10 +12273,13 @@ index ed969e7..144c216 100644
 -    throw Error(t('Lien d’évaluation invalide', 'Invalid assessment link'))
 +    throw Error('Invalid assessment link')
    }
--  setMe(
+   setMe(
 -    await api['POST/api/candidate/start'].fetch({ invitation: token, demo }),
--  )
-+  setMe(await api['POST/api/candidate/start'].fetch({ invitation: token }))
++    await api['POST/api/candidate/start'].fetch({
++      invitation: token,
++      language: chosenLanguage.peek(),
++    }),
+   )
  }
  
 -/* ---------- C3, C4 ---------- */
@@ -12048,7 +12287,7 @@ index ed969e7..144c216 100644
  
  export const submitBuild = async (
    tools: string[],
-@@ -100,21 +94,7 @@ export const submitBuild = async (
+@@ -100,21 +102,7 @@ export const submitBuild = async (
      }),
    )
  
@@ -12816,11 +13055,21 @@ index 71c7b4d..e3beb2c 100644
        </p>
      </Card>
 diff --git a/web/pages/candidate/consent-page.tsx b/web/pages/candidate/consent-page.tsx
-index a8ac71c..4981097 100644
+index a8ac71c..5a37d9c 100644
 --- a/web/pages/candidate/consent-page.tsx
 +++ b/web/pages/candidate/consent-page.tsx
-@@ -9,21 +9,19 @@ import {
+@@ -2,63 +2,60 @@ import { paths } from '/web/paths.ts'
+ import { signal } from '@preact/signals'
+ import { navigate } from '/web/lib/router-signal.ts'
+ import {
++  chosenLanguage,
+   invitation,
+   invitationError,
+   me,
+   startBuild,
  } from '/web/lib/candidate-store.ts'
++import { Segmented } from '/web/ui/form.tsx'
++import type { Language } from '/web/types.ts'
  import { notify } from '/web/ui/notifications.tsx'
  import { Spinner } from '/web/ui/spinner.tsx'
 -import { demoMode } from '/web/lib/demo.ts'
@@ -12842,7 +13091,13 @@ index a8ac71c..4981097 100644
  
  const understood = signal(false)
  const accepted = signal(false)
-@@ -32,33 +30,24 @@ const DATA = () =>
+ 
++const LANGUAGE_NAMES: Record<Language, string> = {
++  typescript: 'TypeScript',
++  python: 'Python',
++}
++
+ const DATA = () =>
    [
      [
        Database,
@@ -12867,13 +13122,13 @@ index a8ac71c..4981097 100644
 -        'No identity data sent to the model.',
 -      ),
 +      'No identity data sent to the model.',
-     ],
--    [VideoOff, t('Ni webcam ni micro.', 'No webcam, no microphone.')],
--    [CalendarClock, t('Conservation 30 jours.', 'Kept for 30 days.')],
++    ],
 +    [
 +      Mic,
 +      'The microphone is used only during the interview. The audio is not stored, only its transcript. No webcam.',
-+    ],
+     ],
+-    [VideoOff, t('Ni webcam ni micro.', 'No webcam, no microphone.')],
+-    [CalendarClock, t('Conservation 30 jours.', 'Kept for 30 days.')],
 +    [CalendarClock, 'Kept for 30 days.'],
      [
        UserCheck,
@@ -12885,7 +13140,7 @@ index a8ac71c..4981097 100644
      ],
    ] as const
  
-@@ -108,22 +97,20 @@ const Check = (
+@@ -108,22 +105,20 @@ const Check = (
    </label>
  )
  
@@ -12912,7 +13167,7 @@ index a8ac71c..4981097 100644
        : paths.workspace
      navigate({ href, params: { invitation: null } })
    } catch (err) {
-@@ -133,7 +120,7 @@ export const beginBuild = async () => {
+@@ -133,7 +128,7 @@ export const beginBuild = async () => {
    }
  }
  
@@ -12921,7 +13176,7 @@ index a8ac71c..4981097 100644
  export const ConsentPage = () => {
    const ok = understood.value && accepted.value
    const info = invitation.value
-@@ -143,10 +130,7 @@ export const ConsentPage = () => {
+@@ -143,10 +138,7 @@ export const ConsentPage = () => {
          {invitationError.value
            ? (
              <p tw='m-0 card px-5 py-4 text-[14px] text-content-secondary'>
@@ -12933,7 +13188,7 @@ index a8ac71c..4981097 100644
              </p>
            )
            : <Spinner tw='w-5 h-5 text-content-tertiary' />}
-@@ -168,27 +152,14 @@ export const ConsentPage = () => {
+@@ -168,27 +160,14 @@ export const ConsentPage = () => {
            </span>
            <p tw='m-0 text-[15px] font-medium'>
              {closed
@@ -12968,7 +13223,7 @@ index a8ac71c..4981097 100644
            </p>
            {state === 'started' && (
              <button
-@@ -199,7 +170,7 @@ export const ConsentPage = () => {
+@@ -199,7 +178,7 @@ export const ConsentPage = () => {
                onClick={beginBuild}
              >
                <Play tw='w-[15px] h-[15px]' />
@@ -12977,7 +13232,7 @@ index a8ac71c..4981097 100644
              </button>
            )}
          </article>
-@@ -216,64 +187,43 @@ export const ConsentPage = () => {
+@@ -216,64 +195,43 @@ export const ConsentPage = () => {
            </span>
            {firstName && (
              <span tw='text-[14px] text-content-secondary'>
@@ -13052,7 +13307,29 @@ index a8ac71c..4981097 100644
              </p>
              <ul tw='list-none m-0 p-0 grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2 text-[13px] text-content-secondary'>
                {DATA().map(([Icon, text]) => (
-@@ -287,19 +237,13 @@ export const ConsentPage = () => {
+@@ -284,22 +242,35 @@ export const ConsentPage = () => {
+               ))}
+             </ul>
+           </section>
++          {info.languages.length > 1 && (
++            <section tw='flex flex-col gap-2.5 pt-3 border-t border-border-primary'>
++              <h2 tw='m-0 font-main text-[14px] font-semibold tracking-normal'>
++                {'Your language'}
++              </h2>
++              <p tw='m-0 text-[13px] text-content-secondary'>
++                {'Choose the language you will write your program in. Your editor opens with it, and you cannot change it once the timer has started.'}
++              </p>
++              <Segmented
++                label='Language'
++                value={chosenLanguage.value ?? info.languages[0]}
++                options={info.languages.map((l) =>
++                  [l, LANGUAGE_NAMES[l]] as const
++                )}
++                onChange={(l) => (chosenLanguage.value = l)}
++                tw='self-start w-[260px]'
++              />
++            </section>
++          )}
            <div tw='flex flex-col gap-2 pt-3 border-t border-border-primary'>
              <Check
                value={understood}
@@ -13074,7 +13351,7 @@ index a8ac71c..4981097 100644
              />
            </div>
          </div>
-@@ -310,15 +254,12 @@ export const ConsentPage = () => {
+@@ -310,15 +281,12 @@ export const ConsentPage = () => {
              tw='text-[13px] inline-flex items-center gap-[5px]'
            >
              <Accessibility tw='w-3.5 h-3.5' />
@@ -13092,7 +13369,7 @@ index a8ac71c..4981097 100644
            </span>
            <button
              type='button'
-@@ -330,10 +271,7 @@ export const ConsentPage = () => {
+@@ -330,10 +298,7 @@ export const ConsentPage = () => {
              }}
            >
              <Play tw='w-[15px] h-[15px]' />
@@ -17991,7 +18268,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..0e22fb8 100644
+index 83f3535..010904b 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,13 @@
@@ -18024,7 +18301,7 @@ index 83f3535..0e22fb8 100644
    expected: string
    visibility: Visibility
    requirementIds: string[]
-@@ -50,7 +54,7 @@ export type AssessmentSpec = {
+@@ -50,19 +54,43 @@ export type AssessmentSpec = {
    jobDescription: string
    context: string
    mission: string
@@ -18033,8 +18310,15 @@ index 83f3535..0e22fb8 100644
    candidateBrief: { context: string; mission: string }
    constraints: string[]
    routes: ApiRoute[]
-@@ -59,10 +63,21 @@ export type AssessmentSpec = {
+   requirements: Requirement[]
+   skills: Skill[]
    tests: TestCase[]
++  /** `api` when missing */
++  kind?: AssessmentKind
++  /** the languages a candidate may choose (kind `program`) */
++  languages?: Language[]
++  /** what the program reads and what it writes (kind `program`) */
++  io?: { input: string; output: string }
  }
  
 +export type TestResult = {
@@ -18048,6 +18332,13 @@ index 83f3535..0e22fb8 100644
 +
 +export type CandidateFiles = Record<string, string>
 +
++/** what the candidate writes the program in (chosen before the timer starts) */
++export type Language = 'typescript' | 'python'
++export const LANGUAGES: Language[] = ['typescript', 'python']
++
++/** `api`: an HTTP handler, TypeScript only. `program`: input to output. */
++export type AssessmentKind = 'api' | 'program'
++
  /** A model call that failed (retried, or replaced by another model) */
  export type AiFailure = {
 -  model: string // label: "Nemotron 3 Super"
@@ -18057,7 +18348,7 @@ index 83f3535..0e22fb8 100644
    detail?: string // technical message, for the curious
    ms: number // time lost on this attempt
  }
-@@ -74,54 +89,32 @@ export type AiTrace = {
+@@ -74,54 +102,32 @@ export type AiTrace = {
    tokensIn: number
    tokensOut: number
    at: string // ISO date
@@ -18119,7 +18410,7 @@ index 83f3535..0e22fb8 100644
  }
  
  export type GenerationInput = {
-@@ -130,68 +123,79 @@ export type GenerationInput = {
+@@ -130,68 +136,79 @@ export type GenerationInput = {
    durationMin: number
    skills: string[]
    domain?: string
@@ -18229,7 +18520,7 @@ index 83f3535..0e22fb8 100644
  /** what the personal link allows: start, resume, or nothing any more */
  export type InvitationState =
    | 'invited'
-@@ -200,6 +204,7 @@ export type InvitationState =
+@@ -200,6 +217,7 @@ export type InvitationState =
    | 'expired'
    | 'revoked'
  
@@ -18237,8 +18528,15 @@ index 83f3535..0e22fb8 100644
  export type Invitation = {
    invitation: string
    title: string
-@@ -210,11 +215,18 @@ export type Invitation = {
+@@ -208,15 +226,29 @@ export type Invitation = {
+   durationMin: number
+   firstName?: string
    state: InvitationState
++  kind: AssessmentKind
++  /** the languages to choose from, the first is the default */
++  languages: Language[]
++  /** the language chosen, once the clock has started */
++  language?: Language
  }
  
 -/** the candidate's own session: never the hidden tests nor answer keys */
@@ -18257,8 +18555,12 @@ index 83f3535..0e22fb8 100644
 -  demo: boolean
    /** server clock, to align the timers */
    now: number
++  language: Language
++  kind: AssessmentKind
    assessment: {
-@@ -233,157 +245,100 @@ export type CandidateView = {
+     title: string
+     company: string
+@@ -233,157 +265,100 @@ export type CandidateView = {
    submittedAt?: number
    autoSubmitted?: boolean
    declaredTools: string[]
