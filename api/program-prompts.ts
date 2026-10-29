@@ -211,6 +211,7 @@ The candidate reads only the requirements, the io contract and the constraints o
 - The expected output is NEVER empty: choose inputs for which the program writes something (an input whose right answer is nothing is not a test, because a program that writes nothing would pass it). When the brief says what is written for an empty case, use that sentence.
 - Never check an error message text or any detail the scenario does not state.
 - When a requirement is ambiguous, do not test its ambiguous part.
+- A test about a repeated identifier, key or name repeats it character for character, with the same capital letters: "A01" twice, never "xxx" then "XXX". A test that says an invalid line does not reserve its identifier uses a line that is invalid for another reason than the identifier (a bad quantity, a bad product), then a valid line with exactly the same identifier.
 
 ## Texts
 - title: 80 characters at most, short, no id.

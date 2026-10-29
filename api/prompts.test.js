@@ -214,6 +214,13 @@ test('the prompts of a program follow their schemas too', async (step) => {
     eq(prompt.includes('standard input'), true)
     eq(programTestsPrompt(empty, 'Harder').includes('Harder'), true)
   })
+  await step('a repeated identifier is written the same way twice', () => {
+    const program = programTestsPrompt(empty)
+    eq(program.includes('character for character'), true)
+    eq(program.includes('never "xxx" then "XXX"'), true)
+    const api = testsPrompt({ routes: [], requirements: [], constraints: [] })
+    eq(api.includes('character for character'), true)
+  })
   await step('a program is not told it is an API', () => {
     for (
       const p of [

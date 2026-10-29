@@ -156,7 +156,21 @@ const lines = [...stock].filter(([, q]) => q !== 0)
   .map(([p, q]) => \`\${p} \${q}\`);
 console.log(lines.join("\\n"));`
 
-const withModel = async (fn, extraTests = []) => {
+/** flawed variants of the reference, one per hidden test: what a model would write */
+const FLAWED = {
+  // accepts a product written with capital letters
+  T5: referenceSolution.replace('([a-z]+)', '([a-zA-Z]+)'),
+  // a quantity never goes below zero
+  T6: referenceSolution.replace(
+    'stock.set(m[2], (stock.get(m[2]) ?? 0) + (m[1] === "IN" ? q : -q));',
+    'stock.set(m[2], Math.max(0, (stock.get(m[2]) ?? 0) + (m[1] === "IN" ? q : -q)));',
+  ),
+}
+
+/** a "flawed" variant that behaves like the right solution: the test misses it */
+const COSMETIC = referenceSolution + '\n// a comment, nothing else changes'
+
+const withModel = async (fn, extraTests = [], variants = FLAWED) => {
   const calls = []
   const answer = (prompt) => {
     if (prompt.includes('Analyse the need')) {
@@ -181,6 +195,11 @@ const withModel = async (fn, extraTests = []) => {
           reason: 'The brief never says that two movements make three.',
         }],
       })
+    }
+    if (prompt.includes('Write a variant of the correct solution')) {
+      const id = prompt.match(/hidden test (T\d+)/)[1]
+      const code = typeof variants === 'string' ? variants : variants[id]
+      return '```ts\n' + code + '\n```'
     }
     if (prompt.includes('Write the solution of this brief')) {
       return '```ts\n' + referenceSolution + '\n```'
@@ -351,4 +370,77 @@ test('program generation: an API assessment is unchanged', async (step) => {
     eq(state.spec.format, 'HTTP API in TypeScript (Deno)')
     eq(state.spec.routes.length > 0, true)
   })
+})
+
+test('program generation: the hidden tests are checked against flawed solutions', async (step) => {
+  await step('a test that fails on its flawed variant is caught', async () => {
+    const token = await signup('TrapsCaught')
+    await withModel(async () => {
+      const res = await call('POST', '/api/assessment', input, token)
+      const state = await settled((await res.json()).id, token)
+      eq(state.reference.traps, [
+        { id: 'T5', verdict: 'caught' },
+        { id: 'T6', verdict: 'caught' },
+      ])
+      const { checks, blocked } = computeChecks(
+        state.spec,
+        new Set(),
+        state.starterFails,
+        state.reference,
+      )
+      eq(blocked, false)
+      eq(
+        checks.some((c) =>
+          c.label === 'Every hidden test catches a flawed solution'
+        ),
+        true,
+      )
+    })
+  })
+
+  await step(
+    'a test that passes on its flawed variant is missed, and blocks',
+    async () => {
+      const token = await signup('TrapsMissed')
+      await withModel(
+        async (calls) => {
+          const res = await call('POST', '/api/assessment', input, token)
+          const state = await settled((await res.json()).id, token)
+          eq(
+            state.reference.traps.map((t) => [t.id, t.verdict]),
+            [['T5', 'missed'], ['T6', 'missed']],
+          )
+          const { checks, blocked } = computeChecks(
+            state.spec,
+            new Set(),
+            state.starterFails,
+            state.reference,
+          )
+          eq(blocked, true)
+          eq(
+            checks.at(-1).label,
+            'Every hidden test catches a flawed solution (T5, T6 do not)',
+          )
+          // the draft was rewritten once from that problem, and the model was told
+          eq(
+            calls.some((c) =>
+              c.prompt.includes('still passes them') &&
+              c.prompt.includes('written the same way twice')
+            ),
+            true,
+          )
+          // deleting the tests the recruiter judges useless unblocks the approval
+          const lifted = computeChecks(
+            state.spec,
+            new Set(['T5', 'T6']),
+            state.starterFails,
+            state.reference,
+          )
+          eq(lifted.blocked, false)
+        },
+        [],
+        COSMETIC,
+      )
+    },
+  )
 })

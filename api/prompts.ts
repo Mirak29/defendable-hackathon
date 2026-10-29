@@ -270,6 +270,7 @@ The candidate reads only the requirements, the routes and the constraints of the
 - Never check the text of an error message: the status code alone is enough, or "error: non-empty string".
 - Never check a field the scenario does not name. When the scenario gives no body shape, check the status code only.
 - When a requirement is ambiguous, do not test its ambiguous part.
+- A test about a repeated alias, identifier or key repeats it character for character, with the same capital letters, never two values that differ only by case or spelling.
 
 ## Grammar of a step (the software reads it strictly)
 - request: METHOD, one space, a path starting with "/" (a query string is allowed: /rooms?floor=2), then optionally one space and a JSON body on a single line, then optionally " (×N)" to send the same request N times in a row (N = 2 to 5; the expectation applies to the last response).
@@ -406,6 +407,47 @@ export const fixPrompt = (
   diagnosis: string,
 ) =>
   `<brief>\n${brief}\n</brief>\n\nYour solution:\n${FENCE}ts\n${code}\n${FENCE}\n\nIt fails these tests, which the brief justifies:\n${failures}\n\nDiagnosis of a reviewer:\n${diagnosis}\n\nFix the solution so that these tests pass, without breaking the others and without adding behaviour the brief does not say.\n\n${CODE_RULES}`
+
+/* ---------- do the hidden tests catch the shortcut they name ---------- */
+
+export const TRAP_SETTER =
+  `You are an experienced developer who knows how a quick or AI-generated solution goes wrong. You write the flawed variant of a correct solution, to check that a test really catches that flaw.`
+
+/**
+ * A variant of the right solution that takes the shortcut a hidden test says
+ * it catches, while the public tests still pass: if the hidden test passes on
+ * it too, the test does not do what it claims.
+ */
+export const trapPrompt = (
+  brief: string,
+  code: string,
+  test: { id: string; condition: string; steps: string },
+  rules: string,
+  feedback?: string,
+) =>
+  `<brief>
+${brief}
+</brief>
+
+A correct solution of the brief:
+${FENCE}ts
+${code}
+${FENCE}
+
+The hidden test ${test.id} says it catches this shortcut: "${test.condition}".
+The test:
+${test.steps}
+
+# Task
+Write a variant of the correct solution that falls into exactly this shortcut, the way a quick or AI-generated solution would, and that still passes every public test of the brief. It must give a different answer than the correct solution for the input of the test ${test.id}. Change as little as possible: the same file, the same structure, one flawed decision.${
+    feedback
+      ? `
+
+Your previous variant failed: ${feedback}`
+      : ''
+  }
+
+${rules}`
 
 /* ---------- fairness check: the judge ---------- */
 

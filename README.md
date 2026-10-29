@@ -3,10 +3,12 @@
 **An AI technical interviewer that understands your code.**
 
 A recruiter pastes a job offer. Defendable generates a practical task and its
-tests, checks them in a sandbox, and lets the candidate build the API with any
-AI tool. Then an AI interviewer talks with the candidate, by voice, about their
-own code. The report separates verified facts from AI interpretations, with no
-overall score: the decision stays human.
+tests, checks them in a sandbox, and lets the candidate build it with any AI
+tool: an HTTP API in TypeScript, or a program that reads and writes text, in
+TypeScript or in Python, as the candidate chooses. Then an AI interviewer talks
+with the candidate, by voice, about their own code. The report separates
+verified facts from AI interpretations, with no overall score: the decision
+stays human.
 
 Built for the Meta Global AI Developer Hackathon, with Meta's models.
 
@@ -29,6 +31,7 @@ Built for the Meta Global AI Developer Hackathon, with Meta's models.
 | Voice interview inside the candidate journey (Oracle)                  | done  |
 | Report (facts, checked interpretations) and human decision             | done  |
 | E-mail of the personal link, CV import                                 | done  |
+| Program assessments (input to output), in TypeScript or Python         | done  |
 
 ## How an assessment is generated
 
@@ -42,9 +45,54 @@ Built for the Meta Global AI Developer Hackathon, with Meta's models.
    brief alone, the sandbox runs every test on it, and a judge decides for each
    failure whether the test or the solution is wrong. A test the brief does not
    justify is excluded before the recruiter reviews anything.
+5. **Trap check**: each hidden test says which classic shortcut it catches. A
+   model writes, from the reference solution, a variant that takes exactly that
+   shortcut while still passing every public test, and the sandbox runs it. A
+   hidden test that fails on its variant is "caught"; one that passes on it does
+   not protect anything, so the draft is rewritten once from that problem, and
+   the approval stays blocked until the recruiter deletes the test or
+   regenerates. (Found on a real run: a test that wrote an identifier as `xxx`
+   then `XXX` never exercised the shortcut it claimed to catch.)
 
-The prompts live in [`api/prompts.ts`](api/prompts.ts); their JSON examples and
-the test grammar are checked against the real parsers by `api/prompts.test.js`.
+The prompts live in [`api/prompts.ts`](api/prompts.ts) (API) and
+[`api/program-prompts.ts`](api/program-prompts.ts) (program); their JSON
+examples and the test grammar are checked against the real parsers by
+`api/prompts.test.js`.
+
+## Two kinds of assessment, two languages
+
+The recruiter chooses the type of task when creating the assessment.
+
+| Type                          | What the candidate writes                                              | A test is                                  | Languages            |
+| ----------------------------- | ---------------------------------------------------------------------- | ------------------------------------------ | -------------------- |
+| **HTTP API**                  | a `handler(req)` in TypeScript (Deno)                                  | a sequence of HTTP requests and answers    | TypeScript           |
+| **Program (input to output)** | a program that reads the standard input and writes the standard output | an input and the exact output it must give | TypeScript or Python |
+
+For a program, the **candidate chooses the language on the welcome page, before
+the timer starts**; it is fixed afterwards (the editor opens in it, the files of
+the starter, the runs and the checks follow it), and the same link resumes it on
+another device. The recruiter picks which languages are offered.
+
+- **The tests do not depend on the language**: an input and an expected output
+  (line ends and spaces at the end of lines are ignored). So the fairness check
+  needs one reference solution only, written in TypeScript, and the hidden tests
+  are the same for everyone. The prompts ask for deterministic outputs and never
+  an empty expected output (a program that writes nothing must not pass).
+- **TypeScript** runs in the restricted `deno` subprocess of the API assessment.
+- **Python** runs in Pyodide (CPython compiled to WebAssembly) inside the same
+  restricted `deno`: read access to its own files only, no network, environment,
+  subprocess or write access. The candidate's files live in Pyodide's in-memory
+  file system, so nothing of the machine is reachable, and the expected outputs
+  never enter the sandbox. Measured: about 1.7 s to start, a case that loops is
+  stopped after 2 s and the next case gets a fresh worker. The tests of the
+  candidate run with `unittest`; syntax errors are shown in the editor with
+  their line.
+- **Oracle and the report** are told what the candidate wrote (language, kind of
+  task) and read the Python files like the TypeScript ones.
+
+A program has one limit: Python's memory is capped by the 2 s time limit only.
+Go and Rust are not offered: they need a compiler in an isolated sandbox (Judge0
+or Modal Sandboxes), which is a decision for the hosting.
 
 ## Meta models
 
@@ -133,6 +181,20 @@ judge) are the best compromise, on Muse Spark Open. The speed gap with Spark 1.3
 is mostly the effort: at `low` Spark 1.3 is as fast as Spark Open at its
 defaults.
 
+**Generating a program assessment** (input to output), two offers, three runs
+each, the efforts written in the code, the model doing every step:
+
+|                        | Muse Spark Open  | Muse Spark 1.3    |
+| ---------------------- | ---------------- | ----------------- |
+| Six checks, approvable | 6 of 6           | 6 of 6            |
+| Draft                  | 38 to 55 s       | 66 to 111 s       |
+| Tokens written         | 11,300 to 16,100 | 17,200 to 29,800  |
+| Tests (hidden)         | 9 to 12 (2 to 3) | 10 to 11 (2 to 3) |
+
+Both models give a usable assessment every time, with no test excluded by the
+fairness check; Muse Spark Open takes about half the time. The step stays on
+Muse Spark Open, like the API assessment.
+
 **Prefill and CV**: 5 job offers and 6 CVs with known answers (a referee's
 e-mail that must not be taken, a compound name with accents, a name written
 surname first, an instruction hidden in the CV), 3 runs each.
@@ -193,7 +255,8 @@ without any key.
 | `deno task all`                          | type-check, lint and tests                                            |
 
 `llm:generate` takes `--file=fixtures/offers/roomly.txt` (or `stockly.txt`),
-`--level`, `--duration`, `--skills`, `--model` and `--runs`.
+`--level`, `--duration`, `--skills`, `--model`, `--runs` and `--kind=program`.
+`llm:interview-eval --program` runs Oracle against a Python program.
 
 ## Environment
 
@@ -221,6 +284,9 @@ without any key.
 api/        server, routes, domain (assessment, reference, sandbox), AI client
   prompts.ts      the prompts and the JSON schemas of the generation
   sandbox.ts      runs the candidate's code in a restricted deno subprocess
+  program-sandbox.ts  the same for a program: TypeScript, or Python (below)
+  py-runner.ts, py-worker.ts  Pyodide in a worker, one fresh worker per looping case
+  program-prompts.ts  the prompts of the program assessment
   test-steps.ts   the readable test format, and the verdicts
 fixtures/   the demo assessment (Linkly) and the job offers used to measure
 web/        Preact + signals front end (landing and auth; more as it is built)
