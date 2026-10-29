@@ -16,14 +16,34 @@ docker --version || curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER   # then log out and in again
 ```
 
-Disk: 40 GB is comfortable (the image is about 3 GB, with the voice model in
+Disk: 40 GB is comfortable (the image is about 1.2 GB, with the voice model in
 it).
 
-## 2. The code and the secrets
+## 2. The image, the files and the secrets
+
+The image is built and published by GitHub, not on the machine: the workflow
+`.github/workflows/publish.yml` runs at every push to `master` (or by hand, in
+the Actions tab) and publishes `ghcr.io/mirak29/defendable:latest`. The build
+checks the voice, SQLite, Pyodide and the sandboxes, and the server is cached so
+that it downloads nothing when it starts: a published image works offline. The
+big layers (dependencies, voice weights) are cached: editing the code publishes
+about 50 MB.
+
+The image is **public** (it holds the code, no secret: the keys come from
+`.env.production` at run time), so the machine pulls it without any login. A
+package is private the first time it is published: once, after the first run of
+the workflow, GitHub, your profile, Packages, `defendable`, Package settings,
+Change visibility, Public.
+
+Then only a few files are needed, copied from the repository (for example with
+`scp`) into one folder: `docker-compose.yml`, `deploy/backup.sh`,
+`.env.production.example` and, for the `https` profile only, `deploy/Caddyfile`.
 
 ```bash
-git clone https://github.com/Mirak29/defendable && cd defendable
+mkdir -p ~/defendable/deploy && cd ~/defendable
+# copy the files here (deploy/backup.sh and deploy/Caddyfile into deploy/), then:
 cp .env.production.example .env.production
+chmod 600 .env.production
 nano .env.production   # REDIRECT_URI, the keys, DEMO_PASSWORD
 ```
 
@@ -32,17 +52,17 @@ personal links of the candidates start with it. Cookies are `Secure`, so the app
 only works over HTTPS. `.env.production` is git-ignored and is never copied into
 the image.
 
+(Without the registry: `git clone` the repository on the machine and use
+`docker compose up -d --build` instead of `pull`: the same image is built
+there.)
+
 ## 3. Start
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f app      # "tts-ready" then "server-start"
 ```
-
-The first build downloads everything the server needs offline (the native SQLite
-library, the voice model, Pyodide) and **runs a check of each**: if the build
-succeeds, the sandboxes and the voice work in the image. It takes several
-minutes; the next builds reuse the layers.
 
 The app listens on `127.0.0.1:8000` of the machine. Make it public over HTTPS in
 one of these ways:
@@ -87,9 +107,10 @@ interview asks for the microphone (it needs HTTPS).
     -c 'rm -f /data/defendable.db-wal /data/defendable.db-shm; cp /b/defendable-X.db /data/defendable.db'
   docker compose start app
   ```
-- **Update**: `git pull && docker compose up -d --build`. The database stays in
-  the volume. A change of the database columns needs a new database (there is no
-  migration): back it up, then `docker compose down -v` deletes the volume.
+- **Update**: push to `master`, wait for the `publish` workflow (green), then on
+  the machine `docker compose pull && docker compose up -d`. The database stays
+  in the volume. A change of the database columns needs a new database (there is
+  no migration): back it up, then `docker compose down -v` deletes the volume.
 - **Logs**: `docker compose logs --since 1h app`.
 - **Do not stop the machine** while the link is with the judges: the address of
   a stopped machine can change.

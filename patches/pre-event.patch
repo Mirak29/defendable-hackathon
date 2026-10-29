@@ -345,33 +345,46 @@ index 395848d..fb37eb3 100644
 +- Icons are inline Lucide SVGs in `web/assets/icons.tsx`; add new ones there,
 +  keep the list sorted.
 diff --git a/Dockerfile b/Dockerfile
-index e207b60..a102546 100644
+index e207b60..1f888aa 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -1,44 +1,42 @@
+@@ -1,44 +1,65 @@
 -# Unlike tournament, the image keeps the Deno runtime (no `deno compile`):
 -# the sandbox (api/sandbox.ts) runs the candidate's code in a `deno`
 -# subprocess (Deno.execPath()), offline (--cached-only), so the modules the
 -# candidate may import (jsr:@std/assert) are cached at build time.
 -FROM denoland/deno:alpine
--WORKDIR /app
 +# Defendable, production image: one process serves the API, the voice WebSocket
 +# and the built web app. Everything the server needs offline (native SQLite,
 +# the voice model, Pyodide, the dependency of the candidates' tests) is fetched
 +# here, while the image is built, and checked by deploy/warm.ts.
 +ARG DENO_VERSION=2.9.8
++
++# --- the web app, minified: esbuild stays in this stage, not in the image ---
++FROM denoland/deno:${DENO_VERSION} AS web
++USER root
++RUN mkdir -p /app && chown deno:deno /app
++USER deno
++WORKDIR /app
++COPY --chown=deno:deno deno.json ./
++RUN deno install
++COPY --chown=deno:deno . .
++RUN deno run -A task-prod.ts
++
++# --- the server ---
 +FROM denoland/deno:${DENO_VERSION}
- 
--# SQLite for @db/sqlite (FFI), like tournament
--RUN apk add --no-cache sqlite-libs
--ENV DENO_SQLITE_PATH=/usr/lib/libsqlite3.so.0
++
 +# a single cache shared by the build and the server (the sandbox runs offline)
 +ENV DENO_DIR=/deno-dir
 +USER root
 +RUN mkdir -p /app /data /deno-dir && chown -R deno:deno /app /data /deno-dir
 +USER deno
-+WORKDIR /app
+ WORKDIR /app
  
+-# SQLite for @db/sqlite (FFI), like tournament
+-RUN apk add --no-cache sqlite-libs
+-ENV DENO_SQLITE_PATH=/usr/lib/libsqlite3.so.0
+-
 -COPY deno.json .
 -COPY qa/deno.json qa/deno.json
 -COPY build-config.ts task-prod.ts prod-server.ts ./
@@ -379,18 +392,14 @@ index e207b60..a102546 100644
 -COPY web/ web/
 -COPY fixtures/ fixtures/
 -COPY migrations/ migrations/
-+# the dependencies first: this layer is rebuilt only when deno.json changes
-+COPY --chown=deno:deno deno.json ./
-+RUN deno install
- 
+-
 -# Build the front (dist/), then cache the server and the candidate's modules
 -RUN deno run -A task-prod.ts \
 -  && deno cache prod-server.ts \
 -  && echo 'import "jsr:@std/assert@1"' > /tmp/candidate-deps.ts \
 -  && deno cache /tmp/candidate-deps.ts \
 -  && rm /tmp/candidate-deps.ts
-+COPY --chown=deno:deno . .
- 
+-
 -ENV APP_ENV=prod
 -ENV PORT=8000
 -# path the app is served under (<base href>), required by @01edu/api in prod
@@ -401,19 +410,36 @@ index e207b60..a102546 100644
 -ENV SEED_DEMO=1
 -ENV DEMO_ACCESS=1
 -RUN mkdir -p /app/data
-+# the web app, minified (dist/)
-+RUN deno run -A task-prod.ts
-+# the one module the tests of the candidates import: the sandbox is offline
-+RUN deno cache jsr:@std/assert@1
-+# the native SQLite library, the voice model (326 MB), Pyodide and the sandbox
-+# are loaded once here and checked: the build fails if one of them does not work
-+RUN APP_ENV=dev DATABASE_PATH=/tmp/warm.db deno run -A --unstable-ffi deploy/warm.ts \
-+  && rm -f /tmp/warm.db*
- 
+-
 -# Required at run time: REDIRECT_URI (public URL of the app). Optional:
 -# NVIDIA_API_KEY and GEMINI_API_KEY (without them, every AI step replays the
 -# recorded answers), RESEND_API_KEY and RESEND_FROM (the personal link is sent
 -# by e-mail). `deno task deploy` keeps them in ~/defendable/.env-prod.
++# the dependencies first: this layer is rebuilt only when deno.json changes.
++# What the server never loads on Linux x86-64 is removed in the same layer.
++COPY --chown=deno:deno deno.json ./
++COPY --chown=deno:deno deploy/prune.sh deploy/prune.sh
++RUN deno install && sh deploy/prune.sh
++
++# what is big and does not change with the code, fetched before it is copied:
++# editing the code then rebuilds (and uploads) none of it. The native SQLite
++# library, the voice weights (326 MB), and the one module the tests of the
++# candidates import (the sandbox is offline).
++COPY --chown=deno:deno deploy/fetch.ts deploy/fetch.ts
++RUN deno cache jsr:@std/assert@1 \
++  && deno run -A --unstable-ffi deploy/fetch.ts
++
++COPY --chown=deno:deno . .
++COPY --from=web --chown=deno:deno /app/dist ./dist
++
++# everything the server imports is cached now: it downloads nothing when it starts
++RUN deno cache --unstable-ffi prod-server.ts
++
++# Pyodide and the sandboxes are loaded and checked, the voice model run once:
++# the build fails if one of them does not work
++RUN APP_ENV=dev DATABASE_PATH=/tmp/warm.db deno run -A --unstable-ffi deploy/warm.ts \
++  && rm -f /tmp/warm.db*
++
 +ENV APP_ENV=prod \
 +    PORT=8000 \
 +    BASE_URL=/ \

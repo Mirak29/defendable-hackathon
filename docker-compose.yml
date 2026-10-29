@@ -4,8 +4,10 @@
 # See deploy/README.md.
 services:
   app:
+    # the image is built and published by .github/workflows/publish.yml: the
+    # machine pulls it (`docker compose pull`); `--build` builds it here instead
     build: .
-    image: defendable:latest
+    image: ghcr.io/mirak29/defendable:latest
     restart: unless-stopped
     env_file: .env.production
     # local only: Caddy, a tunnel or the host's own proxy reaches it from there
