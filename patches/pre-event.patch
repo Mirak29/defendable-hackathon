@@ -1917,10 +1917,10 @@ index 2d5d576..aad29ec 100644
    })
  })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..e5c344e 100644
+index 9a19ccb..c39d6bd 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
-@@ -1,63 +1,70 @@
+@@ -1,63 +1,71 @@
 -import { companyOfAssessment } from '/api/schema.ts'
 -// Candidate journey (C1 → C7). The candidate is identified by a token in an
 -// httpOnly cookie, set when they start (no account, brief §6). The server is
@@ -1972,6 +1972,7 @@ index 9a19ccb..e5c344e 100644
 -import { demoOf } from '/fixtures/demos.ts'
 -import type { Question } from '/fixtures/questions.ts'
 +import { paths } from '/web/paths.ts'
++import { isTestFile } from '/web/lib/test-file.ts'
  import type {
 -  AiTrace,
    AssessmentSpec,
@@ -2025,7 +2026,7 @@ index 9a19ccb..e5c344e 100644
  
  const byInvitation = Candidate.sql`
    SELECT * FROM candidate WHERE candidateInvitation = :invitation
-@@ -90,13 +97,16 @@ const findInvitation = (invitation?: string) => {
+@@ -90,13 +98,26 @@ const findInvitation = (invitation?: string) => {
    const c = invitation ? byInvitation({ invitation }) : undefined
    const a = c && Assessment.get(c.assessmentId)
    if (!c || !a || a.assessmentStatus !== 'approved') {
@@ -2040,10 +2041,20 @@ index 9a19ccb..e5c344e 100644
 +const languageOf = (c: CandidateRow): Language =>
 +  c.candidateLanguage === 'python' ? 'python' : 'typescript'
 +
++/** the files a candidate starts from: the stored starter of an API assessment */
++const startingFiles = (
++  a: AssessmentRow,
++  spec: AssessmentSpec,
++  language: Language,
++) =>
++  kindOf(spec) === 'api'
++    ? json<CandidateFiles>(a.assessmentStarterFiles) ?? starterFiles(spec)
++    : starterFiles(spec, language)
++
  export const getInvitation = (invitation?: string): Invitation => {
    const { c, a } = findInvitation(invitation)
    const spec = specOf(a)
-@@ -108,12 +118,15 @@ export const getInvitation = (invitation?: string): Invitation => {
+@@ -108,12 +129,15 @@ export const getInvitation = (invitation?: string): Invitation => {
      durationMin: a.assessmentDuration,
      firstName: c.candidateFirstName ?? undefined,
      state: invitationState(c),
@@ -2062,7 +2073,7 @@ index 9a19ccb..e5c344e 100644
      Array.from(crypto.getRandomValues(new Uint8Array(2)), (n) =>
        n.toString(16).padStart(2, '0')).join('').toUpperCase()
    }`
-@@ -125,15 +138,19 @@ const field = (
+@@ -125,15 +149,19 @@ const field = (
  ) => {
    const clean = (value ?? '').trim()
    if (clean.length > max) {
@@ -2087,7 +2098,7 @@ index 9a19ccb..e5c344e 100644
  export const inviteCandidate = (
    assessmentId: number,
    memberId: number,
-@@ -143,44 +160,44 @@ export const inviteCandidate = (
+@@ -143,44 +171,44 @@ export const inviteCandidate = (
      email: string
      profileUrl?: string | null
      note?: string | null
@@ -2142,7 +2153,7 @@ index 9a19ccb..e5c344e 100644
      assessmentId,
      candidateCreatedAt: now,
      candidateInvitation: invitation,
-@@ -191,62 +208,62 @@ export const inviteCandidate = (
+@@ -191,62 +219,60 @@ export const inviteCandidate = (
      candidateEmail: email,
      candidateProfileUrl: profileUrl || undefined,
      candidateNote: note || undefined,
@@ -2217,9 +2228,7 @@ index 9a19ccb..e5c344e 100644
 -    candidateFiles: files,
 +    candidateStartedAt: now,
 +    candidateLanguage: chosen,
-+    candidateFiles: kindOf(spec) === 'api'
-+      ? json<CandidateFiles>(a.assessmentStarterFiles) ?? starterFiles(spec)
-+      : starterFiles(spec, chosen),
++    candidateFiles: startingFiles(a, spec, chosen),
      candidateSavedAt: now,
 -    candidateRuns: { run: 0, mine: 0, eval: 0, demo } satisfies Runs,
 +    candidateRuns: { run: 0, mine: 0, eval: 0 } satisfies Runs,
@@ -2228,7 +2237,7 @@ index 9a19ccb..e5c344e 100644
    })
    Entry.insert.CANDIDATE_BUILD_STARTED({
      companyId: companyOfAssessment(a.assessmentId),
-@@ -261,7 +278,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
+@@ -261,7 +287,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
  export const findCandidate = (token?: string) => {
    const row = token ? byToken({ token }) : undefined
    if (!row) {
@@ -2239,7 +2248,7 @@ index 9a19ccb..e5c344e 100644
    }
    return row
  }
-@@ -272,27 +291,24 @@ const deadline = (c: CandidateRow) =>
+@@ -272,27 +300,24 @@ const deadline = (c: CandidateRow) =>
    (c.candidateStartedAt ?? Date.now()) +
    assessmentOf(c).assessmentDuration * 60_000
  
@@ -2270,7 +2279,7 @@ index 9a19ccb..e5c344e 100644
      assessment: {
        title: spec.title,
        company: spec.company,
-@@ -308,6 +324,7 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -308,6 +333,7 @@ export const toView = (c: CandidateRow): CandidateView => {
        constraints: spec.constraints,
        publicTests: spec.tests.filter((t) => t.visibility === 'public'),
        hiddenCount: spec.tests.filter((t) => t.visibility !== 'public').length,
@@ -2278,7 +2287,7 @@ index 9a19ccb..e5c344e 100644
      },
      startedAt: c.candidateStartedAt ?? undefined,
      submittedAt: c.candidateSubmittedAt ?? undefined,
-@@ -316,18 +333,17 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -316,18 +342,17 @@ export const toView = (c: CandidateRow): CandidateView => {
      files: json<CandidateFiles>(c.candidateFiles) ?? {},
      savedAt: c.candidateSavedAt ?? undefined,
      preparation: json(c.candidatePreparation),
@@ -2300,7 +2309,7 @@ index 9a19ccb..e5c344e 100644
      })
    }
  }
-@@ -343,30 +359,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
+@@ -343,30 +368,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
    return { savedAt }
  }
  
@@ -2371,7 +2380,7 @@ index 9a19ccb..e5c344e 100644
  
  export const submitCode = (
    c: CandidateRow,
-@@ -376,261 +425,207 @@ export const submitCode = (
+@@ -376,261 +434,215 @@ export const submitCode = (
      auto?: boolean
    },
  ) => {
@@ -2412,8 +2421,7 @@ index 9a19ccb..e5c344e 100644
  }
  
 -/* ---------- questions (C5, C6) ---------- */
-+const TEST_FILE = /(^|\/)(test_[^/]+\.py|[^/]+_test\.(ts|py)|[^/]+\.test\.ts)$/
- 
+-
 -export const questionsOf = (c: CandidateRow) =>
 -  json<Question[]>(c.candidateQuestions) ?? []
 -
@@ -2426,17 +2434,20 @@ index 9a19ccb..e5c344e 100644
 -  const { example, ...rest } = q
 -  return { ...rest, assistantReply: '', example: demo ? example : '' }
 +/**
-+ * Whether a test file is the candidate's: the example test of the starter, left
-+ * as given, is not (it would be reported as tests they wrote).
++ * The files without the example test of the starter, left as given: it is not
++ * a test they wrote, and it would be reported (and counted) as one.
 + */
-+const wroteTests = (c: CandidateRow, files: CandidateFiles) => {
-+  const a = assessmentOf(c)
-+  const spec = specOf(a)
-+  const starter = kindOf(spec) === 'api'
-+    ? json<CandidateFiles>(a.assessmentStarterFiles) ?? starterFiles(spec)
-+    : starterFiles(spec, languageOf(c))
-+  return Object.entries(files).some(([path, text]) =>
-+    TEST_FILE.test(path) && text !== starter[path]
++const withoutStarterTests = (
++  a: AssessmentRow,
++  spec: AssessmentSpec,
++  language: Language,
++  files: CandidateFiles,
++): CandidateFiles => {
++  const starter = startingFiles(a, spec, language)
++  return Object.fromEntries(
++    Object.entries(files).filter(([path, text]) =>
++      !isTestFile(path) || text !== starter[path]
++    ),
 +  )
  }
  
@@ -2454,28 +2465,35 @@ index 9a19ccb..e5c344e 100644
 +  progress: Progress,
 +) => {
 +  const c = Candidate.require(candidateId)
-+  const spec = specOf(assessmentOf(c))
++  const a = assessmentOf(c)
++  const spec = specOf(a)
 +  const files = json<CandidateFiles>(c.candidateFiles) ?? {}
 +  try {
 +    progress.steps[1] = { state: 'run' }
 +    saveProgress(c, progress)
 +    const program = kindOf(spec) === 'program'
 +    const language = languageOf(c)
++    // no tests of their own to run when the starter's example is all there is
++    const authored = withoutStarterTests(a, spec, language, files)
++    const wrote = Object.keys(authored).some(isTestFile)
++    const none = { passed: 0, failed: 0 }
 +    const [tests, problems, own] = await Promise.all([
 +      program
 +        ? runProgramCases(language, files, programCases(spec.tests))
 +        : runEvaluation(files, spec.tests),
 +      program ? checkProgram(language, files) : checkTypes(files),
-+      program ? runProgramOwnTests(language, files) : runOwnTests(files),
++      !wrote
++        ? none
++        : program
++        ? runProgramOwnTests(language, authored)
++        : runOwnTests(authored),
 +    ])
 +    Candidate.update({
 +      candidateId,
 +      candidateResults: {
 +        tests,
 +        problems,
-+        own: wroteTests(c, files)
-+          ? { passed: own.passed, failed: own.failed }
-+          : { passed: 0, failed: 0 },
++        own: { passed: own.passed, failed: own.failed },
 +      } satisfies StoredResults,
      })
 +    progress.steps[1] = { state: 'done' }
@@ -7438,10 +7456,10 @@ index f8db3f1..49df1c0 100644
 +  )
  })
 diff --git a/api/report.ts b/api/report.ts
-index 75d54dc..ffa1494 100644
+index 75d54dc..8639371 100644
 --- a/api/report.ts
 +++ b/api/report.ts
-@@ -1,1032 +1,690 @@
+@@ -1,1032 +1,681 @@
 -import { contentLang, tc, withContentLang } from '/api/lib/content-lang.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import { companyOfAssessment } from '/api/schema.ts'
@@ -7650,6 +7668,38 @@ index 75d54dc..ffa1494 100644
 -    passages.push({ text: answer.slice(start, end), fromAssistant: true })
 -    cursor = end
 -    i = j + 1
+-  }
+-  if (cursor < answer.length) passages.push({ text: answer.slice(cursor) })
+-  const percent = words.length
+-    ? Math.round(copied.filter(Boolean).length * 100 / words.length)
+-    : 0
+-  return { passages: passages.length ? passages : [{ text: answer }], percent }
+-}
+-
+-/* ---------- integrity (facts) ---------- */
+-
+-const integrityEvents = Entry.sql<'data', { candidateId: number }>`
+-  SELECT data FROM ${Entry.view.CANDIDATE_INTEGRITY_EVENT}
+-  WHERE candidateId = :candidateId
+-  ORDER BY createdAt
+-`.all
+-
+-const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`
+-
+-// the texts of a report follow the language of its assessment (tc)
+-
+-export const integrityLines = (
+-  events: Pick<IntegrityEvent, 'type' | 'question' | 'durationSec'>[],
+-  assistantUsed: number,
+-  freeCount: number,
+-): Report['integrity'] => {
+-  const of = (type: IntegrityEvent['type']) =>
+-    events.filter((e) => e.type === type)
+-  const questions = (list: typeof events) => {
+-    const numbers = [...new Set(list.map((e) => e.question))]
+-    return `${numbers.length > 1 ? 'questions' : 'question'} ${
+-      numbers.join(', ')
+-    }`
 +  })
 +  return {
 +    tests,
@@ -7671,46 +7721,6 @@ index 75d54dc..ffa1494 100644
 +      (n, l) => n + l.text.trim().split(/\s+/).filter(Boolean).length,
 +      0,
 +    ),
-   }
--  if (cursor < answer.length) passages.push({ text: answer.slice(cursor) })
--  const percent = words.length
--    ? Math.round(copied.filter(Boolean).length * 100 / words.length)
--    : 0
--  return { passages: passages.length ? passages : [{ text: answer }], percent }
- }
- 
--/* ---------- integrity (facts) ---------- */
--
--const integrityEvents = Entry.sql<'data', { candidateId: number }>`
--  SELECT data FROM ${Entry.view.CANDIDATE_INTEGRITY_EVENT}
--  WHERE candidateId = :candidateId
--  ORDER BY createdAt
--`.all
--
--const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`
-+/* ---------- the reading of the model, checked ---------- */
- 
--// the texts of a report follow the language of its assessment (tc)
--
--export const integrityLines = (
--  events: Pick<IntegrityEvent, 'type' | 'question' | 'durationSec'>[],
--  assistantUsed: number,
--  freeCount: number,
--): Report['integrity'] => {
--  const of = (type: IntegrityEvent['type']) =>
--    events.filter((e) => e.type === type)
--  const questions = (list: typeof events) => {
--    const numbers = [...new Set(list.map((e) => e.question))]
--    return `${numbers.length > 1 ? 'questions' : 'question'} ${
--      numbers.join(', ')
--    }`
-+const parseCode = (v: unknown, path: string): CodeRef => {
-+  const o = obj(v, path)
-+  return {
-+    file: str(o.file, `${path}.file`, 200),
-+    from: Math.round(Number(o.from)),
-+    to: Math.round(Number(o.to)),
-+    note: optStr(o.note, `${path}.note`, 300) ?? '',
    }
 -  const leaves = of('page-leave')
 -  const pastes = of('paste-blocked')
@@ -7769,11 +7779,14 @@ index 75d54dc..ffa1494 100644
  }
  
 -/* ---------- traces (facts) ---------- */
--
++/* ---------- the reading of the model, checked ---------- */
+ 
 -const traceRow = (step: string, traces: AiTrace[]): TraceRow | undefined => {
 -  if (!traces.length) return undefined
 -  const [first] = traces
--  return {
++const parseCode = (v: unknown, path: string): CodeRef => {
++  const o = obj(v, path)
+   return {
 -    step,
 -    // a step may have fallen back to the other model
 -    model: [...new Set(traces.map((t) => t.model))].join(' + '),
@@ -7785,7 +7798,19 @@ index 75d54dc..ffa1494 100644
 -      formatInt(traces.reduce((s, t) => s + t.tokensOut, 0))
 -    }`,
 -    failures: failureLines(traces),
--  }
++    file: str(o.file, `${path}.file`, 200),
++    from: Math.round(Number(o.from)),
++    to: Math.round(Number(o.to)),
++    note: optStr(o.note, `${path}.note`, 300) ?? '',
+   }
+ }
+ 
+-/** "Nemotron 3 Super : service surchargé (503) · 0,4 s", in order */
+-const failureLines = (traces: AiTrace[]) => {
+-  const lines = traces.flatMap((t) => t.failures ?? []).map((f) =>
+-    `${f.model} : ${f.reason} · ${formatLatency(f.ms)}`
+-  )
+-  return lines.length ? lines : undefined
 +type RawSkill = {
 +  skill: string
 +  status: SkillStatus
@@ -7795,19 +7820,6 @@ index 75d54dc..ffa1494 100644
 +  quotes: string[]
 +  code: CodeRef[]
 +  tests: string[]
- }
- 
--/** "Nemotron 3 Super : service surchargé (503) · 0,4 s", in order */
--const failureLines = (traces: AiTrace[]) => {
--  const lines = traces.flatMap((t) => t.failures ?? []).map((f) =>
--    `${f.model} : ${f.reason} · ${formatLatency(f.ms)}`
--  )
--  return lines.length ? lines : undefined
-+type Raw = {
-+  understanding: { summary: string; confidence: Confidence }
-+  skills: RawSkill[]
-+  followUp: string[]
-+  limits: string[]
  }
  
 -const sumTraces = (traces: AiTrace[]): AiTrace[] =>
@@ -7821,6 +7833,14 @@ index 75d54dc..ffa1494 100644
 -      failures: traces.flatMap((t) => t.failures ?? []),
 -    }]
 -    : []
++type Raw = {
++  understanding: { summary: string; confidence: Confidence }
++  skills: RawSkill[]
++  followUp: string[]
++  limits: string[]
++}
+ 
+-/* ---------- evaluation by the model ---------- */
 +/** the shape of the answer, nothing more: the evidence is checked after */
 +export const parseReading = (v: unknown): Raw => {
 +  const o = obj(v, 'answer')
@@ -7862,18 +7882,14 @@ index 75d54dc..ffa1494 100644
 +  }
 +}
  
--/* ---------- evaluation by the model ---------- */
-+/** lower case, no accents, no punctuation, single spaces: how words are matched */
-+const fold = (text: string) =>
-+  text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
-+    .replace(/[^a-z0-9]+/g, ' ').trim()
- 
 -const STATUS = ['Démontré', 'Partiel', 'Non démontré', 'Non évalué'] as const
 -const CONFIDENCE = ['faible', 'moyenne', 'élevée'] as const
 -const SIGNAL = ['present', 'partial', 'absent'] as const
 -export const UNDERSTANDING = 'Compréhension de son propre code'
-+const lowerConfidence = (c: Confidence, max: Confidence): Confidence =>
-+  CONFIDENCE.indexOf(c) > CONFIDENCE.indexOf(max) ? max : c
++/** lower case, no accents, no punctuation, single spaces: how words are matched */
++export const fold = (text: string) =>
++  text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
++    .replace(/[^a-z0-9]+/g, ' ').trim()
  
 -type Claim = {
 -  claim: string
@@ -7888,20 +7904,8 @@ index 75d54dc..ffa1494 100644
 -  testId?: string
 -  proof?: Proof
 -}
-+/**
-+ * Keeps what can be found, drops the rest and counts it. The model reads
-+ * exactly the skills of the assessment, in their order.
-+ */
-+export const verifyReading = (
-+  raw: Raw,
-+  c: CandidateRow,
-+): Omit<Reading, 'trace'> =>
-+  checkReading(raw, {
-+    spec: specOf(c),
-+    files: json<CandidateFiles>(c.candidateFiles) ?? {},
-+    transcript: transcriptOf(c),
-+    facts: reportFacts(c),
-+  })
++const lowerConfidence = (c: Confidence, max: Confidence): Confidence =>
++  CONFIDENCE.indexOf(c) > CONFIDENCE.indexOf(max) ? max : c
  
 -type Evaluation = {
 -  free: {
@@ -7934,6 +7938,14 @@ index 75d54dc..ffa1494 100644
 -  return {
 -    free: arr(o.free, 'free', (x, p) => {
 -      const f = obj(x, p)
++/** everything a reading is checked against, read once for both checks */
++const evidenceOf = (c: CandidateRow): Evidence => ({
++  spec: specOf(c),
++  files: json<CandidateFiles>(c.candidateFiles) ?? {},
++  transcript: transcriptOf(c),
++  facts: reportFacts(c),
++})
++
 +export const checkReading = (
 +  raw: Raw,
 +  { spec, files, transcript, facts }: Evidence,
@@ -8187,7 +8199,8 @@ index 75d54dc..ffa1494 100644
 -        .join('\n')
 -    }`
 -  ).join('\n\n')
--
++/* ---------- the second check: does the evidence back the reading? ---------- */
+ 
 -const EVALUATION_SYSTEM =
 -  'Tu aides un recruteur à lire les réponses d’un candidat sur son propre code. Tu sépares les faits de tes interprétations, tu ne donnes aucune note globale, tu ne recommandes aucune décision et tu ne devines pas si une réponse a été écrite par une IA. Tu parles du candidat à la troisième personne et tu le vouvoies dans les questions de débrief. Réponds uniquement en JSON, en français.'
 -
@@ -8210,8 +8223,7 @@ index 75d54dc..ffa1494 100644
 -    .replace(/[«»“”]/g, '"')
 -    .replace(/\s+/g, ' ')
 -    .trim()
-+/* ---------- the second check: does the evidence back the reading? ---------- */
- 
+-
 -/**
 - * A contradiction is only attributed to words the candidate wrote: the
 - * quote must be found in the answer, long enough to carry a claim (LIVE-004).
@@ -8412,11 +8424,9 @@ index 75d54dc..ffa1494 100644
 +    limits: doubted
 +      ? [
 +        ...reading.limits,
-+        `A second check found ${doubted} reading${
-+          doubted > 1 ? 's' : ''
-+        } not backed by ${doubted > 1 ? 'their' : 'its'} evidence: ${
-+          doubted > 1 ? 'they are' : 'it is'
-+        } marked.`,
++        doubted > 1
++          ? `A second check found ${doubted} readings not backed by their evidence: they are marked.`
++          : 'A second check found 1 reading not backed by its evidence: it is marked.',
 +      ]
 +      : reading.limits,
    }
@@ -8474,13 +8484,9 @@ index 75d54dc..ffa1494 100644
 +/** a failure is said, never thrown */
 +const checkSupport = async (
 +  reading: Omit<Reading, 'trace'>,
-+  c: CandidateRow,
++  evidence: Evidence,
 +): Promise<Omit<Reading, 'trace'>> => {
-+  const items = supportItems(reading.skills, {
-+    files: json<CandidateFiles>(c.candidateFiles) ?? {},
-+    transcript: transcriptOf(c),
-+    facts: reportFacts(c),
-+  })
++  const items = supportItems(reading.skills, evidence)
 +  if (!items.length) return reading
 +  try {
 +    const { data } = await askSupport(items)
@@ -8536,7 +8542,12 @@ index 75d54dc..ffa1494 100644
  
 -const sectionOf = (methods: string[]) =>
 -  methods[0] === 'Tests' ? 's2' : methods[0] === 'Analyse du code' ? 's3' : 's4'
--
++/** what the candidate wrote: an API or a program, and in which language */
++const subjectOf = (c: CandidateRow): Subject => ({
++  kind: specOf(c).kind === 'program' ? 'program' : 'api',
++  language: c.candidateLanguage === 'python' ? 'python' : 'typescript',
++})
+ 
 -/** R6 job, in the language of the assessment */
 -export const buildReport = (candidateId: number) =>
 -  withContentLang(
@@ -8544,12 +8555,7 @@ index 75d54dc..ffa1494 100644
 -      .assessmentLanguage,
 -    () => writeReport(candidateId),
 -  )
-+/** what the candidate wrote: an API or a program, and in which language */
-+const subjectOf = (c: CandidateRow): Subject => ({
-+  kind: specOf(c).kind === 'program' ? 'program' : 'api',
-+  language: c.candidateLanguage === 'python' ? 'python' : 'typescript',
-+})
- 
+-
 -const writeReport = async (candidateId: number) => {
 -  const c = Candidate.require(candidateId)
 -  const a = Assessment.require(c.assessmentId)
@@ -8933,9 +8939,13 @@ index 75d54dc..ffa1494 100644
 -    Candidate.update({
 -      candidateId,
 -      candidateReport: { status: 'ready', report },
++    const evidence = evidenceOf(c)
 +    store(candidateId, {
 +      status: 'ready',
-+      reading: { ...await checkSupport(verifyReading(data, c), c), trace },
++      reading: {
++        ...await checkSupport(checkReading(data, evidence), evidence),
++        trace,
++      },
 +      at: new Date().toISOString(),
      })
 +    announce(c)
@@ -15142,7 +15152,7 @@ index 54daae0..4649e89 100644
    </main>
  )
 diff --git a/web/pages/recruiter/assessment-page.tsx b/web/pages/recruiter/assessment-page.tsx
-index d5b6cab..3341b4e 100644
+index d5b6cab..4a841ee 100644
 --- a/web/pages/recruiter/assessment-page.tsx
 +++ b/web/pages/recruiter/assessment-page.tsx
 @@ -1,5 +1,5 @@
@@ -15705,12 +15715,45 @@ index d5b6cab..3341b4e 100644
  export const AssessmentPage = () => {
    const canEmail = member.value?.canEmail === true
    const a = getAssessment(url.params.id)
-@@ -738,11 +635,11 @@ export const AssessmentPage = () => {
+@@ -738,11 +635,44 @@ export const AssessmentPage = () => {
      return null
    }
    const { spec } = a
 -  const hidden = spec.tests.filter((t) => t.visibility === 'caché').length
 +  const hidden = spec.tests.filter((t) => t.visibility === 'hidden').length
++  // once there are candidates, they come first: the form follows
++  const invite = (
++    <div tw='grid grid-cols-1 lg:grid-cols-split gap-4'>
++      <InvitePanel a={a} />
++      <Panel title='Summary'>
++        <dl
++          tw='m-0 grid gap-x-4 gap-y-2 text-[13px]'
++          style={{ gridTemplateColumns: 'auto 1fr' }}
++        >
++          <dt tw='text-content-tertiary'>
++            {spec.kind === 'program' ? 'Task' : 'Routes'}
++          </dt>
++          <dd tw='m-0 font-mono text-[12.5px] leading-[1.7]'>
++            {spec.kind === 'program'
++              ? `Program: input to output, in ${
++                (spec.languages ?? []).map((l) =>
++                  l === 'python' ? 'Python' : 'TypeScript'
++                ).join(' or ')
++              }`
++              : spec.routes.map((r) => `${r.method} ${r.path}`).join(' · ')}
++          </dd>
++          <dt tw='text-content-tertiary'>Tests</dt>
++          <dd tw='m-0'>
++            {`${spec.tests.length}: ${
++              spec.tests.length - hidden
++            } public + ${hidden} hidden`}
++          </dd>
++          <dt tw='text-content-tertiary'>Skills</dt>
++          <dd tw='m-0'>{spec.skills.map((s) => s.name).join(', ')}</dd>
++        </dl>
++      </Panel>
++    </div>
++  )
    return (
      <main tw='w-full max-w-[1120px] mx-auto px-4 sm:px-8 pt-7 pb-16 flex flex-col gap-[18px]'>
        <BackLink href={paths.recruiter}>
@@ -15719,7 +15762,7 @@ index d5b6cab..3341b4e 100644
        </BackLink>
        <div
          role='status'
-@@ -750,10 +647,10 @@ export const AssessmentPage = () => {
+@@ -750,10 +680,10 @@ export const AssessmentPage = () => {
        >
          <CircleCheck tw='w-[17px] h-[17px] flex-none text-ok' />
          <strong tw='font-semibold'>
@@ -15732,7 +15775,7 @@ index d5b6cab..3341b4e 100644
          </span>
        </div>
        <div tw='flex flex-col gap-2'>
-@@ -761,54 +658,60 @@ export const AssessmentPage = () => {
+@@ -761,54 +691,27 @@ export const AssessmentPage = () => {
          <div tw='flex gap-1.5 flex-wrap'>
            <MetaTag>{levelLabels[spec.level]}</MetaTag>
            <MetaTag icon={Clock}>{spec.durationMin} min</MetaTag>
@@ -15747,34 +15790,18 @@ index d5b6cab..3341b4e 100644
          </div>
        </div>
 -      <div tw='grid grid-cols-1 lg:grid-cols-split gap-4'>
-+      {/* once there are candidates, they come first: the form follows */}
-+      <div
-+        tw='grid grid-cols-1 lg:grid-cols-split gap-4'
-+        style={{ order: a.candidates.length ? 1 : 0 }}
-+      >
-         <InvitePanel a={a} />
+-        <InvitePanel a={a} />
 -        <Panel title={t('Récapitulatif', 'Summary')}>
-+        <Panel title='Summary'>
-           <dl
-             tw='m-0 grid gap-x-4 gap-y-2 text-[13px]'
-             style={{ gridTemplateColumns: 'auto 1fr' }}
-           >
+-          <dl
+-            tw='m-0 grid gap-x-4 gap-y-2 text-[13px]'
+-            style={{ gridTemplateColumns: 'auto 1fr' }}
+-          >
 -            <dt tw='text-content-tertiary'>Routes</dt>
-+            <dt tw='text-content-tertiary'>
-+              {spec.kind === 'program' ? 'Task' : 'Routes'}
-+            </dt>
-             <dd tw='m-0 font-mono text-[12.5px] leading-[1.7]'>
+-            <dd tw='m-0 font-mono text-[12.5px] leading-[1.7]'>
 -              {spec.routes.map((r) => `${r.method} ${r.path}`).join(' · ')}
-+              {spec.kind === 'program'
-+                ? `Program: input to output, in ${
-+                  (spec.languages ?? []).map((l) =>
-+                    l === 'python' ? 'Python' : 'TypeScript'
-+                  ).join(' or ')
-+                }`
-+                : spec.routes.map((r) => `${r.method} ${r.path}`).join(' · ')}
-             </dd>
-             <dt tw='text-content-tertiary'>Tests</dt>
-             <dd tw='m-0'>
+-            </dd>
+-            <dt tw='text-content-tertiary'>Tests</dt>
+-            <dd tw='m-0'>
 -              {t(
 -                `${spec.tests.length} : ${
 -                  spec.tests.length - hidden
@@ -15783,17 +15810,13 @@ index d5b6cab..3341b4e 100644
 -                  spec.tests.length - hidden
 -                } public + ${hidden} hidden`,
 -              )}
-+              {`${spec.tests.length}: ${
-+                spec.tests.length - hidden
-+              } public + ${hidden} hidden`}
-             </dd>
+-            </dd>
 -            <dt tw='text-content-tertiary'>{t('Compétences', 'Skills')}</dt>
 -            <dd tw='m-0'>{spec.skills.map((s) => tv(s.name)).join(', ')}</dd>
-+            <dt tw='text-content-tertiary'>Skills</dt>
-+            <dd tw='m-0'>{spec.skills.map((s) => s.name).join(', ')}</dd>
-           </dl>
-         </Panel>
-       </div>
+-          </dl>
+-        </Panel>
+-      </div>
++      {!a.candidates.length && invite}
        <section tw='flex flex-col gap-2.5 min-w-0'>
          <h2 tw='m-0 text-[17px] font-semibold'>
 -          {t('Candidats', 'Candidates')}
@@ -15907,7 +15930,7 @@ index d5b6cab..3341b4e 100644
                            </button>
                          )}
                      </span>
-@@ -917,10 +814,7 @@ export const AssessmentPage = () => {
+@@ -917,12 +814,10 @@ export const AssessmentPage = () => {
            </tbody>
          </TableWrap>
          <p tw='m-0 text-[12.5px] text-content-tertiary'>
@@ -15918,7 +15941,10 @@ index d5b6cab..3341b4e 100644
 +          {'Possible statuses: Invited, Building, Interview, Finished, Link expired (not opened within 14 days), Revoked. The report is available once the assessment is finished.'}
          </p>
        </section>
++      {!!a.candidates.length && invite}
      </main>
+   )
+ }
 diff --git a/web/pages/recruiter/assessments-page.tsx b/web/pages/recruiter/assessments-page.tsx
 index 5b10304..d2a1ce6 100644
 --- a/web/pages/recruiter/assessments-page.tsx
@@ -17513,10 +17539,10 @@ index a38b80c..17958d8 100644
              )}
            </AnchorLink>
 diff --git a/web/pages/report/report-page.tsx b/web/pages/report/report-page.tsx
-index 6370463..ca45051 100644
+index 6370463..179037c 100644
 --- a/web/pages/report/report-page.tsx
 +++ b/web/pages/report/report-page.tsx
-@@ -1,222 +1,621 @@
+@@ -1,222 +1,624 @@
 +// The report of a candidate. Two kinds of content, never mixed: what the
 +// server measured (verified facts) and what the AI read (interpretations, each
 +// with the evidence that was checked and a confidence). There is no global
@@ -17871,6 +17897,9 @@ index 6370463..ca45051 100644
 +      </Stat>
 +      <Stat label='Interview resumed after a reload'>
 +        {i.resumes ? `${i.resumes}×` : 'no'}
++      </Stat>
++      <Stat label='Copy attempts · interview'>
++        {i.copies ? `${i.copies}×` : 'none'}
 +      </Stat>
 +    </div>
 +    <p tw='m-0 text-[12.5px] text-content-tertiary'>
@@ -18498,10 +18527,10 @@ index 2e01fc4..7517d00 100644
                    style={{
                      whiteSpace: 'pre',
 diff --git a/web/pages/workspace/file-explorer.tsx b/web/pages/workspace/file-explorer.tsx
-index b182d8f..71f700f 100644
+index b182d8f..aa489e0 100644
 --- a/web/pages/workspace/file-explorer.tsx
 +++ b/web/pages/workspace/file-explorer.tsx
-@@ -1,9 +1,11 @@
+@@ -1,13 +1,15 @@
 -import { useEffect, useRef } from 'npm:preact/hooks'
 +import { useEffect, useRef } from 'preact/hooks'
  import { signal } from '@preact/signals'
@@ -18509,11 +18538,15 @@ index b182d8f..71f700f 100644
    activeFile,
    createFile,
    isDirty,
-+  isTestFile,
 +  language,
    openFile,
    rootFiles,
    srcFiles,
+ } from '/web/pages/workspace/workspace-state.ts'
++import { isTestFile } from '/web/lib/test-file.ts'
+ import {
+   Braces,
+   ChevronDown,
 @@ -19,7 +21,6 @@ import {
    FolderOpen,
    Plus,
@@ -19296,10 +19329,10 @@ index 17f075a..ff28e52 100644
      <div tw='h-screen flex flex-col overflow-hidden bg-surface-page text-content-primary'>
        <WorkspaceBar elapsed={elapsed} title={view.assessment.title} />
 diff --git a/web/pages/workspace/workspace-state.ts b/web/pages/workspace/workspace-state.ts
-index a8ecf4b..92464ef 100644
+index a8ecf4b..bb55e66 100644
 --- a/web/pages/workspace/workspace-state.ts
 +++ b/web/pages/workspace/workspace-state.ts
-@@ -1,27 +1,21 @@
+@@ -1,27 +1,22 @@
 -// C2 workspace state, module level signals like tournament's studio. Files
 +// Workspace state, module level signals. Files
  // come from the candidate session; the API saves them, type-checks them
@@ -19311,6 +19344,7 @@ index a8ecf4b..92464ef 100644
 -import { demoFileOrder } from '/fixtures/demo-files.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import type { CandidateFiles, TestResult } from '/web/types.ts'
++import { isTestFile } from '/web/lib/test-file.ts'
 +import type { CandidateFiles, Language, TestResult } from '/web/types.ts'
  import type { CodeProblem, OutputChunk, SandboxRun } from '/api/sandbox.ts'
  import { eachSec } from '/web/lib/signals.ts'
@@ -19329,7 +19363,7 @@ index a8ecf4b..92464ef 100644
  
  /* ---------- files and auto-save ---------- */
  
-@@ -31,13 +25,34 @@ export const saveState = signal<SaveState>('saved')
+@@ -31,13 +26,30 @@ export const saveState = signal<SaveState>('saved')
  const savedAt = signal(Date.now())
  const loadedFor = signal(0)
  
@@ -19347,10 +19381,6 @@ index a8ecf4b..92464ef 100644
 +    : 'src/app.ts'
 +)
 +
-+/** the tests of the candidate: `x_test.ts` or `test_x.py` */
-+export const isTestFile = (path: string) =>
-+  /(_test\.ts|(^|\/)test_[^/]*\.py)$/.test(path)
-+
  export const srcFiles = computed(() =>
    Object.keys(files.value).filter((p) => p.startsWith('src/')).sort((a, b) =>
 -    (demoFileOrder.indexOf(a) + 1 || 99) - (demoFileOrder.indexOf(b) + 1 || 99)
@@ -19366,7 +19396,7 @@ index a8ecf4b..92464ef 100644
  )
  
  /* ---------- tabs ---------- */
-@@ -64,12 +79,13 @@ effect(() => {
+@@ -64,12 +76,13 @@ effect(() => {
    files.value = view.files
    savedFiles.value = view.files
    savedAt.value = view.savedAt ?? Date.now()
@@ -19385,7 +19415,7 @@ index a8ecf4b..92464ef 100644
  })
  
  export const isDirty = (path: string) =>
-@@ -86,7 +102,7 @@ const save = async () => {
+@@ -86,7 +99,7 @@ const save = async () => {
      savedAt.value = result.savedAt
      saveState.value = files.peek() === sent ? 'saved' : 'saving'
    } catch {
@@ -19394,7 +19424,7 @@ index a8ecf4b..92464ef 100644
      saveState.value = 'offline'
      clearTimeout(saveTimer)
      saveTimer = setTimeout(save, 5000)
-@@ -136,39 +152,21 @@ export const updateFile = (path: string, code: string) => {
+@@ -136,39 +149,21 @@ export const updateFile = (path: string, code: string) => {
  export const savedAgo = computed(() => {
    const sec = Math.max(0, Math.round((eachSec.value - savedAt.value) / 1000))
    return sec < 60
@@ -19441,7 +19471,7 @@ index a8ecf4b..92464ef 100644
    openFile(path)
    return true
  }
-@@ -192,19 +190,17 @@ export const ownTests = signal<
+@@ -192,19 +187,17 @@ export const ownTests = signal<
  
  export const lastEvalAgo = computed(() => {
    const min = Math.floor((eachSec.value - lastEvalAt.value) / 60_000)
@@ -19464,7 +19494,7 @@ index a8ecf4b..92464ef 100644
  export const toRunOutput = (run: SandboxRun): RunOutput => {
    const lines: OutputLine[] = []
    for (const chunk of run.chunks) {
-@@ -224,88 +220,68 @@ export const toRunOutput = (run: SandboxRun): RunOutput => {
+@@ -224,88 +217,68 @@ export const toRunOutput = (run: SandboxRun): RunOutput => {
      ? {
        tone: 'warn',
        icon: 'package-x',
@@ -19570,7 +19600,7 @@ index a8ecf4b..92464ef 100644
    running.value = kind
    try {
      const result = await api['POST/api/candidate/run'].fetch({
-@@ -360,7 +336,7 @@ export const setPanelResizer = (ref: HTMLElement | null) => {
+@@ -360,7 +333,7 @@ export const setPanelResizer = (ref: HTMLElement | null) => {
    })
  }
  
@@ -19579,7 +19609,7 @@ index a8ecf4b..92464ef 100644
  
  // about a third of the window by default (≈ 630 px on a 1920 px screen)
  const MIN_RIGHT = 280
-@@ -384,11 +360,3 @@ export const setSideResizer = (ref: HTMLElement | null) => {
+@@ -384,11 +357,3 @@ export const setSideResizer = (ref: HTMLElement | null) => {
      )
    })
  }

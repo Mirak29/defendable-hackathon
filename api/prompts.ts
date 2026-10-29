@@ -617,16 +617,16 @@ ${
 export const INTERVIEW_START =
   'The candidate has joined and you can hear them. Begin the interview.'
 
-/**
- * The candidate came back (the page was reloaded): the conversation goes on.
- * `unanswered` is what they said last when the interviewer had not answered.
- */
 /** the time of the interview is over: it closes, with a few warm words */
 export const INTERVIEW_TIME_UP = (unanswered = '') =>
   `The time of the interview is over. Answer in one or two short sentences what they just said if they said something, thank them warmly, tell them a person will read the conversation, and close the interview now: ask no question and end your message with ${END_MARKER}.${
     unanswered ? ` The last thing they said: "${unanswered}"` : ''
   }`
 
+/**
+ * The candidate came back (the page was reloaded): the conversation goes on.
+ * `unanswered` is what they said last when the interviewer had not answered.
+ */
 export const INTERVIEW_RESUME = (unanswered = '') =>
   `The candidate's page was reloaded and they are back. Say in a few warm words that you are glad they are back and that you go on from where you were (never start over, never greet them again), then ask your next question. Never repeat a question already answered.${
     unanswered

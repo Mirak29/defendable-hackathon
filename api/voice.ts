@@ -333,10 +333,13 @@ export class VoiceInterview {
       return
     }
     this.#running = this.#running.then(() =>
-      this.#closed
-        ? undefined
-        : this.#answer(INTERVIEW_TIME_UP(), undefined, undefined, true)
+      this.#closed ? undefined : this.#closeTurn()
     )
+  }
+
+  /** the interviewer's closing words, with nothing left to answer */
+  #closeTurn() {
+    return this.#answer(INTERVIEW_TIME_UP(), undefined, undefined, true)
   }
 
   close() {
@@ -375,9 +378,7 @@ export class VoiceInterview {
         () => this.#timeUp(),
         Math.max(0, left) + voiceConfig.graceMs,
       )
-      this.#running = left > 0
-        ? this.#answer(this.#opening)
-        : this.#answer(INTERVIEW_TIME_UP(), undefined, undefined, true)
+      this.#running = left > 0 ? this.#answer(this.#opening) : this.#closeTurn()
       return
     }
     switch (msg.type) {

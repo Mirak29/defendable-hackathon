@@ -3,13 +3,13 @@
 // were copied. Facts for the report, never a verdict: the reasons are often
 // innocent (a call, a notification, a laptop on a dock).
 import { api } from '/web/lib/api.ts'
-import type { IntegrityPhase } from '/web/types.ts'
+import type { IntegrityKind, IntegrityPhase } from '/web/types.ts'
 
 /** a shorter absence is a dialog or a permission prompt, not a departure */
 const MIN_LEAVE_MS = 1500
 
 const send = (body: {
-  kind: 'page-leave' | 'copy' | 'screens'
+  kind: IntegrityKind
   phase: IntegrityPhase
   ms?: number
   extended?: boolean

@@ -21,6 +21,7 @@ import { candidateBriefText } from '/api/reference.ts'
 import {
   askSupport,
   checkReading,
+  fold,
   parseReading,
   supportItems,
 } from '/api/report.ts'
@@ -145,7 +146,7 @@ const judge = async (skills: SkillReading[], ev: Evidence) => {
   if (!items.length) return verdicts
   const { data } = await askSupport(items)
   for (const i of items) {
-    const v = data[foldName(i.skill)]
+    const v = data[fold(i.skill)]
     verdicts.set(i.skill, {
       support: v?.support ?? 'missing',
       reason: v?.reason ?? '',
@@ -153,9 +154,6 @@ const judge = async (skills: SkillReading[], ev: Evidence) => {
   }
   return verdicts
 }
-const foldName = (s: string) =>
-  s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ').trim()
 
 const withEvidence = (a: SkillReading, b: SkillReading): SkillReading => ({
   ...a,

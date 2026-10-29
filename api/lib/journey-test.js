@@ -5,6 +5,7 @@ import { routeHandler } from '/api/routes.ts'
 import { demoJobDescription } from '/fixtures/demo.ts'
 import { demoFiles } from '/fixtures/demo-files.ts'
 import { llmConfig } from '/api/llm.ts'
+import { SUPPORT_CHECKER } from '/api/prompts.ts'
 
 export const call = async (method, path, input, cookies = {}, headers = {}) => {
   const url = new URL(`http://localhost${path}`)
@@ -118,8 +119,7 @@ export const withModel = async (
   const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
     const body = await req.json()
     const second = body.messages?.some((m) =>
-      m.role === 'system' &&
-      m.content.includes('You check the work of a report writer')
+      m.role === 'system' && m.content.includes(SUPPORT_CHECKER)
     )
     if (second) calls.support.push(body)
     else calls.push(body)
