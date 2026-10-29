@@ -1,0 +1,5 @@
+# HTTPS in front of the app. WebSockets (the voice interview) go through as is.
+{$PUBLIC_HOST} {
+	encode zstd gzip
+	reverse_proxy app:8000
+}

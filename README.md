@@ -312,6 +312,14 @@ Muse Wonder at `minimal` keeps every rule and answers first; a voice
 conversation cannot wait for more. The Spark models name the content of a failed
 test or ask two questions at once.
 
+## Deploying
+
+One Docker image and a `docker-compose.yml` run the whole app on one machine
+(API, voice interview, Oracle's voice, sandboxes, SQLite in a volume), with
+backups and an optional Caddy for HTTPS. The build loads everything the server
+needs offline and checks it works. Step by step:
+[`deploy/README.md`](deploy/README.md).
+
 ## Getting started
 
 Deno 2 only (no Node).

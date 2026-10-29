@@ -1,0 +1,40 @@
+# Defendable on one machine:
+#   docker compose up -d --build                     the app (port 8000)
+#   docker compose --profile https up -d --build     the app behind Caddy (HTTPS)
+# See deploy/README.md.
+services:
+  app:
+    build: .
+    image: defendable:latest
+    restart: unless-stopped
+    env_file: .env.production
+    # local only: Caddy, a tunnel or the host's own proxy reaches it from there
+    ports:
+      - '${APP_BIND:-127.0.0.1:8000}:8000'
+    volumes:
+      - data:/data
+    stop_grace_period: 30s
+
+  # HTTPS with a certificate that renews itself, for a domain pointing here
+  caddy:
+    profiles: [https]
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      # the domain that points here (only read when the https profile is on)
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  # the database (and its backups): kept when the image is rebuilt
+  data:
+  caddy_data:
+  caddy_config:

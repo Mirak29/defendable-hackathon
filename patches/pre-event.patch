@@ -1,10 +1,10 @@
 diff --git a/.dockerignore b/.dockerignore
-deleted file mode 100644
-index f81fee3..0000000
+index f81fee3..74d5049 100644
 --- a/.dockerignore
-+++ /dev/null
-@@ -1,15 +0,0 @@
--.git
++++ b/.dockerignore
+@@ -1,15 +1,22 @@
++# what the image does not need, or must never contain
+ .git
 -.env
 -.env.local
 -node_modules/
@@ -15,10 +15,27 @@ index f81fee3..0000000
 -qa/scripts/
 -qa/tests-definitions/
 -qa/tests-data/
--*.db
--*.db-shm
--*.db-wal
++.claude
++node_modules
++dist
++dist-qa
++generated
++qa/reports
++tts.tmp
++coverage
++
++# databases and their copies
+ *.db
+ *.db-shm
+ *.db-wal
 -coverage
++*.bak
++
++# secrets: the keys come from .env.production at run time, never from the image
++.env
++.env.production
++.env-dev
++.env-prod
 diff --git a/.env-test b/.env-test
 index cd5f307..0bb368d 100644
 --- a/.env-test
@@ -43,21 +60,24 @@ index fa3e977..9eefb16 100644
 -# hooks run by sh: keep LF line endings on Windows
 -.githooks/* text eol=lf
 diff --git a/.gitignore b/.gitignore
-index 9a23581..acd7092 100644
+index 9a23581..fcf427f 100644
 --- a/.gitignore
 +++ b/.gitignore
-@@ -38,3 +38,6 @@ qa/reports/*
+@@ -38,3 +38,9 @@ qa/reports/*
  !qa/reports/.gitkeep
  .env-prod
  .deploy-run
 +
 +# runs of `deno task llm:generate --out=generated`
 +generated/
++
++# production secrets (see .env.production.example)
++.env.production
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 395848d..f0ab666 100644
+index 395848d..fb37eb3 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -5,153 +5,134 @@ code in this repository.
+@@ -5,153 +5,143 @@ code in this repository.
  
  ## What this is
  
@@ -276,17 +296,24 @@ index 395848d..f0ab666 100644
 -  Highlight API (`web/lib/code-highlight.ts` + `::highlight()` rules in
 -  `style.css`), fed by `web/lib/code-tokens.ts`, the same tokenizer as the
 -  read-only `CodeView`.
--
++- **Demo data**: `fixtures/demo.ts` and `fixtures/demo-files.ts` (the Linkly
++  assessment and a candidate solution), `fixtures/offers/` (job offers used to
++  measure generation).
+ 
 -## QA
--
++## Deployment
+ 
 -`qa/` mirrors tournament's QA (declarative steps in `qa/lib/commands.ts`,
 -`qa/tests-definitions/QA-X.ts`, seeded data `qa/tests-data/QA-X.json` via
 -`fixtures/seed.ts`). Selectors are `data-test="…"` attributes: keep them when
 -editing a screen of the journey. The QA server replays the AI answers, so the
 -journey is deterministic.
-+- **Demo data**: `fixtures/demo.ts` and `fixtures/demo-files.ts` (the Linkly
-+  assessment and a candidate solution), `fixtures/offers/` (job offers used to
-+  measure generation).
++`Dockerfile` + `docker-compose.yml` (+ `deploy/`: `warm.ts` checks voice,
++SQLite, Pyodide and the sandbox at build time, `backup.ts`, `Caddyfile`,
++`README.md`). Production needs `APP_ENV=prod`, `REDIRECT_URI` (the public https
++address: personal links, `Secure` cookies) and `BASE_URL=/`; secrets live in
++`.env.production` (git-ignored, see `.env.production.example`). The app is one
++process: run a single container.
  
  ## Styling rules (Twind)
  
@@ -318,22 +345,33 @@ index 395848d..f0ab666 100644
 +- Icons are inline Lucide SVGs in `web/assets/icons.tsx`; add new ones there,
 +  keep the list sorted.
 diff --git a/Dockerfile b/Dockerfile
-deleted file mode 100644
-index e207b60..0000000
+index e207b60..a102546 100644
 --- a/Dockerfile
-+++ /dev/null
-@@ -1,44 +0,0 @@
++++ b/Dockerfile
+@@ -1,44 +1,42 @@
 -# Unlike tournament, the image keeps the Deno runtime (no `deno compile`):
 -# the sandbox (api/sandbox.ts) runs the candidate's code in a `deno`
 -# subprocess (Deno.execPath()), offline (--cached-only), so the modules the
 -# candidate may import (jsr:@std/assert) are cached at build time.
 -FROM denoland/deno:alpine
 -WORKDIR /app
--
++# Defendable, production image: one process serves the API, the voice WebSocket
++# and the built web app. Everything the server needs offline (native SQLite,
++# the voice model, Pyodide, the dependency of the candidates' tests) is fetched
++# here, while the image is built, and checked by deploy/warm.ts.
++ARG DENO_VERSION=2.9.8
++FROM denoland/deno:${DENO_VERSION}
+ 
 -# SQLite for @db/sqlite (FFI), like tournament
 -RUN apk add --no-cache sqlite-libs
 -ENV DENO_SQLITE_PATH=/usr/lib/libsqlite3.so.0
--
++# a single cache shared by the build and the server (the sandbox runs offline)
++ENV DENO_DIR=/deno-dir
++USER root
++RUN mkdir -p /app /data /deno-dir && chown -R deno:deno /app /data /deno-dir
++USER deno
++WORKDIR /app
+ 
 -COPY deno.json .
 -COPY qa/deno.json qa/deno.json
 -COPY build-config.ts task-prod.ts prod-server.ts ./
@@ -341,14 +379,18 @@ index e207b60..0000000
 -COPY web/ web/
 -COPY fixtures/ fixtures/
 -COPY migrations/ migrations/
--
++# the dependencies first: this layer is rebuilt only when deno.json changes
++COPY --chown=deno:deno deno.json ./
++RUN deno install
+ 
 -# Build the front (dist/), then cache the server and the candidate's modules
 -RUN deno run -A task-prod.ts \
 -  && deno cache prod-server.ts \
 -  && echo 'import "jsr:@std/assert@1"' > /tmp/candidate-deps.ts \
 -  && deno cache /tmp/candidate-deps.ts \
 -  && rm /tmp/candidate-deps.ts
--
++COPY --chown=deno:deno . .
+ 
 -ENV APP_ENV=prod
 -ENV PORT=8000
 -# path the app is served under (<base href>), required by @01edu/api in prod
@@ -359,14 +401,34 @@ index e207b60..0000000
 -ENV SEED_DEMO=1
 -ENV DEMO_ACCESS=1
 -RUN mkdir -p /app/data
--
++# the web app, minified (dist/)
++RUN deno run -A task-prod.ts
++# the one module the tests of the candidates import: the sandbox is offline
++RUN deno cache jsr:@std/assert@1
++# the native SQLite library, the voice model (326 MB), Pyodide and the sandbox
++# are loaded once here and checked: the build fails if one of them does not work
++RUN APP_ENV=dev DATABASE_PATH=/tmp/warm.db deno run -A --unstable-ffi deploy/warm.ts \
++  && rm -f /tmp/warm.db*
+ 
 -# Required at run time: REDIRECT_URI (public URL of the app). Optional:
 -# NVIDIA_API_KEY and GEMINI_API_KEY (without them, every AI step replays the
 -# recorded answers), RESEND_API_KEY and RESEND_FROM (the personal link is sent
 -# by e-mail). `deno task deploy` keeps them in ~/defendable/.env-prod.
--EXPOSE 8000
++ENV APP_ENV=prod \
++    PORT=8000 \
++    BASE_URL=/ \
++    DATABASE_PATH=/data/defendable.db
++# REDIRECT_URI (the public address) and the keys come from .env.production
++VOLUME /data
+ EXPOSE 8000
 -VOLUME /app/data
 -CMD ["deno", "run", "-A", "--unstable-ffi", "prod-server.ts"]
++
++# the voice model takes a few seconds to load: the first check waits
++HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
++  CMD deno eval "const r = await fetch('http://127.0.0.1:8000/'); Deno.exit(r.ok ? 0 : 1)"
++
++CMD ["run", "-A", "--unstable-ffi", "prod-server.ts"]
 diff --git a/api/assessment.ts b/api/assessment.ts
 index 46b79c9..04e8a48 100644
 --- a/api/assessment.ts
