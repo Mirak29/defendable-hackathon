@@ -4,11 +4,17 @@
 import { eq, test } from '/api/lib/test.ts'
 import {
   INTERVIEWER,
+  interviewerFor,
+  interviewSystem,
+  isCodeFile,
   judgePrompt,
   needAnalysisPrompt,
   needAnalysisSchema,
   prefillPrompt,
   prefillSchema,
+  REPORTER,
+  reporterFor,
+  reportPrompt,
   scenarioPrompt,
   scenarioSchema,
   testsPrompt,
@@ -217,5 +223,60 @@ test('the prompts of a program follow their schemas too', async (step) => {
     ) {
       eq(p.includes('HTTP API in TypeScript'), false)
     }
+  })
+})
+
+test('the interviewer and the reporter know what the candidate wrote', async (step) => {
+  const python = { kind: 'program', language: 'python' }
+  await step('an API keeps the original words', () => {
+    eq(interviewerFor({}), INTERVIEWER)
+    eq(reporterFor({}), REPORTER)
+    eq(interviewerFor({ kind: 'api', language: 'typescript' }), INTERVIEWER)
+  })
+  await step('a Python program is said as a Python program', () => {
+    const interviewer = interviewerFor(python)
+    eq(interviewer.includes('wrote the Python program of the brief'), true)
+    eq(interviewer.includes('built the API of the brief'), false)
+    eq(interviewer.includes('syntax check'), true)
+    eq(interviewer.includes('the type check'), false)
+    const reporter = reporterFor(python)
+    eq(reporter.includes('wrote a small Python program'), true)
+    eq(reporter.includes('built a small HTTP API'), false)
+  })
+  await step('the code at the root of a Python program is read', () => {
+    eq(isCodeFile('main.py'), true)
+    eq(isCodeFile('test_main.py'), true)
+    eq(isCodeFile('src/app.ts'), true)
+    eq(isCodeFile('deno.json'), false)
+    eq(isCodeFile('README.md'), false)
+    const prompt = reportPrompt({
+      ...python,
+      brief: 'brief',
+      skills: [],
+      tests: [],
+      typeErrors: [],
+      ownTests: 'none written',
+      declaredTools: [],
+      files: { 'main.py': 'print(1)', 'deno.json': '{}' },
+      transcript: [],
+      interviewCompleted: true,
+    })
+    eq(prompt.includes('### main.py'), true)
+    eq(prompt.includes('### deno.json'), false)
+    eq(prompt.includes('Syntax check: no error.'), true)
+  })
+  await step('the interview of a Python program names the syntax check', () => {
+    const system = interviewSystem({
+      ...python,
+      brief: 'brief',
+      files: { 'main.py': 'print(1)' },
+      failedTests: [],
+      passedCount: 1,
+      totalCount: 1,
+      typeErrors: ['main.py: invalid syntax'],
+      questions: 6,
+    })
+    eq(system.includes('Syntax check:\n- main.py: invalid syntax'), true)
+    eq(system.includes('### main.py'), true)
   })
 })

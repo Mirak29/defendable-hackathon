@@ -9,11 +9,16 @@
 //
 // Only fictional data: never a real candidate.
 import { parseArgs } from 'jsr:@std/cli/parse-args'
-import { ask, hasAiKey, llmConfig } from '/api/llm.ts'
+import { ask, type Effort, hasAiKey, llmConfig } from '/api/llm.ts'
 import { checkTypes, runEvaluation } from '/api/sandbox.ts'
+import {
+  checkProgram,
+  programCases,
+  runProgramCases,
+} from '/api/program-sandbox.ts'
 import { candidateBriefText } from '/api/reference.ts'
 import { checkReading, parseReading } from '/api/report.ts'
-import { REPORTER, reportPrompt, reportSchema } from '/api/prompts.ts'
+import { reporterFor, reportPrompt, reportSchema } from '/api/prompts.ts'
 import { demoAssessment } from '/fixtures/demo.ts'
 import { type ReportCase, reportCases } from '/fixtures/report-cases.ts'
 
@@ -33,14 +38,27 @@ const runs = Number(args.runs ?? 1)
 const wanted = args.cases?.split(',')
 const cases = reportCases.filter((c) => !wanted || wanted.includes(c.id))
 
+/** the assessment of a case: the Linkly API, or a program */
+const specOf = (c: ReportCase) => c.spec ?? demoAssessment
+
 /** what the server would measure for this candidate: the real sandbox */
 const measure = async (c: ReportCase) => {
+  const spec = specOf(c)
+  const program = spec.kind === 'program'
   const [results, problems] = await Promise.all([
-    runEvaluation(c.files, demoAssessment.tests),
-    checkTypes(c.files),
+    program
+      ? runProgramCases(
+        c.language ?? 'typescript',
+        c.files,
+        programCases(spec.tests),
+      )
+      : runEvaluation(c.files, spec.tests),
+    program
+      ? checkProgram(c.language ?? 'typescript', c.files)
+      : checkTypes(c.files),
   ])
   const tests = results.map((r) => {
-    const t = demoAssessment.tests.find((x) => x.id === r.id)!
+    const t = spec.tests.find((x) => x.id === r.id)!
     return {
       id: r.id,
       title: t.title,
@@ -59,13 +77,19 @@ for (const c of cases) facts.set(c.id, await measure(c))
 
 const read = async (c: ReportCase, effort: string) => {
   const m = facts.get(c.id)!
+  const spec = specOf(c)
+  const subject = {
+    kind: spec.kind === 'program' ? 'program' as const : 'api' as const,
+    language: c.language ?? 'typescript' as const,
+  }
   const turns = c.transcript.filter((l) => l.who === 'candidate').length
   const { data, trace } = await ask({
     task: 'eval-report',
-    system: REPORTER,
+    system: reporterFor(subject),
     prompt: reportPrompt({
-      brief: candidateBriefText(demoAssessment),
-      skills: demoAssessment.skills.map((s) => ({
+      ...subject,
+      brief: candidateBriefText(spec),
+      skills: spec.skills.map((s) => ({
         name: s.name,
         importance: s.importance,
         methods: s.methods,
@@ -86,10 +110,10 @@ const read = async (c: ReportCase, effort: string) => {
     stream: true,
     maxTokens: 14_000,
     timeoutMs: 240_000,
-    effort: effort as 'minimal' | 'low' | 'medium',
+    effort: effort as Effort,
   })
   const reading = checkReading(data, {
-    spec: demoAssessment,
+    spec,
     files: c.files,
     transcript: c.transcript,
     facts: {

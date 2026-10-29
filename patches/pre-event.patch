@@ -6996,10 +6996,10 @@ index f8db3f1..eec60cc 100644
 +  )
  })
 diff --git a/api/report.ts b/api/report.ts
-index 75d54dc..5731f61 100644
+index 75d54dc..acaa9af 100644
 --- a/api/report.ts
 +++ b/api/report.ts
-@@ -1,1032 +1,512 @@
+@@ -1,1032 +1,523 @@
 -import { contentLang, tc, withContentLang } from '/api/lib/content-lang.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import { companyOfAssessment } from '/api/schema.ts'
@@ -7055,10 +7055,11 @@ index 75d54dc..5731f61 100644
 -  QcmQuestion,
 -  Question,
 -} from '/fixtures/questions.ts'
-+  REPORTER,
++  reporterFor,
 +  type ReportInput,
 +  reportPrompt,
 +  reportSchema,
++  type Subject,
 +} from '/api/prompts.ts'
 +import {
 +  Assessment,
@@ -7941,35 +7942,11 @@ index 75d54dc..5731f61 100644
  
 -const sectionOf = (methods: string[]) =>
 -  methods[0] === 'Tests' ? 's2' : methods[0] === 'Analyse du code' ? 's3' : 's4'
-+const inputOf = (c: CandidateRow): ReportInput => {
-+  const spec = specOf(c)
-+  const facts = reportFacts(c)
-+  return {
-+    brief: candidateBriefText(spec),
-+    skills: spec.skills.map((s) => ({
-+      name: s.name,
-+      importance: s.importance,
-+      methods: s.methods,
-+    })),
-+    tests: facts.tests.map((t) => ({
-+      id: t.id,
-+      visibility: t.visibility,
-+      title: t.title,
-+      passed: t.passed,
-+      detail: `expected ${t.expected ?? '?'}, received ${t.received ?? '?'}${
-+        t.request ? ` for "${t.request}"` : ''
-+      }`,
-+    })),
-+    typeErrors: facts.typeErrors,
-+    ownTests: facts.ownTests.passed + facts.ownTests.failed
-+      ? `${facts.ownTests.passed} pass, ${facts.ownTests.failed} fail`
-+      : 'none written',
-+    declaredTools: facts.declaredTools,
-+    files: json<CandidateFiles>(c.candidateFiles) ?? {},
-+    transcript: transcriptOf(c),
-+    interviewCompleted: facts.interviewCompleted,
-+  }
-+}
++/** what the candidate wrote: an API or a program, and in which language */
++const subjectOf = (c: CandidateRow): Subject => ({
++  kind: specOf(c).kind === 'program' ? 'program' : 'api',
++  language: c.candidateLanguage === 'python' ? 'python' : 'typescript',
++})
  
 -/** R6 job, in the language of the assessment */
 -export const buildReport = (candidateId: number) =>
@@ -7978,18 +7955,9 @@ index 75d54dc..5731f61 100644
 -      .assessmentLanguage,
 -    () => writeReport(candidateId),
 -  )
-+/** tells the page the report changed state: it refetches and shows it */
-+const announce = (c: CandidateRow) =>
-+  Entry.insert.CANDIDATE_REPORT_READY({
-+    companyId: companyOfAssessment(c.assessmentId),
-+    assessmentId: c.assessmentId,
-+    candidateId: c.candidateId,
-+  })
- 
+-
 -const writeReport = async (candidateId: number) => {
-+/** reads the interview and stores the report; a failure is stored, never thrown */
-+export const buildReport = async (candidateId: number) => {
-   const c = Candidate.require(candidateId)
+-  const c = Candidate.require(candidateId)
 -  const a = Assessment.require(c.assessmentId)
 -  const spec = json<AssessmentSpec>(a.assessmentSpec)!
 -  const files = json<CandidateFiles>(c.candidateFiles) ?? {}
@@ -8058,7 +8026,40 @@ index 75d54dc..5731f61 100644
 -
 -Code du candidat (numéros de ligne à gauche) :
 -${numbered(files)}
--
++const inputOf = (c: CandidateRow): ReportInput => {
++  const spec = specOf(c)
++  const facts = reportFacts(c)
++  // the input of a program has line breaks: shown as one quoted line
++  const shown = (text: string) =>
++    spec.kind === 'program' ? JSON.stringify(text) : `"${text}"`
++  return {
++    ...subjectOf(c),
++    brief: candidateBriefText(spec),
++    skills: spec.skills.map((s) => ({
++      name: s.name,
++      importance: s.importance,
++      methods: s.methods,
++    })),
++    tests: facts.tests.map((t) => ({
++      id: t.id,
++      visibility: t.visibility,
++      title: t.title,
++      passed: t.passed,
++      detail: `expected ${t.expected ?? '?'}, received ${t.received ?? '?'}${
++        t.request ? ` for ${shown(t.request)}` : ''
++      }`,
++    })),
++    typeErrors: facts.typeErrors,
++    ownTests: facts.ownTests.passed + facts.ownTests.failed
++      ? `${facts.ownTests.passed} pass, ${facts.ownTests.failed} fail`
++      : 'none written',
++    declaredTools: facts.declaredTools,
++    files: json<CandidateFiles>(c.candidateFiles) ?? {},
++    transcript: transcriptOf(c),
++    interviewCompleted: facts.interviewCompleted,
++  }
++}
+ 
 -Pour chaque réponse libre ("free") :
 -- "ownContribution" : 1 à 3 idées que le candidat apporte lui-même, reformulées à la troisième personne (« Relie le rejet de 24:00 à… ») ; une idée présente dans les réponses de l’assistant n’est pas un apport ;
 -- "signals" : les 3 éléments qu’une bonne réponse contient (d’après "attendu" et le code), chacun "present" si la réponse le dit explicitement, "partial" si elle l’évoque sans l’établir, "absent" sinon ; une idée proposée à la place d’un élément attendu ne le rend pas présent ;
@@ -8077,7 +8078,14 @@ index 75d54dc..5731f61 100644
 -      demoTrace: demoTraces.analysis,
 -    })
 -    await pace(trace)
--
++/** tells the page the report changed state: it refetches and shows it */
++const announce = (c: CandidateRow) =>
++  Entry.insert.CANDIDATE_REPORT_READY({
++    companyId: companyOfAssessment(c.assessmentId),
++    assessmentId: c.assessmentId,
++    candidateId: c.candidateId,
++  })
+ 
 -    const allResults = [
 -      ...(results?.publicTests ?? []),
 -      ...(results?.hiddenTests ?? []),
@@ -8177,6 +8185,9 @@ index 75d54dc..5731f61 100644
 -        signals: e?.signals ?? [],
 -        contradiction,
 -      }
++/** reads the interview and stores the report; a failure is stored, never thrown */
++export const buildReport = async (candidateId: number) => {
++  const c = Candidate.require(candidateId)
 +  const at = new Date().toISOString()
 +  if (!transcriptOf(c).some((l) => l.who === 'candidate')) {
 +    store(candidateId, {
@@ -8230,7 +8241,7 @@ index 75d54dc..5731f61 100644
 +  try {
 +    const { data, trace } = await ask({
 +      task: 'report',
-+      system: REPORTER,
++      system: reporterFor(subjectOf(c)),
 +      prompt: reportPrompt(inputOf(c)),
 +      schema: reportSchema,
 +      parse: parseReading,

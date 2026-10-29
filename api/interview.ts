@@ -33,11 +33,17 @@ export const factsOf = (c: CandidateRow): InterviewFacts | undefined => {
     return `${r.id} (${test?.visibility ?? '?'}) ${
       test?.title ?? ''
     }: expected ${r.expected ?? '?'}, received ${r.received ?? '?'}${
-      r.request ? ` for "${r.request}"` : ''
+      r.request
+        ? ` for ${
+          spec.kind === 'program' ? JSON.stringify(r.request) : `"${r.request}"`
+        }`
+        : ''
     }`
   })
   const { passed, failed } = results.own
   return {
+    kind: spec.kind === 'program' ? 'program' : 'api',
+    language: c.candidateLanguage === 'python' ? 'python' : 'typescript',
     brief: candidateBriefText(spec),
     files: json<CandidateFiles>(c.candidateFiles) ?? {},
     failedTests,

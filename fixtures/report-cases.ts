@@ -6,10 +6,17 @@
 // `deno task llm:eval` runs them against a model.
 import { demoAssessment } from '/fixtures/demo.ts'
 import { demoFiles } from '/fixtures/demo-files.ts'
+import {
+  programDemo,
+  pythonSolution,
+  pythonStarter,
+} from '/fixtures/program-demo.ts'
 import { starterFiles } from '/api/assessment.ts'
 import type {
+  AssessmentSpec,
   CandidateFiles,
   InterviewLine,
+  Language,
   Reading,
   SkillStatus,
 } from '/web/types.ts'
@@ -19,6 +26,10 @@ export type Judged = Omit<Reading, 'trace'>
 export type ReportCase = {
   id: string
   what: string
+  /** the assessment: the Linkly API when missing */
+  spec?: AssessmentSpec
+  /** what the candidate wrote the program in (a program assessment) */
+  language?: Language
   files: CandidateFiles
   transcript: InterviewLine[]
   /** what is wrong with the reading: empty when it is the right one */
@@ -516,6 +527,94 @@ export const reportCases: ReportCase[] = [
         s.quotes.some((q) => ORDER_QUOTE.test(q)) ||
         s.code.some((c) => ORDER_QUOTE.test(c.note))
       ).map((s) => `${s.skill} quotes the order as evidence`),
+    ],
+  },
+  // ---- the same readings, for a program written in Python ----
+  {
+    id: 'py-strong',
+    what: 'a right Python program, explained honestly, with one example test',
+    spec: programDemo,
+    language: 'python',
+    files: pythonSolution,
+    transcript: [
+      ORACLE('Hello, I am Oracle. How did you approach the task?'),
+      SAYS(
+        'I read the whole input, match each line with a regular expression, and keep a dictionary of the quantity of each product. At the end I sort the products and print the ones that are not zero.',
+      ),
+      ORACLE('What happens to a line that is not a valid movement?'),
+      SAYS(
+        'The regular expression does not match, so the line is skipped. A product name with a capital letter does not match either, so it is ignored too.',
+      ),
+      ORACLE('How did you test it?'),
+      SAYS(
+        'Honestly I only ran the examples of the brief by hand. The test file is the example the starter gave me, I did not write real tests.',
+      ),
+      ORACLE('Thank you, that is all. [END]'),
+    ],
+    judge: (r) => [
+      ...universal(r),
+      ...expectIn(
+        r,
+        'Data validation',
+        ['Demonstrated', 'Partial'],
+        'but the program is right and the candidate explained its validation',
+      ),
+      ...r.skills.filter((s) => s.words === 'disagree').map((s) =>
+        `${s.skill}: their words are said to disagree, but they were right`
+      ),
+      ...(statusOf(r, 'Automated tests') === 'Demonstrated'
+        ? ['Automated tests is "Demonstrated" with only the example test']
+        : []),
+    ],
+  },
+  {
+    id: 'py-one-lie',
+    what:
+      'a right Python program, and a claim the code contradicts: it reads a file',
+    spec: programDemo,
+    language: 'python',
+    files: pythonSolution,
+    transcript: [
+      ORACLE('Hello, I am Oracle. How did you approach the task?'),
+      SAYS(
+        'The program takes the name of the movements file as an argument and opens it, then it adds up the quantity of each product in a dictionary and prints them sorted.',
+      ),
+      ORACLE('What happens to a line that is not a valid movement?'),
+      SAYS(
+        'A regular expression checks each line, and a line that does not match is skipped.',
+      ),
+      ORACLE('Thank you, that is all. [END]'),
+    ],
+    judge: (r) => [
+      ...universal(r),
+      // no assessed skill is about where the data comes from: the reading says
+      // it in words (the understanding or a summary), as for the half-truth
+      ...(/(standard input|stdin)/i.test(allText(r)) &&
+          /(file|argument)/i.test(allText(r))
+        ? []
+        : [
+          'it does not say that the program reads the standard input, not a file',
+        ]),
+    ],
+  },
+  {
+    id: 'py-empty',
+    what: 'the empty Python starter, and "I don\'t know" to everything',
+    spec: programDemo,
+    language: 'python',
+    files: pythonStarter,
+    transcript: [
+      ORACLE('Hello, I am Oracle. How did you approach the task?'),
+      SAYS("I don't know, I did not manage to start."),
+      ORACLE('What does the program write for a first movement?'),
+      SAYS("I don't know."),
+      ORACLE('Thank you, that is all. [END]'),
+    ],
+    judge: (r) => [
+      ...universal(r),
+      ...r.skills.filter((s) => s.status === 'Demonstrated').map((s) =>
+        `${s.skill} is "Demonstrated" for a candidate with nothing`
+      ),
     ],
   },
 ]

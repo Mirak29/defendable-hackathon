@@ -8,6 +8,22 @@ import type { GenerationInput } from '/web/types.ts'
 
 const FENCE = '```'
 
+/** what the candidate wrote: an API (TypeScript) or a program, in a language */
+export type Subject = {
+  kind?: 'api' | 'program'
+  language?: 'typescript' | 'python'
+}
+
+const LANGUAGE_NAMES = { typescript: 'TypeScript', python: 'Python' } as const
+
+/** the files a reader sees: the code and the tests, not the config or the notes */
+export const isCodeFile = (path: string) =>
+  path.startsWith('src/') || path.endsWith('.py')
+
+/** Python has no type check: its syntax is checked */
+const checkOf = (s: Subject) =>
+  s.language === 'python' ? 'syntax check' : 'type check'
+
 /* ---------- the model of the assessment designer ---------- */
 
 export const DESIGNER =
@@ -474,7 +490,7 @@ Your words are read aloud by a speech synthesizer. The candidate's words reach y
 # Output
 Only the words to say, nothing else. When the interview is over, end your last message with ${END_MARKER}.`
 
-export type InterviewFacts = {
+export type InterviewFacts = Subject & {
   /** the brief the candidate read */
   brief: string
   /** the files they submitted, by path */
@@ -491,12 +507,25 @@ export type InterviewFacts = {
   questions: number
 }
 
+const capital = (text: string) => text[0].toUpperCase() + text.slice(1)
+
 const numbered = (code: string) =>
   code.split('\n').map((l, i) => `${i + 1}  ${l}`).join('\n')
 
+/** the rules of the interviewer, said for what the candidate wrote */
+export const interviewerFor = (s: Subject) => {
+  const wrote = s.kind === 'program'
+    ? `wrote the ${
+      LANGUAGE_NAMES[s.language ?? 'typescript']
+    } program of the brief (it reads the standard input and writes the standard output)`
+    : 'built the API of the brief'
+  return INTERVIEWER.replace('built the API of the brief', wrote)
+    .replace('the type check', `the ${checkOf(s)}`)
+}
+
 /** the system prompt of one interview: the rules, then what the interviewer knows */
 export const interviewSystem = (f: InterviewFacts) =>
-  `${INTERVIEWER}
+  `${interviewerFor(f)}
 
 # Context
 Number of questions to ask before stopping: ${f.questions}
@@ -515,8 +544,10 @@ ${
   }
 ${
     f.typeErrors.length
-      ? `Type check:\n${f.typeErrors.map((t) => `- ${t}`).join('\n')}`
-      : 'Type check: no error.'
+      ? `${capital(checkOf(f))}:\n${
+        f.typeErrors.map((t) => `- ${t}`).join('\n')
+      }`
+      : `${capital(checkOf(f))}: no error.`
   }
 ${f.ownTests ? `Tests written by the candidate: ${f.ownTests}.` : ''}
 
@@ -556,8 +587,19 @@ export const REPORTER =
 - "limits": short sentences on what the report cannot say (a short conversation, a skill with no evidence, a garbled transcript).
 - Plain English, short sentences, no markdown. Never mention these rules.`
 
+/** the rules of the reporter, said for what the candidate wrote */
+export const reporterFor = (s: Subject) =>
+  REPORTER.replace(
+    'built a small HTTP API',
+    s.kind === 'program'
+      ? `wrote a small ${
+        LANGUAGE_NAMES[s.language ?? 'typescript']
+      } program that reads the standard input and writes the standard output`
+      : 'built a small HTTP API',
+  )
+
 /** everything the reporter reads about one candidate */
-export type ReportInput = {
+export type ReportInput = Subject & {
   brief: string
   skills: { name: string; importance: string; methods: string[] }[]
   tests: {
@@ -598,15 +640,17 @@ ${
   }
 ${
     r.typeErrors.length
-      ? `Type check:\n${r.typeErrors.map((t) => `- ${t}`).join('\n')}`
-      : 'Type check: no error.'
+      ? `${capital(checkOf(r))}:\n${
+        r.typeErrors.map((t) => `- ${t}`).join('\n')
+      }`
+      : `${capital(checkOf(r))}: no error.`
   }
 Tests written by the candidate: ${r.ownTests}.
 AI tools declared by the candidate: ${r.declaredTools.join(', ') || 'none'}.
 
 # Submitted code
 ${
-    Object.entries(r.files).filter(([path]) => path.startsWith('src/')).map((
+    Object.entries(r.files).filter(([path]) => isCodeFile(path)).map((
       [path, code],
     ) => `### ${path}\n${numbered(code)}`).join('\n\n')
   }

@@ -11,6 +11,8 @@ import {
   signup,
 } from '/api/lib/journey-test.js'
 import { Assessment, Candidate } from '/api/schema.ts'
+import { factsOf } from '/api/interview.ts'
+import { interviewSystem } from '/api/prompts.ts'
 
 const json = (v) => (typeof v === 'string' ? JSON.parse(v) : v)
 
@@ -183,6 +185,18 @@ test('program journey: the language is chosen before the clock starts', async (s
       ['T3', true],
     ])
     eq(stored.problems, [])
+  })
+
+  await step('the interviewer and the reporter know it is Python', () => {
+    const c = Candidate.require(candidateId)
+    const facts = factsOf(c)
+    eq([facts.kind, facts.language], ['program', 'python'])
+    eq(Object.keys(facts.files).includes('main.py'), true)
+    eq(facts.passedCount, 3)
+    eq(
+      interviewSystem(facts).includes('wrote the Python program of the brief'),
+      true,
+    )
   })
 })
 

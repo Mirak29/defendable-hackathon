@@ -17,10 +17,10 @@ import {
   type Message,
 } from '/api/llm.ts'
 import { END_MARKER, INTERVIEW_START, interviewSystem } from '/api/prompts.ts'
-import { labFacts } from '/api/voice-lab.ts'
+import { labFacts, labProgramFacts } from '/api/voice-lab.ts'
 
 const args = parseArgs(Deno.args, {
-  boolean: ['show'],
+  boolean: ['show', 'program'],
   string: ['models', 'runs', 'personas', 'effort'],
   default: { questions: 6 },
 })
@@ -36,7 +36,11 @@ const PLAYER = llmConfig.model
 const EFFORT = (args.effort ?? 'minimal') as Effort
 const runs = Number(args.runs ?? 2)
 const QUESTIONS = Number(args.questions)
-const facts = { ...await labFacts(), questions: QUESTIONS }
+// --program: a Python program whose hidden test about capital letters fails
+const facts = {
+  ...await (args.program ? labProgramFacts() : labFacts()),
+  questions: QUESTIONS,
+}
 const system = interviewSystem(facts)
 
 const CODE = Object.entries(facts.files).map(([path, code]) =>
@@ -92,7 +96,9 @@ const PRAISE =
 const REFUSAL = /^(i can'?t|i cannot|i'm not able|i won'?t|sorry)/i
 const MARKDOWN = /(```|`|\*\*|^#|^\s*[-*] |\bline \d+\b)/m
 /** what the tests found: Oracle must not say it before the candidate does */
-const LEAKS = ['javascript']
+// a program: asking about a name with a capital letter is the question itself;
+// reading the title of the failed test back is the leak
+const LEAKS = args.program ? ['is not a product'] : ['javascript']
 
 const judgeTurn = (
   text: string,

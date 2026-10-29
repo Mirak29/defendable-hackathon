@@ -27,9 +27,15 @@ const reading = (status, confidence, text = 'A reading.') => ({
 
 test('report cases: the expectations catch a wrong reading', async (step) => {
   await step('the cases are well formed', () => {
-    eq(reportCases.length, 15)
+    eq(reportCases.length, 18)
     for (const c of reportCases) {
-      eq(Object.keys(c.files).some((f) => f.startsWith('src/')), true, c.id)
+      eq(
+        Object.keys(c.files).some((f) =>
+          f.startsWith('src/') || f.endsWith('.py')
+        ),
+        true,
+        c.id,
+      )
       eq(c.transcript.some((l) => l.who === 'candidate'), true, c.id)
     }
   })
@@ -187,4 +193,33 @@ test('report cases: the expectations catch a wrong reading', async (step) => {
       )
     },
   )
+
+  await step('the Python cases are read as strictly as the others', () => {
+    const noticed = (text) => {
+      const r = reading('Partial', 'medium', text)
+      r.skills[0].words = 'disagree'
+      return r
+    }
+    // a candidate who claims a file argument while the code reads stdin
+    const lie = caseOf('py-one-lie')
+    eq(lie.judge(reading('Partial', 'medium')).length > 0, true)
+    eq(
+      lie.judge(noticed('The program reads the standard input, not a file.')),
+      [],
+    )
+    // an honest candidate with a right program is not accused
+    const strong = caseOf('py-strong')
+    eq(strong.judge(noticed('A mismatch.')).length > 0, true)
+    eq(strong.judge(reading('Partial', 'medium')), [])
+    eq(strong.judge(reading('Demonstrated', 'medium')).length > 0, true)
+    // nothing is demonstrated by a candidate with nothing
+    const empty = caseOf('py-empty')
+    eq(empty.judge(reading('Demonstrated', 'high')).length > 0, true)
+    eq(empty.judge(reading('Not demonstrated', 'low')), [])
+    for (const c of [lie, strong, empty]) {
+      eq(c.spec.kind, 'program')
+      eq(c.language, 'python')
+      eq('main.py' in c.files, true)
+    }
+  })
 })
