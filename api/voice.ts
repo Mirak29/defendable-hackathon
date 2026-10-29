@@ -364,7 +364,7 @@ export class VoiceInterview {
 
   #deliver(text: string) {
     this.#send({ type: 'ai-delta', text })
-    if (this.#serverVoice) this.#say(text)
+    this.#say(text)
   }
 
   /** what was being said is dropped: sentences still in the making are lost */
@@ -379,21 +379,22 @@ export class VoiceInterview {
    * is playing (see `nextPiece`).
    */
   #say(delta: string, flush = false) {
+    if (!this.#serverVoice) return
     this.#unspoken += delta
     const pieces: string[] = []
     for (
       let next = nextPiece(this.#unspoken, !this.#spokeYet);
       next;
-      next = nextPiece(next[1])
+      next = nextPiece(this.#unspoken)
     ) {
       pieces.push(next[0])
       this.#unspoken = next[1]
       this.#spokeYet = true
     }
-    if (flush && this.#unspoken.trim()) {
-      pieces.push(this.#unspoken.trim())
+    // the end of the answer: what remains is the last piece
+    if (flush) {
+      if (this.#unspoken.trim()) pieces.push(this.#unspoken.trim())
       this.#unspoken = ''
-      this.#spokeYet = true
     }
     const epoch = this.#epoch
     for (const text of pieces) {
@@ -481,7 +482,7 @@ export class VoiceInterview {
           ? `${spoken} [the candidate interrupted here]`
           : spoken,
       })
-      if (this.#serverVoice && !interrupted) this.#say('', true)
+      if (!interrupted) this.#say('', true)
       this.#send({ type: 'ai-done', text: spoken, interrupted })
       if (!interrupted && !isUnclear(heardText)) this.#asked++
       if (turnId !== undefined && firstWordAt) {

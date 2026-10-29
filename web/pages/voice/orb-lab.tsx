@@ -4,14 +4,14 @@ import { useEffect, useState } from 'preact/hooks'
 import { voice } from '/web/lib/voice-client.ts'
 import { OracleOrb, STAGE_BACKGROUND } from '/web/ui/oracle-orb.tsx'
 
-type Mode = 'idle' | 'listening' | 'thinking' | 'speaking'
-
-const MODES: [Mode, string][] = [
+const MODES = [
   ['idle', 'At rest'],
   ['listening', 'Listening'],
   ['thinking', 'Thinking'],
   ['speaking', 'Speaking'],
-]
+] as const
+
+type Mode = typeof MODES[number][0]
 
 const reset = () => {
   voice.listening.value = false
@@ -24,8 +24,8 @@ const reset = () => {
 export const OrbLabPage = () => {
   const [mode, setMode] = useState<Mode>('idle')
 
+  // each state starts from the rest the cleanup of the one before left
   useEffect(() => {
-    reset()
     if (mode === 'listening') voice.listening.value = true
     if (mode === 'thinking') voice.writing.value = '…'
     if (mode === 'speaking') voice.speaking.value = true

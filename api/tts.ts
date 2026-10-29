@@ -6,9 +6,11 @@
 // weights yet, TTS=off, an error) the interview falls back to the browser's
 // voice.
 import { ENV } from '@01edu/api/env'
+import { encodeBase64 } from 'jsr:@std/encoding/base64'
 import { log } from '/api/lib/log.ts'
+import { makeQueue } from '/api/lib/make-queue.ts'
 
-export const ttsConfig = {
+const config = {
   enabled: ENV('TTS', 'on') !== 'off',
   model: ENV('TTS_MODEL', 'onnx-community/Kokoro-82M-v1.0-ONNX'),
   voice: ENV('TTS_VOICE', 'af_heart'),
@@ -21,52 +23,40 @@ type Engine = {
   ) => Promise<{ audio: Float32Array; sampling_rate: number }>
 }
 
-let engine: Promise<Engine | undefined> | undefined
-let loaded = false
+let loading: Promise<void> | undefined
+let engine: Engine | undefined
 /** one sentence at a time: the model already uses every core */
-let queue: Promise<unknown> = Promise.resolve()
+const nextSlot = makeQueue(1)
 
-const load = async (): Promise<Engine | undefined> => {
+const load = async () => {
   const started = performance.now()
   try {
     const { KokoroTTS } = await import('kokoro-js')
-    const model = await KokoroTTS.from_pretrained(ttsConfig.model, {
+    const model = await KokoroTTS.from_pretrained(config.model, {
       dtype: 'fp32',
       device: 'cpu',
     }) as unknown as Engine
     // the first run is the slow one: it happens before anybody waits for it
-    await model.generate('Hello.', { voice: ttsConfig.voice })
-    loaded = true
+    await model.generate('Hello.', { voice: config.voice })
+    engine = model
     log.info('tts-ready', { ms: Math.round(performance.now() - started) })
-    return model
   } catch (err) {
     log.warn('tts-unavailable', { message: String(err) })
-    return undefined
   }
 }
 
-/** loads the model in the background; true once it can speak */
-const warmUp = (): Promise<boolean> => {
-  if (!ttsConfig.enabled) return Promise.resolve(false)
-  engine ??= load()
-  return engine.then((e) => !!e)
-}
-
-const base64 = (bytes: Uint8Array) => {
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  }
-  return btoa(binary)
+/** loads the model in the background */
+const warmUp = () => {
+  if (config.enabled) loading ??= load()
 }
 
 /** float samples (-1 to 1) as little-endian 16-bit PCM, in base64 */
-export const pcmBase64 = (samples: Float32Array) => {
+const pcmBase64 = (samples: Float32Array) => {
   const pcm = new Int16Array(samples.length)
   for (let i = 0; i < samples.length; i++) {
     pcm[i] = Math.max(-1, Math.min(1, samples[i])) * 32767
   }
-  return base64(new Uint8Array(pcm.buffer))
+  return encodeBase64(new Uint8Array(pcm.buffer))
 }
 
 /**
@@ -74,25 +64,22 @@ export const pcmBase64 = (samples: Float32Array) => {
  * when it cannot be made: the browser then reads it. `alive` is asked just
  * before the work starts, so a sentence nobody waits for any more costs nothing.
  */
-const synthesize = (
+const synthesize = async (
   text: string,
-  alive: () => boolean = () => true,
+  alive: () => boolean,
 ): Promise<string | undefined> => {
-  const job = queue.then(async () => {
-    if (!alive()) return undefined
-    const model = await engine
-    if (!model) return undefined
-    try {
-      const out = await model.generate(text, { voice: ttsConfig.voice })
-      return pcmBase64(out.audio)
-    } catch (err) {
-      log.warn('tts-failed', { message: String(err) })
-      return undefined
-    }
-  })
-  queue = job.catch(() => {})
-  return job
+  using _slot = await nextSlot()
+  if (!alive()) return undefined
+  await loading
+  if (!engine) return undefined
+  try {
+    const out = await engine.generate(text, { voice: config.voice })
+    return pcmBase64(out.audio)
+  } catch (err) {
+    log.warn('tts-failed', { message: String(err) })
+    return undefined
+  }
 }
 
 /** an object so a test can stand in for the model */
-export const tts = { loaded: () => loaded, warmUp, synthesize }
+export const tts = { loaded: () => !!engine, warmUp, synthesize }

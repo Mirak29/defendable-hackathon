@@ -130,18 +130,27 @@ const voiceStarted = (text: string) => {
 /* the voice of the server: sentences of PCM 24 kHz, played one after another */
 const SPEECH_RATE = 24_000
 let playingFrom = 0
-let sounds = new Set<AudioBufferSourceNode>()
+const sounds = new Set<AudioBufferSourceNode>()
 let meter: ReturnType<typeof setInterval> | undefined
+/** runs when the last sentence has been played (the end of an interview) */
+let whenSilent: (() => void) | undefined
 
 /** how loud the voice is now: it moves the presence of Oracle */
 const measure = () => {
   const analyser = playback?.analyser
   if (!analyser) return
-  const samples = new Float32Array(analyser.fftSize)
+  samples ??= new Float32Array(analyser.fftSize)
   analyser.getFloatTimeDomainData(samples)
   let sum = 0
   for (const s of samples) sum += s * s
   voice.amplitude.value = Math.min(1, Math.sqrt(sum / samples.length) * 4.5)
+}
+let samples: Float32Array<ArrayBuffer> | undefined
+
+const stopMeter = () => {
+  clearInterval(meter)
+  meter = undefined
+  voice.amplitude.value = 0
 }
 
 const stopSounds = () => {
@@ -151,17 +160,17 @@ const stopSounds = () => {
       sound.stop()
     } catch { /* never started */ }
   }
-  sounds = new Set()
+  sounds.clear()
   playingFrom = 0
-  clearInterval(meter)
-  meter = undefined
-  voice.amplitude.value = 0
+  stopMeter()
 }
 
 const playPcm = (text: string, base64: string) => {
   if (!playback) return
   const { context, gain } = playback
-  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < bytes.length; i++) bytes[i] = binary.charCodeAt(i)
   const pcm = new Int16Array(bytes.buffer, 0, bytes.length >> 1)
   const buffer = context.createBuffer(1, pcm.length, SPEECH_RATE)
   const channel = buffer.getChannelData(0)
@@ -177,9 +186,8 @@ const playPcm = (text: string, base64: string) => {
     sounds.delete(sound)
     if (sounds.size) return
     voice.speaking.value = false
-    clearInterval(meter)
-    meter = undefined
-    voice.amplitude.value = 0
+    stopMeter()
+    whenSilent?.()
   }
   if (context.state === 'suspended') context.resume()
   sound.start(at)
@@ -389,12 +397,13 @@ export const stopVoice = (tell = true, keepVoice = false) => {
   current.socket.close()
   current.stream.getTracks().forEach((t) => t.stop())
   // the last sentence of an interview that is over is still being played
-  const closeWhenSilent = () => {
-    if (sounds.size) return void setTimeout(closeWhenSilent, 200)
+  const closeContext = () => {
+    whenSilent = undefined
     if (playback?.context === current.context) playback = undefined
     current.context.close().catch(() => {})
   }
-  closeWhenSilent()
+  if (sounds.size) whenSilent = closeContext
+  else closeContext()
   voice.listening.value = false
   voice.level.value = 0
   if (voice.status.value === 'live' || voice.status.value === 'connecting') {
