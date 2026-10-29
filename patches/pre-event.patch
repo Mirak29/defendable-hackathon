@@ -1698,7 +1698,7 @@ index 2d5d576..38b9973 100644
    })
  })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..355cb2d 100644
+index 9a19ccb..be058a7 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
 @@ -1,63 +1,67 @@
@@ -2049,7 +2049,15 @@ index 9a19ccb..355cb2d 100644
      assessment: {
        title: spec.title,
        company: spec.company,
-@@ -316,18 +329,17 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -308,6 +321,7 @@ export const toView = (c: CandidateRow): CandidateView => {
+       constraints: spec.constraints,
+       publicTests: spec.tests.filter((t) => t.visibility === 'public'),
+       hiddenCount: spec.tests.filter((t) => t.visibility !== 'public').length,
++      io: spec.io,
+     },
+     startedAt: c.candidateStartedAt ?? undefined,
+     submittedAt: c.candidateSubmittedAt ?? undefined,
+@@ -316,18 +330,17 @@ export const toView = (c: CandidateRow): CandidateView => {
      files: json<CandidateFiles>(c.candidateFiles) ?? {},
      savedAt: c.candidateSavedAt ?? undefined,
      preparation: json(c.candidatePreparation),
@@ -2071,7 +2079,7 @@ index 9a19ccb..355cb2d 100644
      })
    }
  }
-@@ -343,30 +355,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
+@@ -343,30 +356,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
    return { savedAt }
  }
  
@@ -2142,7 +2150,7 @@ index 9a19ccb..355cb2d 100644
  
  export const submitCode = (
    c: CandidateRow,
-@@ -376,261 +421,133 @@ export const submitCode = (
+@@ -376,261 +422,133 @@ export const submitCode = (
      auto?: boolean
    },
  ) => {
@@ -12583,16 +12591,77 @@ index 1908fbc..dc62c83 100644
  import { tokenizeLine, type TokenKind } from '/web/lib/code-tokens.ts'
  
 diff --git a/web/lib/code-tokens.ts b/web/lib/code-tokens.ts
-index fc0bb12..caf7e67 100644
+index fc0bb12..7d0ec04 100644
 --- a/web/lib/code-tokens.ts
 +++ b/web/lib/code-tokens.ts
 @@ -1,5 +1,5 @@
- // Tiny line tokenizer for read-only code (TypeScript, JSON, Markdown).
+-// Tiny line tokenizer for read-only code (TypeScript, JSON, Markdown).
 -// Ported from the prototype (shared.js). Token kinds map to the `code-*`
++// Tiny line tokenizer for read-only code (TypeScript, Python, JSON, Markdown).
 +// Token kinds map to the `code-*`
  // semantic colors of web/theme.ts.
  
  export type TokenKind = 'kw' | 'str' | 'type' | 'fn' | 'num' | 'com' | 'txt'
+@@ -57,6 +57,52 @@ const tokenizeTs = (line: string): CodeToken[] => {
+   return out
+ }
+ 
++const PY_KW = new Set(
++  'and as assert async await break class continue def del elif else except finally for from global if import in is lambda None nonlocal not or pass raise return try while with yield True False self'
++    .split(' '),
++)
++const PY_BUILTINS = new Set(
++  'int str float bool list dict set tuple bytes len range print input open sum min max sorted enumerate zip map filter isinstance type Exception ValueError KeyError TypeError IndexError'
++    .split(' '),
++)
++
++const tokenizePy = (line: string): CodeToken[] => {
++  const out: CodeToken[] = []
++  let i = 0
++  while (i < line.length) {
++    const rest = line.slice(i)
++    let m: RegExpMatchArray | null
++    if ((m = rest.match(/^#.*/))) out.push([m[0], 'com'])
++    else if (
++      (m = rest.match(
++        /^([rbfRBF]{0,2}(?:\"\"\"[^]*?(?:\"\"\"|$)|'''[^]*?(?:'''|$)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))/,
++      ))
++    ) out.push([m[0], 'str'])
++    else if ((m = rest.match(/^@\w+/))) out.push([m[0], 'fn'])
++    else if ((m = rest.match(/^\d+(?:\.\d+)?/))) out.push([m[0], 'num'])
++    else if ((m = rest.match(/^[A-Za-z_]\w*/))) {
++      const word = m[0]
++      const after = line.slice(i + word.length)
++      out.push([
++        word,
++        PY_KW.has(word)
++          ? 'kw'
++          : /^[A-Z]/.test(word) || PY_BUILTINS.has(word)
++          ? 'type'
++          : /^\s*\(/.test(after)
++          ? 'fn'
++          : 'txt',
++      ])
++    } else {
++      out.push([line[i], 'txt'])
++      i++
++      continue
++    }
++    i += m[0].length
++  }
++  return out
++}
++
+ const tokenizeJson = (line: string): CodeToken[] =>
+   line.split(/("(?:[^"\\]|\\.)*")/).filter(Boolean).map((part, index, all) => {
+     if (part[0] !== '"') return [part, 'txt']
+@@ -68,5 +114,6 @@ export const tokenizeLine = (line: string, file: string): CodeToken[] => {
+   if (/\.json$/.test(file)) return tokenizeJson(line)
+   if (/\.md$/.test(file)) return [[line, /^#/.test(line) ? 'kw' : 'txt']]
+   if (/\.(ts|tsx|js)$/.test(file)) return tokenizeTs(line)
++  if (/\.py$/.test(file)) return tokenizePy(line)
+   return [[line, 'txt']]
+ }
 diff --git a/web/lib/drag.ts b/web/lib/drag.ts
 index 3d62e9e..641bea5 100644
 --- a/web/lib/drag.ts
@@ -14395,7 +14464,7 @@ index 54daae0..4649e89 100644
    </main>
  )
 diff --git a/web/pages/recruiter/assessment-page.tsx b/web/pages/recruiter/assessment-page.tsx
-index d5b6cab..bba65f4 100644
+index d5b6cab..6d543ff 100644
 --- a/web/pages/recruiter/assessment-page.tsx
 +++ b/web/pages/recruiter/assessment-page.tsx
 @@ -1,5 +1,5 @@
@@ -14985,7 +15054,7 @@ index d5b6cab..bba65f4 100644
          </span>
        </div>
        <div tw='flex flex-col gap-2'>
-@@ -761,17 +658,16 @@ export const AssessmentPage = () => {
+@@ -761,54 +658,56 @@ export const AssessmentPage = () => {
          <div tw='flex gap-1.5 flex-wrap'>
            <MetaTag>{levelLabels[spec.level]}</MetaTag>
            <MetaTag icon={Clock}>{spec.durationMin} min</MetaTag>
@@ -15006,7 +15075,20 @@ index d5b6cab..bba65f4 100644
            <dl
              tw='m-0 grid gap-x-4 gap-y-2 text-[13px]'
              style={{ gridTemplateColumns: 'auto 1fr' }}
-@@ -782,33 +678,28 @@ export const AssessmentPage = () => {
+           >
+-            <dt tw='text-content-tertiary'>Routes</dt>
++            <dt tw='text-content-tertiary'>
++              {spec.kind === 'program' ? 'Task' : 'Routes'}
++            </dt>
+             <dd tw='m-0 font-mono text-[12.5px] leading-[1.7]'>
+-              {spec.routes.map((r) => `${r.method} ${r.path}`).join(' · ')}
++              {spec.kind === 'program'
++                ? `Program: input to output, in ${
++                  (spec.languages ?? []).map((l) =>
++                    l === 'python' ? 'Python' : 'TypeScript'
++                  ).join(' or ')
++                }`
++                : spec.routes.map((r) => `${r.method} ${r.path}`).join(' · ')}
              </dd>
              <dt tw='text-content-tertiary'>Tests</dt>
              <dd tw='m-0'>
@@ -15051,7 +15133,7 @@ index d5b6cab..bba65f4 100644
              </th>
            </THead>
            <tbody>
-@@ -818,15 +709,12 @@ export const AssessmentPage = () => {
+@@ -818,15 +717,12 @@ export const AssessmentPage = () => {
                    colSpan={6}
                    tw={[td, 'pl-4 text-content-tertiary text-[13px]']}
                  >
@@ -15069,7 +15151,7 @@ index d5b6cab..bba65f4 100644
                return (
                  <tr key={c.id} tw='border-t border-border-primary'>
                    <td tw={[td, 'pl-4']}>
-@@ -844,7 +732,7 @@ export const AssessmentPage = () => {
+@@ -844,7 +740,7 @@ export const AssessmentPage = () => {
                        )
                        : (
                          <span tw='text-[13px] text-content-tertiary'>
@@ -15078,7 +15160,7 @@ index d5b6cab..bba65f4 100644
                          </span>
                        )}
                    </td>
-@@ -853,7 +741,7 @@ export const AssessmentPage = () => {
+@@ -853,7 +749,7 @@ export const AssessmentPage = () => {
                    <td tw={[td, 'text-content-secondary']}>
                      {c.buildMinutes
                        ? `${formatMinutes(c.buildMinutes)}${
@@ -15087,7 +15169,7 @@ index d5b6cab..bba65f4 100644
                        }`
                        : '—'}
                    </td>
-@@ -862,17 +750,17 @@ export const AssessmentPage = () => {
+@@ -862,17 +758,17 @@ export const AssessmentPage = () => {
                    </td>
                    <td tw={[td, 'pr-4 text-right']}>
                      <span tw='inline-flex items-center gap-2 justify-end flex-wrap'>
@@ -15108,7 +15190,7 @@ index d5b6cab..bba65f4 100644
                          <button
                            type='button'
                            data-test='revoke-btn'
-@@ -880,7 +768,7 @@ export const AssessmentPage = () => {
+@@ -880,7 +776,7 @@ export const AssessmentPage = () => {
                            onClick={() => revoke(c)}
                          >
                            <Ban tw='w-3.5 h-3.5' />
@@ -15117,7 +15199,7 @@ index d5b6cab..bba65f4 100644
                          </button>
                        )}
                        {done
-@@ -892,21 +780,18 @@ export const AssessmentPage = () => {
+@@ -892,21 +788,18 @@ export const AssessmentPage = () => {
                              tw='btn btn-secondary h-8 px-3 text-[13px]'
                            >
                              <FileText tw='w-3.5 h-3.5' />
@@ -15142,7 +15224,7 @@ index d5b6cab..bba65f4 100644
                            </button>
                          )}
                      </span>
-@@ -917,10 +802,7 @@ export const AssessmentPage = () => {
+@@ -917,10 +810,7 @@ export const AssessmentPage = () => {
            </tbody>
          </TableWrap>
          <p tw='m-0 text-[12.5px] text-content-tertiary'>
@@ -15282,10 +15364,10 @@ index 5b10304..d2a1ce6 100644
            <tbody>
              {list.map((a) => {
 diff --git a/web/pages/recruiter/new-assessment-page.tsx b/web/pages/recruiter/new-assessment-page.tsx
-index 7d8a2d5..6563dc7 100644
+index 7d8a2d5..22e9adb 100644
 --- a/web/pages/recruiter/new-assessment-page.tsx
 +++ b/web/pages/recruiter/new-assessment-page.tsx
-@@ -1,13 +1,9 @@
+@@ -1,20 +1,17 @@
  import { paths } from '/web/paths.ts'
  import { computed, signal } from '@preact/signals'
  import { navigate, url } from '/web/lib/router-signal.ts'
@@ -15298,11 +15380,20 @@ index 7d8a2d5..6563dc7 100644
 -import { demoOf } from '/fixtures/demos.ts'
 +import { useEffect } from 'preact/hooks'
 +import { demoJobDescription } from '/fixtures/demo.ts'
-+import { skillCatalog, skillMethods } from '/web/lib/skills.ts'
++import { skillCatalog, skillMethodsOf } from '/web/lib/skills.ts'
  import {
    generateAssessment,
    getAssessment,
-@@ -37,8 +33,6 @@ import {
+   prefillSkills,
+   retryGeneration,
+ } from '/web/lib/assessment-store.ts'
+-import type { AiTrace, Level } from '/web/types.ts'
++import type { AiTrace, AssessmentKind, Language, Level } from '/web/types.ts'
++import { LANGUAGES } from '/web/types.ts'
+ import { notify } from '/web/ui/notifications.tsx'
+ import { Spinner } from '/web/ui/spinner.tsx'
+ import { FieldTitle, Input, Label, Segmented, Textarea } from '/web/ui/form.tsx'
+@@ -37,8 +34,6 @@ import {
    Sparkles,
    TriangleAlert,
  } from '/web/assets/icons.tsx'
@@ -15311,7 +15402,7 @@ index 7d8a2d5..6563dc7 100644
  
  // Twind has no decoration-* / underline-offset-* utilities
  const underlineStyle = {
-@@ -50,8 +44,7 @@ const MIN_LENGTH = 80
+@@ -50,8 +45,7 @@ const MIN_LENGTH = 80
  const MAX_SKILLS = 5
  
  /*
@@ -15321,13 +15412,22 @@ index 7d8a2d5..6563dc7 100644
   */
  const description = signal('')
  const level = signal<Level>('intermediate')
-@@ -60,22 +53,18 @@ const skills = signal<string[]>([])
+@@ -60,22 +54,28 @@ const skills = signal<string[]>([])
  const customSkills = signal<string[]>([])
  const customInput = signal('')
  const domain = signal('')
 -// the assessment is written in the language of the interface by default
 -const language = signal<'fr' | 'en'>(lang.peek())
  const prefilled = signal(false)
++/** an HTTP API (TypeScript), or a program that reads and writes text */
++const kind = signal<AssessmentKind>('api')
++/** the languages a candidate may choose for a program */
++const languages = signal<Language[]>([...LANGUAGES])
++
++const LANGUAGE_NAMES: Record<Language, string> = {
++  typescript: 'TypeScript',
++  python: 'Python',
++}
  
 -/** the example of the guided demo, in the language of the site */
 +/** the example offer of the demo */
@@ -15342,6 +15442,7 @@ index 7d8a2d5..6563dc7 100644
 -  language.value = demo.lang
 +  skills.value = skillCatalog.slice(0, 2)
 +  domain.value = ''
++  kind.value = 'api'
  }
  
 -// R3 — generation, run by the API: the followed assessment (?id=) carries
@@ -15349,7 +15450,7 @@ index 7d8a2d5..6563dc7 100644
  // its progress, refreshed by the server events
  type Phase = 'form' | 'gen' | 'retry' | 'failed'
  const submitting = signal(false)
-@@ -103,17 +92,12 @@ const isFull = computed(() => skills.value.length >= MAX_SKILLS)
+@@ -103,17 +103,12 @@ const isFull = computed(() => skills.value.length >= MAX_SKILLS)
  const helpText = computed(() => {
    const missing = MIN_LENGTH - length.value
    if (missing > 0) {
@@ -15371,7 +15472,7 @@ index 7d8a2d5..6563dc7 100644
    }
    return ''
  })
-@@ -158,17 +142,14 @@ const runGeneration = async () => {
+@@ -158,17 +153,16 @@ const runGeneration = async () => {
    submitting.value = true
    submitError.value = ''
    try {
@@ -15386,12 +15487,14 @@ index 7d8a2d5..6563dc7 100644
 -      language: language.value,
 -    }, etat === 'repli' || etat === 'echec' ? etat : undefined)
 -    navigate({ params: { id, etat: null }, replace: true })
++      kind: kind.value === 'program' ? 'program' : undefined,
++      languages: kind.value === 'program' ? languages.value : undefined,
 +    })
 +    navigate({ params: { id }, replace: true })
    } catch (err) {
      submitError.value = (err as Error).message
    } finally {
-@@ -182,13 +163,10 @@ const retry = () => {
+@@ -182,13 +176,10 @@ const retry = () => {
  }
  
  const STEPS = () => [
@@ -15409,7 +15512,7 @@ index 7d8a2d5..6563dc7 100644
  ]
  
  const generationSteps = computed((): OperationStep[] => {
-@@ -202,13 +180,8 @@ const generationSteps = computed((): OperationStep[] => {
+@@ -202,13 +193,8 @@ const generationSteps = computed((): OperationStep[] => {
      }
      if (step?.state === 'error') {
        detail = generating.value?.generation?.failures?.at(-1)?.reason
@@ -15425,7 +15528,7 @@ index 7d8a2d5..6563dc7 100644
      }
      return { label, state, detail, trace: step?.trace }
    })
-@@ -223,10 +196,10 @@ const GenerationOverlay = () => (
+@@ -223,10 +209,10 @@ const GenerationOverlay = () => (
      >
        <div tw='flex items-baseline justify-between gap-3'>
          <h2 tw='m-0 text-[16px] font-semibold'>
@@ -15438,7 +15541,7 @@ index 7d8a2d5..6563dc7 100644
          </span>
        </div>
        {phase.value === 'retry' && (
-@@ -267,16 +240,13 @@ const SkillChip = ({ name }: { name: string }) => {
+@@ -267,16 +253,13 @@ const SkillChip = ({ name }: { name: string }) => {
        ]}
      >
        {on && <Check tw='w-[13px] h-[13px]' stroke-width={2.25} />}
@@ -15457,7 +15560,7 @@ index 7d8a2d5..6563dc7 100644
      </Tooltip>
    )
  }
-@@ -296,7 +266,7 @@ const Form = () => {
+@@ -296,7 +279,7 @@ const Form = () => {
        <div tw='flex flex-col gap-1.5'>
          <div tw='flex items-baseline justify-between gap-3'>
            <Label for='description'>
@@ -15466,7 +15569,7 @@ index 7d8a2d5..6563dc7 100644
            </Label>
            <span
              tw={[
-@@ -312,10 +282,7 @@ const Form = () => {
+@@ -312,10 +295,7 @@ const Form = () => {
            rows={8}
            value={description.value}
            onInput={(e) => description.value = e.currentTarget.value}
@@ -15478,7 +15581,7 @@ index 7d8a2d5..6563dc7 100644
          />
          <div tw='flex items-center gap-2 flex-wrap'>
            <button
-@@ -326,10 +293,7 @@ const Form = () => {
+@@ -326,10 +306,7 @@ const Form = () => {
              style={underlineStyle}
            >
              <Sparkles tw='w-3.5 h-3.5 text-ai' />
@@ -15490,7 +15593,7 @@ index 7d8a2d5..6563dc7 100644
            </button>
            {prefilling.value && <Spinner />}
            {prefilled.value && prefillTrace.value && (
-@@ -340,22 +304,22 @@ const Form = () => {
+@@ -340,22 +317,22 @@ const Form = () => {
  
        <div tw='grid grid-cols-1 sm:grid-cols-2 gap-5'>
          <div tw='flex flex-col gap-1.5'>
@@ -15518,7 +15621,64 @@ index 7d8a2d5..6563dc7 100644
              value={duration.value}
              onChange={(v) => duration.value = v}
              options={[[60, '60 min'], [90, '90 min'], [120, '120 min']]}
-@@ -366,7 +330,7 @@ const Form = () => {
+@@ -363,10 +340,64 @@ const Form = () => {
+         </div>
+       </div>
+ 
++      <div tw='flex flex-col gap-2'>
++        <FieldTitle>Type of task</FieldTitle>
++        <Segmented
++          label='Type of task'
++          value={kind.value}
++          onChange={(v) => kind.value = v}
++          tw='self-start w-[420px] max-w-full'
++          options={[
++            ['api', 'HTTP API'],
++            ['program', 'Program (input to output)'],
++          ]}
++        />
++        {kind.value === 'program' && (
++          <div tw='flex flex-col gap-1.5'>
++            <span tw='text-[12.5px] text-content-tertiary'>
++              {'The candidate chooses one of these languages before the timer starts.'}
++            </span>
++            <div
++              role='group'
++              aria-label='Languages'
++              tw='flex gap-1.5 flex-wrap'
++            >
++              {LANGUAGES.map((l) => {
++                const on = languages.value.includes(l)
++                return (
++                  <button
++                    key={l}
++                    type='button'
++                    aria-pressed={on}
++                    data-test={`language-${l}`}
++                    onClick={() => {
++                      const next = on
++                        ? languages.value.filter((x) => x !== l)
++                        : [...languages.value, l]
++                      // at least one language stays
++                      if (next.length) languages.value = next
++                    }}
++                    tw={[
++                      'px-3 h-[30px] rounded-full border text-[13px] cursor-pointer inline-flex items-center gap-1.5',
++                      on
++                        ? 'bg-accent-soft border-accent text-content-primary font-medium'
++                        : 'border-border-strong text-content-secondary',
++                    ]}
++                  >
++                    {on && <Check tw='w-3 h-3' />}
++                    {LANGUAGE_NAMES[l]}
++                  </button>
++                )
++              })}
++            </div>
++          </div>
++        )}
++      </div>
++
        <div tw='flex flex-col gap-2'>
          <div tw='flex items-baseline justify-between gap-3'>
            <FieldTitle>
@@ -15527,7 +15687,7 @@ index 7d8a2d5..6563dc7 100644
            </FieldTitle>
            <span
              tw={[
-@@ -385,10 +349,10 @@ const Form = () => {
+@@ -385,10 +416,10 @@ const Form = () => {
          <div tw='flex gap-1.5 max-w-[420px]'>
            <Input
              name='customSkill'
@@ -15540,7 +15700,7 @@ index 7d8a2d5..6563dc7 100644
              onInput={(e) => customInput.value = e.currentTarget.value}
              onKeyDown={(e) => {
                if (e.key !== 'Enter') return
-@@ -403,7 +367,7 @@ const Form = () => {
+@@ -403,7 +434,7 @@ const Form = () => {
              onClick={addCustomSkill}
            >
              <Plus tw='w-3.5 h-3.5' />
@@ -15549,7 +15709,7 @@ index 7d8a2d5..6563dc7 100644
            </button>
          </div>
        </div>
-@@ -411,27 +375,13 @@ const Form = () => {
+@@ -411,27 +442,13 @@ const Form = () => {
        <div tw='grid grid-cols-1 sm:grid-cols-wide-narrow gap-5'>
          <div tw='flex flex-col gap-1.5'>
            <Label for='domain'>
@@ -15579,7 +15739,7 @@ index 7d8a2d5..6563dc7 100644
            />
          </div>
        </div>
-@@ -440,12 +390,9 @@ const Form = () => {
+@@ -440,12 +457,11 @@ const Form = () => {
          <Lock tw='w-[15px] h-[15px] mt-0.5 flex-none' />
          <span>
            <strong tw='font-semibold text-content-primary'>
@@ -15590,11 +15750,13 @@ index 7d8a2d5..6563dc7 100644
 -            'API HTTP en TypeScript (Deno), sans base de données ni dépendance externe.',
 -            'HTTP API in TypeScript (Deno), with no database and no external dependency.',
 -          )}
-+          {'HTTP API in TypeScript (Deno), with no database and no external dependency.'}
++          {kind.value === 'program'
++            ? 'a program that reads the standard input and writes the standard output, with no database, no network and no external dependency.'
++            : 'HTTP API in TypeScript (Deno), with no database and no external dependency.'}
          </span>
        </div>
  
-@@ -458,7 +405,7 @@ const Form = () => {
+@@ -458,7 +474,7 @@ const Form = () => {
            onClick={() => cantGenerate || runGeneration()}
          >
            <Sparkles tw='w-[15px] h-[15px]' />
@@ -15603,7 +15765,7 @@ index 7d8a2d5..6563dc7 100644
          </button>
          {!busy && helpText.value && (
            <span tw='text-[12.5px] text-content-tertiary inline-flex items-center gap-[5px]'>
-@@ -479,30 +426,30 @@ const Form = () => {
+@@ -479,30 +495,31 @@ const Form = () => {
  
  const levelText = () => ({
    junior: 'Junior',
@@ -15613,10 +15775,11 @@ index 7d8a2d5..6563dc7 100644
  })
  
  const Preview = () => {
++  const methodsOf = skillMethodsOf(kind.value)
    const chosen = skills.value.map((name) => ({
      name,
 -    methods: skillMethods[name] || ['Questions' as const],
-+    methods: skillMethods[name] || ['Interview' as const],
++    methods: methodsOf[name] || ['Interview' as const],
    }))
    const questionsOnly = chosen.filter((s) =>
 -    s.methods.length === 1 && s.methods[0] === 'Questions'
@@ -15640,13 +15803,19 @@ index 7d8a2d5..6563dc7 100644
          </span>
        </div>
        <dl
-@@ -510,33 +457,30 @@ const Preview = () => {
+@@ -510,33 +527,40 @@ const Preview = () => {
          style={{ gridTemplateColumns: 'auto 1fr' }}
        >
          <dt tw='text-content-tertiary'>Format</dt>
 -        <dd tw='m-0'>{tv('API HTTP en TypeScript (Deno)')}</dd>
 -        <dt tw='text-content-tertiary'>{t('Niveau', 'Level')}</dt>
-+        <dd tw='m-0'>HTTP API in TypeScript (Deno)</dd>
++        <dd tw='m-0'>
++          {kind.value === 'program'
++            ? `Program in ${
++              languages.value.map((l) => LANGUAGE_NAMES[l]).join(' or ')
++            }`
++            : 'HTTP API in TypeScript (Deno)'}
++        </dd>
 +        <dt tw='text-content-tertiary'>Level</dt>
          <dd tw='m-0'>{levelText()[level.value]}</dd>
 -        <dt tw='text-content-tertiary'>{t('Durée', 'Duration')}</dt>
@@ -15657,9 +15826,15 @@ index 7d8a2d5..6563dc7 100644
 -            'min + about 20 min of questions',
 -          )}
 +          {duration.value} {'min + about 20 min of questions'}
++        </dd>
++        <dt tw='text-content-tertiary'>
++          {kind.value === 'program' ? 'Contract' : 'Routes'}
++        </dt>
++        <dd tw='m-0'>
++          {kind.value === 'program' ? 'input to output' : '4 routes'}
          </dd>
-         <dt tw='text-content-tertiary'>Routes</dt>
-         <dd tw='m-0'>4 routes</dd>
+-        <dt tw='text-content-tertiary'>Routes</dt>
+-        <dd tw='m-0'>4 routes</dd>
          <dt tw='text-content-tertiary'>Tests</dt>
          <dd tw='m-0'>
 -          {t('8 tests publics + 3 cachés', '8 public tests + 3 hidden')}
@@ -15682,7 +15857,7 @@ index 7d8a2d5..6563dc7 100644
              {s.methods.map((m) => <MethodBadge key={m} method={m} />)}
            </div>
          ))}
-@@ -547,11 +491,8 @@ const Preview = () => {
+@@ -547,11 +571,10 @@ const Preview = () => {
            >
              <TriangleAlert tw='w-3.5 h-3.5 flex-none mt-0.5 text-warn' />
              <span>
@@ -15692,11 +15867,13 @@ index 7d8a2d5..6563dc7 100644
 -                ': assessed by questions only; the environment has no database. Medium confidence at most.',
 -              )}
 +              <strong tw='font-semibold'>{s.name}</strong>
-+              {': assessed by questions only; the environment has no database. Medium confidence at most.'}
++              {kind.value === 'program'
++                ? ': assessed by questions only; a program that reads and writes text cannot show it. Medium confidence at most.'
++                : ': assessed by questions only; the environment has no database. Medium confidence at most.'}
              </span>
            </div>
          ))}
-@@ -563,13 +504,13 @@ const Preview = () => {
+@@ -563,13 +586,13 @@ const Preview = () => {
          tw='self-start inline-flex items-center gap-[5px] text-[13px] font-medium text-accent-text hover:underline cursor-pointer'
        >
          <ClipboardPaste tw='w-3.5 h-3.5' />
@@ -15712,7 +15889,7 @@ index 7d8a2d5..6563dc7 100644
  export const NewAssessmentPage = () => {
    // generated: on to the review (R4)
    const a = url.params.id ? getAssessment(url.params.id) : undefined
-@@ -584,16 +525,13 @@ export const NewAssessmentPage = () => {
+@@ -584,16 +607,13 @@ export const NewAssessmentPage = () => {
  const Page = () => (
    <div tw='w-full max-w-[1240px] mx-auto px-4 sm:px-8 pt-7 pb-16'>
      <BackLink href={paths.recruiter}>
@@ -15733,7 +15910,7 @@ index 7d8a2d5..6563dc7 100644
      <div tw='grid grid-cols-1 lg:grid-cols-form-preview gap-7 items-start'>
        <Form />
 diff --git a/web/pages/recruiter/review-page.tsx b/web/pages/recruiter/review-page.tsx
-index a38b80c..0e4a60d 100644
+index a38b80c..17958d8 100644
 --- a/web/pages/recruiter/review-page.tsx
 +++ b/web/pages/recruiter/review-page.tsx
 @@ -1,6 +1,6 @@
@@ -16118,32 +16295,141 @@ index a38b80c..0e4a60d 100644
                      </span>
                    )}
                  </td>
-@@ -567,7 +515,7 @@ const SkillsSection = ({ a }: { a: AssessmentState }) => (
- const ApiSection = ({ a }: { a: AssessmentState }) => (
-   <Collapsible
-     id='api'
+@@ -564,59 +512,83 @@ const SkillsSection = ({ a }: { a: AssessmentState }) => (
+   </Collapsible>
+ )
+ 
+-const ApiSection = ({ a }: { a: AssessmentState }) => (
+-  <Collapsible
+-    id='api'
 -    title={tr('Contrat d’API', 'API contract')}
-+    title='API contract'
-     count={`${a.spec.routes.length} routes`}
-   >
-     <div tw='border-t border-border-primary overflow-x-auto'>
-@@ -575,12 +523,12 @@ const ApiSection = ({ a }: { a: AssessmentState }) => (
-         <thead>
-           <tr tw='bg-surface-sunken text-content-tertiary text-[12px] text-left'>
-             <th tw='px-4 py-2 font-medium w-[84px]'>
+-    count={`${a.spec.routes.length} routes`}
+-  >
+-    <div tw='border-t border-border-primary overflow-x-auto'>
+-      <table tw='w-full min-w-[640px] border-collapse text-[13px]'>
+-        <thead>
+-          <tr tw='bg-surface-sunken text-content-tertiary text-[12px] text-left'>
+-            <th tw='px-4 py-2 font-medium w-[84px]'>
 -              {tr('Méthode', 'Method')}
-+              {'Method'}
-             </th>
+-            </th>
 -            <th tw='px-2.5 py-2 font-medium'>{tr('Chemin', 'Path')}</th>
-+            <th tw='px-2.5 py-2 font-medium'>Path</th>
-             <th tw='px-2.5 py-2 font-medium'>Description</th>
-             <th tw='pl-2.5 pr-4 py-2 font-medium'>
+-            <th tw='px-2.5 py-2 font-medium'>Description</th>
+-            <th tw='pl-2.5 pr-4 py-2 font-medium'>
 -              {tr('Codes de réponse', 'Response codes')}
-+              {'Response codes'}
-             </th>
-           </tr>
-         </thead>
-@@ -664,20 +612,20 @@ const TestRow = (
+-            </th>
+-          </tr>
+-        </thead>
+-        <tbody>
+-          {a.spec.routes.map((r) => (
+-            <tr key={r.method + r.path} tw='border-t border-border-primary'>
+-              <td
+-                tw={[
+-                  'px-4 py-2.5 font-mono font-bold text-[12px]',
+-                  methodColor[r.method],
+-                ]}
+-              >
+-                {r.method}
+-              </td>
+-              <td tw='px-2.5 py-2.5 font-mono text-[12.5px]'>{r.path}</td>
+-              <td tw='px-2.5 py-2.5 text-content-secondary'>{r.description}</td>
+-              <td tw='pl-2.5 pr-4 py-2.5'>
+-                <span tw='flex gap-1 flex-wrap'>
+-                  {r.codes.map((c) => (
+-                    <span
+-                      key={c}
+-                      tw='h-5 px-1.5 rounded-[5px] bg-surface-sunken border border-border-primary font-mono text-[11.5px] inline-flex items-center'
+-                    >
+-                      {c}
+-                    </span>
+-                  ))}
+-                </span>
+-              </td>
+-            </tr>
+-          ))}
+-        </tbody>
+-      </table>
+-    </div>
++/** what a program reads and what it writes: the contract of a program */
++const IoSection = ({ a }: { a: AssessmentState }) => (
++  <Collapsible id='api' title='Input and output' count='text to text'>
++    <dl
++      tw='m-0 px-4 py-3 border-t border-border-primary grid gap-x-4 gap-y-2 text-[13px]'
++      style={{ gridTemplateColumns: 'auto 1fr' }}
++    >
++      <dt tw='text-content-tertiary'>Input</dt>
++      <dd tw='m-0'>{a.spec.io?.input}</dd>
++      <dt tw='text-content-tertiary'>Output</dt>
++      <dd tw='m-0'>{a.spec.io?.output}</dd>
++      <dt tw='text-content-tertiary'>Languages</dt>
++      <dd tw='m-0'>
++        {(a.spec.languages ?? []).map((l) =>
++          l === 'python' ? 'Python' : 'TypeScript'
++        ).join(', ')}
++      </dd>
++    </dl>
+   </Collapsible>
+ )
+ 
++const ApiSection = ({ a }: { a: AssessmentState }) =>
++  a.spec.kind === 'program' ? <IoSection a={a} /> : (
++    <Collapsible
++      id='api'
++      title='API contract'
++      count={`${a.spec.routes.length} routes`}
++    >
++      <div tw='border-t border-border-primary overflow-x-auto'>
++        <table tw='w-full min-w-[640px] border-collapse text-[13px]'>
++          <thead>
++            <tr tw='bg-surface-sunken text-content-tertiary text-[12px] text-left'>
++              <th tw='px-4 py-2 font-medium w-[84px]'>
++                {'Method'}
++              </th>
++              <th tw='px-2.5 py-2 font-medium'>Path</th>
++              <th tw='px-2.5 py-2 font-medium'>Description</th>
++              <th tw='pl-2.5 pr-4 py-2 font-medium'>
++                {'Response codes'}
++              </th>
++            </tr>
++          </thead>
++          <tbody>
++            {a.spec.routes.map((r) => (
++              <tr key={r.method + r.path} tw='border-t border-border-primary'>
++                <td
++                  tw={[
++                    'px-4 py-2.5 font-mono font-bold text-[12px]',
++                    methodColor[r.method],
++                  ]}
++                >
++                  {r.method}
++                </td>
++                <td tw='px-2.5 py-2.5 font-mono text-[12.5px]'>{r.path}</td>
++                <td tw='px-2.5 py-2.5 text-content-secondary'>
++                  {r.description}
++                </td>
++                <td tw='pl-2.5 pr-4 py-2.5'>
++                  <span tw='flex gap-1 flex-wrap'>
++                    {r.codes.map((c) => (
++                      <span
++                        key={c}
++                        tw='h-5 px-1.5 rounded-[5px] bg-surface-sunken border border-border-primary font-mono text-[11.5px] inline-flex items-center'
++                      >
++                        {c}
++                      </span>
++                    ))}
++                  </span>
++                </td>
++              </tr>
++            ))}
++          </tbody>
++        </table>
++      </div>
++    </Collapsible>
++  )
++
+ const TestRow = (
+   { t, deleted, excluded, referenceFailure, onDelete, onRestore }: {
+     t: TestCase
+@@ -664,20 +636,20 @@ const TestRow = (
          </AnchorLink>
          {isConfirming && (
            <span tw='inline-flex items-center gap-1.5 text-[12.5px] text-err'>
@@ -16167,7 +16453,7 @@ index a38b80c..0e4a60d 100644
              </button>
            </span>
          )}
-@@ -690,15 +638,15 @@ const TestRow = (
+@@ -690,15 +662,15 @@ const TestRow = (
                onClick={() =>
                  openTests.value = { ...openTests.value, [t.id]: !open }}
              >
@@ -16186,7 +16472,7 @@ index a38b80c..0e4a60d 100644
                onClick={() => confirming.value = t.id}
                tw='btn btn-ghost w-7 h-7 px-0 text-content-tertiary opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-err-soft hover:text-err'
              >
-@@ -709,7 +657,7 @@ const TestRow = (
+@@ -709,7 +681,7 @@ const TestRow = (
          {deleted && (
            <>
              <span tw='text-[12px] text-content-tertiary'>
@@ -16195,7 +16481,7 @@ index a38b80c..0e4a60d 100644
              </span>
              <button
                type='button'
-@@ -717,7 +665,7 @@ const TestRow = (
+@@ -717,7 +689,7 @@ const TestRow = (
                onClick={onRestore}
              >
                <Undo2 tw='w-3 h-3' />
@@ -16204,7 +16490,7 @@ index a38b80c..0e4a60d 100644
              </button>
            </>
          )}
-@@ -729,13 +677,10 @@ const TestRow = (
+@@ -729,13 +701,10 @@ const TestRow = (
              <p tw='mx-4 sm:ml-[54px] mb-2.5 mt-0 flex items-start gap-1.5 text-[12.5px] text-warn'>
                <TriangleAlert tw='w-[13px] h-[13px] flex-none mt-[3px]' />
                <span>
@@ -16222,7 +16508,7 @@ index a38b80c..0e4a60d 100644
                </span>
              </p>
            )
-@@ -743,19 +688,11 @@ const TestRow = (
+@@ -743,19 +712,11 @@ const TestRow = (
              <p tw='mx-4 sm:ml-[54px] mb-2.5 mt-0 flex items-start gap-1.5 text-[12.5px] text-err'>
                <CircleX tw='w-[13px] h-[13px] flex-none mt-[3px]' />
                <span>
@@ -16245,7 +16531,7 @@ index a38b80c..0e4a60d 100644
                </span>
              </p>
            )
-@@ -764,10 +701,7 @@ const TestRow = (
+@@ -764,10 +725,7 @@ const TestRow = (
          <p tw='mx-4 sm:ml-[54px] mb-2.5 mt-0 flex items-start gap-1.5 text-[12.5px] text-content-secondary'>
            <ShieldCheck tw='w-[13px] h-[13px] flex-none mt-[3px]' />
            <span>
@@ -16257,23 +16543,33 @@ index a38b80c..0e4a60d 100644
            </span>
          </p>
        )}
-@@ -780,13 +714,13 @@ const TestRow = (
+@@ -780,15 +738,21 @@ const TestRow = (
              >
                <span>
                  <span tw='block font-main font-bold text-[10.5px] text-content-tertiary uppercase tracking-[0.05em]'>
 -                  {i + 1} · {tr('Requête', 'Request')}
-+                  {i + 1} · {'Request'}
++                  {i + 1} · {t.route === 'program' ? 'Input' : 'Request'}
++                </span>
++                <span tw='text-code-text break-all whitespace-pre-wrap'>
++                  {s.request || '(empty)'}
                  </span>
-                 <span tw='text-code-text break-all'>{s.request}</span>
+-                <span tw='text-code-text break-all'>{s.request}</span>
                </span>
                <span>
                  <span tw='block font-main font-bold text-[10.5px] text-content-tertiary uppercase tracking-[0.05em]'>
 -                  {tr('Réponse attendue', 'Expected response')}
-+                  {'Expected response'}
++                  {t.route === 'program'
++                    ? 'Expected output'
++                    : 'Expected response'}
++                </span>
++                <span tw='text-code-text break-all whitespace-pre-wrap'>
++                  {s.response}
                  </span>
-                 <span tw='text-code-text break-all'>{s.response}</span>
+-                <span tw='text-code-text break-all'>{s.response}</span>
                </span>
-@@ -819,10 +753,7 @@ const TestsSection = (
+             </li>
+           ))}
+@@ -819,10 +783,7 @@ const TestsSection = (
      <Collapsible
        id='tests'
        title='Tests'
@@ -16285,7 +16581,7 @@ index a38b80c..0e4a60d 100644
      >
        <div>
          {a.spec.tests.map((t) => (
-@@ -837,10 +768,7 @@ const TestsSection = (
+@@ -837,10 +798,7 @@ const TestsSection = (
                confirming.value = null
                notify({
                  status: 'info',
@@ -16297,7 +16593,7 @@ index a38b80c..0e4a60d 100644
                })
              }}
              onRestore={() => setDeleted([...deleted].filter((x) => x !== t.id))}
-@@ -864,8 +792,8 @@ const TraceabilitySection = (
+@@ -864,8 +822,8 @@ const TraceabilitySection = (
    return (
      <Collapsible
        id='tracabilite'
@@ -16308,7 +16604,7 @@ index a38b80c..0e4a60d 100644
        alert={alert}
      >
        <div tw='px-4 pb-4 overflow-x-auto'>
-@@ -882,7 +810,7 @@ const TraceabilitySection = (
+@@ -882,7 +840,7 @@ const TraceabilitySection = (
                role='columnheader'
                tw='px-3 py-2 text-content-tertiary text-[12px]'
              >
@@ -16317,7 +16613,7 @@ index a38b80c..0e4a60d 100644
              </span>
              {a.spec.tests.map((t) => (
                <span
-@@ -896,7 +824,7 @@ const TraceabilitySection = (
+@@ -896,7 +854,7 @@ const TraceabilitySection = (
                  ]}
                >
                  {t.id}
@@ -16326,7 +16622,7 @@ index a38b80c..0e4a60d 100644
                </span>
              ))}
            </div>
-@@ -922,7 +850,7 @@ const TraceabilitySection = (
+@@ -922,7 +880,7 @@ const TraceabilitySection = (
                          : 'text-content-secondary',
                      ]}
                    >
@@ -16335,7 +16631,7 @@ index a38b80c..0e4a60d 100644
                    </span>
                  </span>
                  {a.spec.tests.map((t) => {
-@@ -932,9 +860,7 @@ const TraceabilitySection = (
+@@ -932,9 +890,7 @@ const TraceabilitySection = (
                      <span
                        key={t.id}
                        role='cell'
@@ -16346,7 +16642,7 @@ index a38b80c..0e4a60d 100644
                        tw='flex items-center justify-center min-h-[34px] border-l border-border-primary'
                      >
                        {on && (
-@@ -950,15 +876,15 @@ const TraceabilitySection = (
+@@ -950,15 +906,15 @@ const TraceabilitySection = (
          <div tw='flex gap-4 mt-2 text-[12px] text-content-tertiary flex-wrap'>
            <span tw='inline-flex items-center gap-1'>
              <Check tw='w-3 h-3 text-ok' stroke-width={2.5} />
@@ -16365,7 +16661,7 @@ index a38b80c..0e4a60d 100644
            </span>
          </div>
        </div>
-@@ -969,13 +895,10 @@ const TraceabilitySection = (
+@@ -969,13 +925,10 @@ const TraceabilitySection = (
  /* ---------- regenerate ---------- */
  
  const REGEN_STEPS = () => [
@@ -16383,7 +16679,7 @@ index a38b80c..0e4a60d 100644
  ]
  
  const startRegeneration = (id: number, prompt: string) => {
-@@ -984,10 +907,7 @@ const startRegeneration = (id: number, prompt: string) => {
+@@ -984,10 +937,7 @@ const startRegeneration = (id: number, prompt: string) => {
    regenerateAssessment(
      id,
      prompt.trim() ||
@@ -16395,7 +16691,7 @@ index a38b80c..0e4a60d 100644
    ).catch((err) => {
      regenerating.value = false
      notify({ status: 'failure', description: err.message })
-@@ -999,30 +919,21 @@ const RegenerateDialog = ({ id }: { id: number }) => {
+@@ -999,30 +949,21 @@ const RegenerateDialog = ({ id }: { id: number }) => {
    return (
      <ModalDialog
        id='regenerate'
@@ -16430,7 +16726,7 @@ index a38b80c..0e4a60d 100644
          </A>
          <button
            type='button'
-@@ -1033,7 +944,7 @@ const RegenerateDialog = ({ id }: { id: number }) => {
+@@ -1033,7 +974,7 @@ const RegenerateDialog = ({ id }: { id: number }) => {
            }}
          >
            <RefreshCw tw='w-3.5 h-3.5' />
@@ -16439,7 +16735,7 @@ index a38b80c..0e4a60d 100644
          </button>
        </div>
      </ModalDialog>
-@@ -1059,15 +970,15 @@ const RegenerationOverlay = ({ a }: { a: AssessmentState }) => {
+@@ -1059,15 +1000,15 @@ const RegenerationOverlay = ({ a }: { a: AssessmentState }) => {
        >
          <div tw='flex items-baseline justify-between gap-3'>
            <h2 tw='m-0 text-[16px] font-semibold'>
@@ -16458,7 +16754,7 @@ index a38b80c..0e4a60d 100644
            </strong>{' '}
            {a.generation?.instruction}
          </p>
-@@ -1085,13 +996,9 @@ const Loading = () => (
+@@ -1085,13 +1026,9 @@ const Loading = () => (
    </main>
  )
  
@@ -16473,7 +16769,7 @@ index a38b80c..0e4a60d 100644
    const regenerationRunning = a?.status === 'generating' &&
      a.generation?.kind === 'regeneration'
    // end of a regeneration: the draft is rewritten and rechecked
-@@ -1105,17 +1012,11 @@ export const ReviewPage = () => {
+@@ -1105,17 +1042,11 @@ export const ReviewPage = () => {
        error
          ? {
            status: 'failure',
@@ -16493,7 +16789,7 @@ index a38b80c..0e4a60d 100644
          },
      )
    }, [regenerationRunning])
-@@ -1123,14 +1024,14 @@ export const ReviewPage = () => {
+@@ -1123,14 +1054,14 @@ export const ReviewPage = () => {
    if (!a) {
      return assessmentStatus.value === 'loading' ? <Loading /> : <NotFoundPage />
    }
@@ -16510,7 +16806,7 @@ index a38b80c..0e4a60d 100644
      navigate({
        href: paths.assessment,
        params: { id: a.id },
-@@ -1149,11 +1050,11 @@ export const ReviewPage = () => {
+@@ -1149,11 +1080,11 @@ export const ReviewPage = () => {
    return (
      <div tw='w-full max-w-[1320px] mx-auto px-4 sm:px-8 pt-6 sm:pt-7 grid grid-cols-1 xl:grid-cols-nav-main gap-8'>
        <nav
@@ -16524,7 +16820,7 @@ index a38b80c..0e4a60d 100644
          </span>
          {SECTIONS().map(([id, label]) => (
            <AnchorLink
-@@ -1166,7 +1067,7 @@ export const ReviewPage = () => {
+@@ -1166,7 +1097,7 @@ export const ReviewPage = () => {
              {alert && (id === 'exigences' || id === 'tracabilite') && (
                <CircleX
                  tw='w-[13px] h-[13px] text-err ml-auto'
@@ -17300,10 +17596,18 @@ index 6370463..80ce7b8 100644
    )
  }
 diff --git a/web/pages/workspace/console-panel.tsx b/web/pages/workspace/console-panel.tsx
-index 4d32287..4130a96 100644
+index 4d32287..badab0a 100644
 --- a/web/pages/workspace/console-panel.tsx
 +++ b/web/pages/workspace/console-panel.tsx
-@@ -17,7 +17,6 @@ import {
+@@ -1,5 +1,7 @@
++import { me } from '/web/lib/candidate-store.ts'
+ import {
+   bottomTab,
++  language,
+   output,
+   ownTests,
+   panelHeight,
+@@ -17,7 +19,6 @@ import {
    Terminal,
    TimerOff,
  } from '/web/assets/icons.tsx'
@@ -17311,7 +17615,7 @@ index 4d32287..4130a96 100644
  
  // dark terminal in both themes (fixed values of the prototype)
  const C = {
-@@ -64,10 +63,7 @@ const Output = () => {
+@@ -64,10 +65,9 @@ const Output = () => {
    if (!output.value) {
      return (
        <Empty>
@@ -17319,11 +17623,13 @@ index 4d32287..4130a96 100644
 -          '« Exécuter » lance playground.ts dans un bac à sable : 10 s maximum, sans réseau.',
 -          '“Run” starts playground.ts in a sandbox: 10 s at most, no network.',
 -        )}
-+        {'“Run” starts playground.ts in a sandbox: 10 s at most, no network.'}
++        {me.value?.kind === 'program'
++          ? `“Run” starts your program with the sample input (the first example of the brief), in a sandbox: 10 s at most, no network.`
++          : '“Run” starts playground.ts in a sandbox: 10 s at most, no network.'}
        </Empty>
      )
    }
-@@ -108,19 +104,14 @@ const OwnTests = () => {
+@@ -108,19 +108,19 @@ const OwnTests = () => {
    if (!own) {
      return (
        <Empty>
@@ -17331,7 +17637,9 @@ index 4d32287..4130a96 100644
 -          '« Mes tests » lance deno test src/.',
 -          '“My tests” runs deno test src/.',
 -        )}
-+        {'“My tests” runs deno test src/.'}
++        {`“My tests” runs ${
++          language.value === 'python' ? 'python -m unittest' : 'deno test src/'
++        }.`}
        </Empty>
      )
    }
@@ -17341,11 +17649,14 @@ index 4d32287..4130a96 100644
 -        $ deno test src/ · {own.passed}{' '}
 -        {t(`réussi${own.passed > 1 ? 's' : ''}`, 'passed')} · {own.failed}{' '}
 -        {t(`échoué${own.failed > 1 ? 's' : ''}`, 'failed')}
-+        $ deno test src/ · {own.passed} passed · {own.failed} {'failed'}
++        ${' '}
++        {language.value === 'python' ? 'python -m unittest' : 'deno test src/'}
++        {' · '}
++        {own.passed} passed · {own.failed} {'failed'}
        </div>
        {own.tests.map((test) => {
          const Icon = test.ok ? CircleCheck : CircleX
-@@ -129,7 +120,7 @@ const OwnTests = () => {
+@@ -129,7 +129,7 @@ const OwnTests = () => {
            <div key={test.name} tw='flex items-center gap-2'>
              <Icon tw='w-[13px] h-[13px] flex-none' style={{ color }} />
              <span tw='w-[52px] font-main text-[11.5px]' style={{ color }}>
@@ -17354,7 +17665,7 @@ index 4d32287..4130a96 100644
              </span>
              <span tw='flex-1'>{test.name}</span>
              <span style={{ color: C.muted }}>{test.duration}</span>
-@@ -146,7 +137,7 @@ const OwnTests = () => {
+@@ -146,7 +146,7 @@ const OwnTests = () => {
          {rawOpen.value
            ? <ChevronDown tw='w-[13px] h-[13px]' />
            : <ChevronRight tw='w-[13px] h-[13px]' />}
@@ -17363,7 +17674,7 @@ index 4d32287..4130a96 100644
        </button>
        {rawOpen.value && (
          <pre
-@@ -189,7 +180,7 @@ export const ConsolePanel = () => (
+@@ -189,7 +189,7 @@ export const ConsolePanel = () => (
        ref={setPanelResizer}
        role='separator'
        aria-orientation='horizontal'
@@ -17372,7 +17683,7 @@ index 4d32287..4130a96 100644
        tw='h-[5px] flex-none cursor-row-resize border-t border-border-primary'
        style={{ background: C.bg, touchAction: 'none' }}
      />
-@@ -212,14 +203,14 @@ export const ConsolePanel = () => (
+@@ -212,14 +212,14 @@ export const ConsolePanel = () => (
            onClick={() => bottomTab.value = 'out'}
          >
            <Terminal tw='w-[13px] h-[13px]' />
@@ -17389,7 +17700,7 @@ index 4d32287..4130a96 100644
            {ownTests.value && (
              <span
                tw='font-mono text-[11px]'
-@@ -232,7 +223,7 @@ export const ConsolePanel = () => (
+@@ -232,7 +232,7 @@ export const ConsolePanel = () => (
          </TabButton>
          <span tw='flex-1' />
          <span tw='font-main text-[11.5px]' style={{ color: C.muted }}>
@@ -17451,16 +17762,23 @@ index 2e01fc4..7517d00 100644
                    style={{
                      whiteSpace: 'pre',
 diff --git a/web/pages/workspace/file-explorer.tsx b/web/pages/workspace/file-explorer.tsx
-index b182d8f..cdb5e52 100644
+index b182d8f..71f700f 100644
 --- a/web/pages/workspace/file-explorer.tsx
 +++ b/web/pages/workspace/file-explorer.tsx
-@@ -1,4 +1,4 @@
+@@ -1,9 +1,11 @@
 -import { useEffect, useRef } from 'npm:preact/hooks'
 +import { useEffect, useRef } from 'preact/hooks'
  import { signal } from '@preact/signals'
  import {
    activeFile,
-@@ -19,7 +19,6 @@ import {
+   createFile,
+   isDirty,
++  isTestFile,
++  language,
+   openFile,
+   rootFiles,
+   srcFiles,
+@@ -19,7 +21,6 @@ import {
    FolderOpen,
    Plus,
  } from '/web/assets/icons.tsx'
@@ -17468,7 +17786,16 @@ index b182d8f..cdb5e52 100644
  
  /** Icon by file type: json, markdown, test, code */
  export const FileIcon = ({ path }: { path: string }) => {
-@@ -57,8 +56,8 @@ const FileRow = ({ path, indent }: { path: string; indent: number }) => {
+@@ -29,7 +30,7 @@ export const FileIcon = ({ path }: { path: string }) => {
+   if (path.endsWith('.md')) {
+     return <FileText tw='w-[15px] h-[15px] flex-none text-content-tertiary' />
+   }
+-  if (path.endsWith('_test.ts')) {
++  if (isTestFile(path)) {
+     return <FlaskConical tw='w-[15px] h-[15px] flex-none text-code-kw' />
+   }
+   return <FileCode tw='w-[15px] h-[15px] flex-none text-code-kw' />
+@@ -57,8 +58,8 @@ const FileRow = ({ path, indent }: { path: string; indent: number }) => {
        <span tw='flex-1 text-left truncate'>{path.split('/').pop()}</span>
        {isDirty(path) && (
          <span
@@ -17479,7 +17806,7 @@ index b182d8f..cdb5e52 100644
            tw='w-[7px] h-[7px] flex-none rounded-full bg-content-secondary'
          />
        )}
-@@ -86,8 +85,8 @@ const NewFileInput = () => {
+@@ -86,8 +87,8 @@ const NewFileInput = () => {
          <input
            ref={input}
            value={newName.value}
@@ -17490,7 +17817,18 @@ index b182d8f..cdb5e52 100644
            onInput={(e) =>
              newName.value = e.currentTarget.value.replace(/[^\w-]/g, '')}
            onKeyDown={(e) => {
-@@ -106,11 +105,11 @@ const NewFileInput = () => {
+@@ -97,7 +98,9 @@ const NewFileInput = () => {
+           }}
+           tw='flex-1 min-w-0 bg-transparent border-0 p-0 font-mono text-[12px] focus:outline-none'
+         />
+-        <span tw='text-content-tertiary'>.ts</span>
++        <span tw='text-content-tertiary'>
++          {language.value === 'python' ? '.py' : '.ts'}
++        </span>
+       </div>
+     </div>
+   )
+@@ -106,11 +109,11 @@ const NewFileInput = () => {
  /** Left column of C2: no folders, no rename, no delete */
  export const FileExplorer = () => (
    <aside
@@ -17504,7 +17842,7 @@ index b182d8f..cdb5e52 100644
        <button
          type='button'
          onClick={() => {
-@@ -121,7 +120,7 @@ export const FileExplorer = () => (
+@@ -121,35 +124,38 @@ export const FileExplorer = () => (
          tw='inline-flex items-center gap-1 h-6 px-2 rounded-md font-main font-medium normal-case tracking-normal text-[12px] text-content-secondary hover:bg-surface-hover hover:text-content-primary cursor-pointer'
        >
          <Plus tw='w-[13px] h-[13px]' />
@@ -17513,7 +17851,43 @@ index b182d8f..cdb5e52 100644
        </button>
      </div>
      <div tw='px-1.5 py-0.5 flex flex-col gap-px'>
-@@ -146,10 +145,7 @@ export const FileExplorer = () => (
+-      <button
+-        type='button'
+-        aria-expanded={srcOpen.value}
+-        onClick={() => srcOpen.value = !srcOpen.value}
+-        tw='w-full flex items-center gap-1.5 h-[26px] px-2 rounded-md text-[13px] text-content-secondary hover:bg-surface-hover cursor-pointer'
+-      >
+-        {srcOpen.value
+-          ? <ChevronDown tw='w-[13px] h-[13px]' />
+-          : <ChevronRight tw='w-[13px] h-[13px]' />}
+-        {srcOpen.value
+-          ? <FolderOpen tw='w-[15px] h-[15px] text-content-tertiary' />
+-          : <Folder tw='w-[15px] h-[15px] text-content-tertiary' />}
+-        src
+-      </button>
+-      {srcOpen.value && creating.value && <NewFileInput />}
++      {/* a Python program has no src folder: its files are at the root */}
++      {(srcFiles.value.length > 0 || language.value !== 'python') && (
++        <button
++          type='button'
++          aria-expanded={srcOpen.value}
++          onClick={() => srcOpen.value = !srcOpen.value}
++          tw='w-full flex items-center gap-1.5 h-[26px] px-2 rounded-md text-[13px] text-content-secondary hover:bg-surface-hover cursor-pointer'
++        >
++          {srcOpen.value
++            ? <ChevronDown tw='w-[13px] h-[13px]' />
++            : <ChevronRight tw='w-[13px] h-[13px]' />}
++          {srcOpen.value
++            ? <FolderOpen tw='w-[15px] h-[15px] text-content-tertiary' />
++            : <Folder tw='w-[15px] h-[15px] text-content-tertiary' />}
++          src
++        </button>
++      )}
++      {(language.value === 'python' || srcOpen.value) && creating.value &&
++        <NewFileInput />}
+       {srcOpen.value &&
+         srcFiles.value.map((p) => <FileRow key={p} path={p} indent={30} />)}
+       {rootFiles.value.map((p) => <FileRow key={p} path={p} indent={12} />)}
      </div>
      <span tw='flex-1' />
      <p tw='m-0 px-3.5 py-2.5 text-[11.5px] text-content-tertiary border-t border-border-primary'>
@@ -17521,12 +17895,14 @@ index b182d8f..cdb5e52 100644
 -        'Nouveaux fichiers créés dans src/, en .ts.',
 -        'New files are created in src/, as .ts.',
 -      )}
-+      {'New files are created in src/, as .ts.'}
++      {language.value === 'python'
++        ? 'New files are created next to main.py, as .py.'
++        : 'New files are created in src/, as .ts.'}
      </p>
    </aside>
  )
 diff --git a/web/pages/workspace/side-panel.tsx b/web/pages/workspace/side-panel.tsx
-index 6f4bd1a..e3cc099 100644
+index 6f4bd1a..9c2accc 100644
 --- a/web/pages/workspace/side-panel.tsx
 +++ b/web/pages/workspace/side-panel.tsx
 @@ -17,7 +17,6 @@ import {
@@ -17572,25 +17948,114 @@ index 6f4bd1a..e3cc099 100644
          <ol tw='list-none m-0 p-0 flex flex-col gap-1.5'>
            {spec.requirements.map((r) => (
              <li key={r.id} tw='flex gap-2.5'>
-@@ -70,7 +66,7 @@ const Brief = () => {
+@@ -69,44 +65,87 @@ const Brief = () => {
+           ))}
          </ol>
        </div>
-       <div>
+-      <div>
 -        <Heading>{t('Contrat d’API', 'API contract')}</Heading>
-+        <Heading>API contract</Heading>
-         <div tw='border border-border-primary rounded-lg overflow-hidden'>
-           {spec.routes.map((r) => (
-             <div
-@@ -97,7 +93,7 @@ const Brief = () => {
-         </div>
-       </div>
+-        <div tw='border border-border-primary rounded-lg overflow-hidden'>
+-          {spec.routes.map((r) => (
+-            <div
+-              key={r.method + r.path}
+-              tw='grid gap-x-2 gap-y-1 px-2.5 py-2 border-b border-border-primary last:border-b-0'
+-              style={{ gridTemplateColumns: '62px 1fr' }}
+-            >
+-              <span
+-                tw={[
+-                  'font-mono font-bold text-[11.5px]',
+-                  methodColor[r.method],
+-                ]}
+-              >
+-                {r.method}
+-              </span>
+-              <span tw='font-mono text-[12px]'>{r.path}</span>
+-              <span />
+-              <span tw='text-[12px] text-content-secondary'>
+-                {r.description} ·{' '}
+-                <span tw='font-mono'>{r.codes.join(' · ')}</span>
+-              </span>
++      {spec.io
++        ? (
++          <div>
++            <Heading>Input and output</Heading>
++            <dl tw='m-0 flex flex-col gap-1.5 text-content-secondary'>
++              <div>
++                <dt tw='font-medium text-content-primary'>Input</dt>
++                <dd tw='m-0'>{spec.io.input}</dd>
++              </div>
++              <div>
++                <dt tw='font-medium text-content-primary'>Output</dt>
++                <dd tw='m-0'>{spec.io.output}</dd>
++              </div>
++            </dl>
++          </div>
++        )
++        : (
++          <div>
++            <Heading>API contract</Heading>
++            <div tw='border border-border-primary rounded-lg overflow-hidden'>
++              {spec.routes.map((r) => (
++                <div
++                  key={r.method + r.path}
++                  tw='grid gap-x-2 gap-y-1 px-2.5 py-2 border-b border-border-primary last:border-b-0'
++                  style={{ gridTemplateColumns: '62px 1fr' }}
++                >
++                  <span
++                    tw={[
++                      'font-mono font-bold text-[11.5px]',
++                      methodColor[r.method],
++                    ]}
++                  >
++                    {r.method}
++                  </span>
++                  <span tw='font-mono text-[12px]'>{r.path}</span>
++                  <span />
++                  <span tw='text-[12px] text-content-secondary'>
++                    {r.description} ·{' '}
++                    <span tw='font-mono'>{r.codes.join(' · ')}</span>
++                  </span>
++                </div>
++              ))}
+             </div>
+-          ))}
+-        </div>
+-      </div>
++          </div>
++        )}
        <div>
 -        <Heading>{t('Contraintes', 'Constraints')}</Heading>
 +        <Heading>Constraints</Heading>
          <ul tw='m-0 pl-[18px] text-content-secondary flex flex-col gap-[3px]'>
            {spec.constraints.map((c) => <li key={c}>{c}</li>)}
          </ul>
-@@ -106,7 +102,7 @@ const Brief = () => {
+       </div>
++      {spec.io && spec.publicTests.length > 0 && (
++        <div>
++          <Heading>Examples</Heading>
++          <div tw='flex flex-col gap-2'>
++            {spec.publicTests.slice(0, 3).map((t) => (
++              <div
++                key={t.id}
++                tw='rounded-lg border border-border-primary bg-code-bg font-mono text-[12px] leading-[1.55] overflow-hidden'
++              >
++                <div tw='px-2.5 py-1.5 text-content-tertiary font-main text-[11.5px] border-b border-border-primary'>
++                  {t.title}
++                </div>
++                <div tw='grid grid-cols-1 sm:grid-cols-2'>
++                  <pre tw='m-0 px-2.5 py-2 whitespace-pre-wrap break-all text-code-text'>
++                    {t.steps[0]?.request || '(empty input)'}
++                  </pre>
++                  <pre tw='m-0 px-2.5 py-2 whitespace-pre-wrap break-all text-code-text border-t sm:border-t-0 sm:border-l border-border-primary'>
++                    {t.steps[0]?.response}
++                  </pre>
++                </div>
++              </div>
++            ))}
++          </div>
++        </div>
++      )}
+     </div>
    )
  }
  
@@ -17599,7 +18064,7 @@ index 6f4bd1a..e3cc099 100644
  const EvalTests = () => {
    const spec = me.value?.assessment
    if (!spec) return null
-@@ -123,11 +119,8 @@ const EvalTests = () => {
+@@ -123,11 +162,8 @@ const EvalTests = () => {
                <ListChecks tw='w-4 h-4 text-content-tertiary' />
                <span tw='text-content-secondary'>
                  {running.value === 'eval'
@@ -17613,7 +18078,7 @@ index 6f4bd1a..e3cc099 100644
                </span>
              </>
            )
-@@ -137,10 +130,10 @@ const EvalTests = () => {
+@@ -137,10 +173,10 @@ const EvalTests = () => {
                  ? <CircleCheck tw='w-4 h-4 text-ok' />
                  : <CircleX tw='w-4 h-4 text-err' />}
                <span tw='font-semibold'>
@@ -17626,7 +18091,7 @@ index 6f4bd1a..e3cc099 100644
                </span>
              </>
            )}
-@@ -165,10 +158,7 @@ const EvalTests = () => {
+@@ -165,10 +201,7 @@ const EvalTests = () => {
        </TestResultList>
        <div tw='flex gap-2 px-[11px] py-[9px] rounded-lg bg-surface-sunken border border-border-primary text-content-secondary text-[12.5px]'>
          <EyeOff tw='w-[15px] h-[15px] flex-none mt-px' />
@@ -17638,7 +18103,7 @@ index 6f4bd1a..e3cc099 100644
        </div>
      </div>
    )
-@@ -181,7 +171,7 @@ const tabTw = (on: boolean) => [
+@@ -181,7 +214,7 @@ const tabTw = (on: boolean) => [
      : 'border-transparent text-content-secondary font-medium hover:text-content-primary',
  ]
  
@@ -17647,7 +18112,7 @@ index 6f4bd1a..e3cc099 100644
  export const SidePanel = () => {
    if (!rightOpen.value) {
      return (
-@@ -189,8 +179,8 @@ export const SidePanel = () => {
+@@ -189,8 +222,8 @@ export const SidePanel = () => {
          <button
            type='button'
            onClick={() => rightOpen.value = true}
@@ -17658,7 +18123,7 @@ index 6f4bd1a..e3cc099 100644
            tw='btn btn-ghost w-7 h-7 px-0'
          >
            <PanelRightOpen tw='w-[15px] h-[15px]' />
-@@ -207,11 +197,8 @@ export const SidePanel = () => {
+@@ -207,11 +240,8 @@ export const SidePanel = () => {
          ref={setSideResizer}
          role='separator'
          aria-orientation='vertical'
@@ -17672,7 +18137,7 @@ index 6f4bd1a..e3cc099 100644
          tw='absolute -left-[3px] top-0 bottom-0 w-[6px] z-10 cursor-col-resize hover:bg-accent-soft'
          style={{ touchAction: 'none' }}
        />
-@@ -226,7 +213,7 @@ export const SidePanel = () => {
+@@ -226,7 +256,7 @@ export const SidePanel = () => {
            onClick={() => rightTab.value = 'brief'}
            tw={tabTw(rightTab.value === 'brief')}
          >
@@ -17681,7 +18146,7 @@ index 6f4bd1a..e3cc099 100644
          </button>
          <button
            type='button'
-@@ -235,14 +222,14 @@ export const SidePanel = () => {
+@@ -235,14 +265,14 @@ export const SidePanel = () => {
            onClick={() => rightTab.value = 'tests'}
            tw={tabTw(rightTab.value === 'tests')}
          >
@@ -18090,10 +18555,10 @@ index 17f075a..6d1075b 100644
      <div tw='h-screen flex flex-col overflow-hidden bg-surface-page text-content-primary'>
        <WorkspaceBar elapsed={elapsed} title={view.assessment.title} />
 diff --git a/web/pages/workspace/workspace-state.ts b/web/pages/workspace/workspace-state.ts
-index a8ecf4b..8a82c89 100644
+index a8ecf4b..92464ef 100644
 --- a/web/pages/workspace/workspace-state.ts
 +++ b/web/pages/workspace/workspace-state.ts
-@@ -1,12 +1,9 @@
+@@ -1,27 +1,21 @@
 -// C2 workspace state, module level signals like tournament's studio. Files
 +// Workspace state, module level signals. Files
  // come from the candidate session; the API saves them, type-checks them
@@ -18104,10 +18569,11 @@ index a8ecf4b..8a82c89 100644
  import { me } from '/web/lib/candidate-store.ts'
 -import { demoFileOrder } from '/fixtures/demo-files.ts'
 -import { demoOf } from '/fixtures/demos.ts'
- import type { CandidateFiles, TestResult } from '/web/types.ts'
+-import type { CandidateFiles, TestResult } from '/web/types.ts'
++import type { CandidateFiles, Language, TestResult } from '/web/types.ts'
  import type { CodeProblem, OutputChunk, SandboxRun } from '/api/sandbox.ts'
  import { eachSec } from '/web/lib/signals.ts'
-@@ -14,14 +11,11 @@ import { setDragEvents } from '/web/lib/drag.ts'
+ import { setDragEvents } from '/web/lib/drag.ts'
  import {
    OUTPUT_LIMIT_KB,
    type OutputLine,
@@ -18122,19 +18588,54 @@ index a8ecf4b..8a82c89 100644
  
  /* ---------- files and auto-save ---------- */
  
-@@ -33,7 +27,8 @@ const loadedFor = signal(0)
+@@ -31,13 +25,34 @@ export const saveState = signal<SaveState>('saved')
+ const savedAt = signal(Date.now())
+ const loadedFor = signal(0)
  
++/** what the candidate writes in, fixed before the timer started */
++export const language = computed<Language>(() =>
++  me.value?.language ?? 'typescript'
++)
++
++/** the file that holds the work: the handler, or the program */
++export const entryFile = computed(() =>
++  language.value === 'python'
++    ? 'main.py'
++    : me.value?.kind === 'program'
++    ? 'src/main.ts'
++    : 'src/app.ts'
++)
++
++/** the tests of the candidate: `x_test.ts` or `test_x.py` */
++export const isTestFile = (path: string) =>
++  /(_test\.ts|(^|\/)test_[^/]*\.py)$/.test(path)
++
  export const srcFiles = computed(() =>
    Object.keys(files.value).filter((p) => p.startsWith('src/')).sort((a, b) =>
 -    (demoFileOrder.indexOf(a) + 1 || 99) - (demoFileOrder.indexOf(b) + 1 || 99)
-+    (a === 'src/app.ts' ? 0 : 1) - (b === 'src/app.ts' ? 0 : 1) ||
++    (a === entryFile.value ? 0 : 1) - (b === entryFile.value ? 0 : 1) ||
 +    a.localeCompare(b)
    )
  )
  export const rootFiles = computed(() =>
-@@ -67,9 +62,7 @@ effect(() => {
-   const tabs = srcFiles.peek().filter((p) => !p.endsWith('_test.ts'))
-     .slice(0, 3)
+-  Object.keys(files.value).filter((p) => !p.startsWith('src/'))
++  Object.keys(files.value).filter((p) => !p.startsWith('src/')).sort((a, b) =>
++    (a === entryFile.value ? 0 : 1) - (b === entryFile.value ? 0 : 1)
++  )
+ )
+ 
+ /* ---------- tabs ---------- */
+@@ -64,12 +79,13 @@ effect(() => {
+   files.value = view.files
+   savedFiles.value = view.files
+   savedAt.value = view.savedAt ?? Date.now()
+-  const tabs = srcFiles.peek().filter((p) => !p.endsWith('_test.ts'))
+-    .slice(0, 3)
++  // the code to write first: never the tests, the json or the notes
++  const tabs = [
++    ...srcFiles.peek(),
++    ...rootFiles.peek().filter((p) => p.endsWith('.py')),
++  ].filter((p) => !isTestFile(p)).slice(0, 3)
    openTabs.value = tabs
 -  // the demo draft opens on its type error (brief C2)
 -  activeFile.value = tabs.find((p) => p.includes('repository')) ?? tabs[0] ??
@@ -18143,7 +18644,7 @@ index a8ecf4b..8a82c89 100644
  })
  
  export const isDirty = (path: string) =>
-@@ -86,7 +79,7 @@ const save = async () => {
+@@ -86,7 +102,7 @@ const save = async () => {
      savedAt.value = result.savedAt
      saveState.value = files.peek() === sent ? 'saved' : 'saving'
    } catch {
@@ -18152,7 +18653,7 @@ index a8ecf4b..8a82c89 100644
      saveState.value = 'offline'
      clearTimeout(saveTimer)
      saveTimer = setTimeout(save, 5000)
-@@ -136,29 +129,10 @@ export const updateFile = (path: string, code: string) => {
+@@ -136,39 +152,21 @@ export const updateFile = (path: string, code: string) => {
  export const savedAgo = computed(() => {
    const sec = Math.max(0, Math.round((eachSec.value - savedAt.value) / 1000))
    return sec < 60
@@ -18181,10 +18682,25 @@ index a8ecf4b..8a82c89 100644
 -  })
 -}
 -
- /** "+ Nouveau fichier": always in src/, always .ts, no folders */
+-/** "+ Nouveau fichier": always in src/, always .ts, no folders */
++/** "+ New file": in src/ as .ts, or next to main.py as .py; no folders */
  export const createFile = (rawName: string) => {
-   const name = rawName.replace(/\.ts$/, '').replace(/[^\w-]/g, '')
-@@ -192,19 +166,17 @@ export const ownTests = signal<
+-  const name = rawName.replace(/\.ts$/, '').replace(/[^\w-]/g, '')
++  const python = language.peek() === 'python'
++  const name = rawName.replace(/\.(ts|py)$/, '').replace(/[^\w-]/g, '')
+   if (!name) return false
+-  const path = `src/${name}.ts`
++  const path = python ? `${name}.py` : `src/${name}.ts`
+   if (path in files.peek()) {
+     openFile(path)
+     return true
+   }
+-  updateFile(path, `// ${name}.ts\n`)
++  updateFile(path, python ? `# ${name}.py\n` : `// ${name}.ts\n`)
+   openFile(path)
+   return true
+ }
+@@ -192,19 +190,17 @@ export const ownTests = signal<
  
  export const lastEvalAgo = computed(() => {
    const min = Math.floor((eachSec.value - lastEvalAt.value) / 60_000)
@@ -18207,7 +18723,7 @@ index a8ecf4b..8a82c89 100644
  export const toRunOutput = (run: SandboxRun): RunOutput => {
    const lines: OutputLine[] = []
    for (const chunk of run.chunks) {
-@@ -224,62 +196,43 @@ export const toRunOutput = (run: SandboxRun): RunOutput => {
+@@ -224,88 +220,68 @@ export const toRunOutput = (run: SandboxRun): RunOutput => {
      ? {
        tone: 'warn',
        icon: 'package-x',
@@ -18278,7 +18794,28 @@ index a8ecf4b..8a82c89 100644
      }
    return { command: `$ ${run.command}`, lines, status }
  }
-@@ -299,13 +252,6 @@ const parseOwnTests = (
+ 
+ const OWN_TEST = /^(.+?) \.\.\. (ok|FAILED) \(([^)]+)\)$/
++// unittest, verbose: "test_ok (test_main.T.test_ok) ... ok"
++const PY_TEST = /^(\S+ \([^)]+\)) \.\.\. (ok|FAIL|ERROR)$/
+ 
+ const parseOwnTests = (
+   run: SandboxRun & { passed: number; failed: number },
+ ) => {
+   const raw = textOf(run.chunks)
+   const tests = raw.split('\n')
+-    .map((l) => l.trim().match(OWN_TEST))
+-    .filter((m): m is RegExpMatchArray => !!m)
+-    .map(([, name, ok, duration]) => ({ name, ok: ok === 'ok', duration }))
++    .map((l) => l.trim())
++    .flatMap((l) => {
++      const ts = l.match(OWN_TEST)
++      if (ts) return [{ name: ts[1], ok: ts[2] === 'ok', duration: ts[3] }]
++      const py = l.match(PY_TEST)
++      return py ? [{ name: py[1], ok: py[2] === 'ok', duration: '' }] : []
++    })
+   return { tests, passed: run.passed, failed: run.failed, raw }
+ }
  
  export const run = async (kind: RunKind) => {
    if (running.peek()) return
@@ -18292,7 +18829,7 @@ index a8ecf4b..8a82c89 100644
    running.value = kind
    try {
      const result = await api['POST/api/candidate/run'].fetch({
-@@ -360,7 +306,7 @@ export const setPanelResizer = (ref: HTMLElement | null) => {
+@@ -360,7 +336,7 @@ export const setPanelResizer = (ref: HTMLElement | null) => {
    })
  }
  
@@ -18301,7 +18838,7 @@ index a8ecf4b..8a82c89 100644
  
  // about a third of the window by default (≈ 630 px on a 1920 px screen)
  const MIN_RIGHT = 280
-@@ -384,11 +330,3 @@ export const setSideResizer = (ref: HTMLElement | null) => {
+@@ -384,11 +360,3 @@ export const setSideResizer = (ref: HTMLElement | null) => {
      )
    })
  }
@@ -18530,7 +19067,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..d4f56f8 100644
+index 83f3535..ce5adc8 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,13 @@
@@ -18826,7 +19363,14 @@ index 83f3535..d4f56f8 100644
    assessment: {
      title: string
      company: string
-@@ -233,157 +269,100 @@ export type CandidateView = {
+@@ -228,162 +264,107 @@ export type CandidateView = {
+     constraints: string[]
+     publicTests: TestCase[]
+     hiddenCount: number
++    /** what the program reads and writes (kind `program`) */
++    io?: { input: string; output: string }
+   }
+   startedAt?: number
    submittedAt?: number
    autoSubmitted?: boolean
    declaredTools: string[]

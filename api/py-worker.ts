@@ -137,7 +137,7 @@ _suite = unittest.TestLoader().discover(${
     JSON.stringify(WORK)
   }, pattern='test*.py', top_level_dir=${JSON.stringify(WORK)})
 _stream = io.StringIO()
-_result = unittest.TextTestRunner(stream=_stream, verbosity=1).run(_suite)
+_result = unittest.TextTestRunner(stream=_stream, verbosity=2).run(_suite)
 json.dumps({'run': _result.testsRun, 'failed': len(_result.failures) + len(_result.errors), 'output': _stream.getvalue()})
 `) as string
   return { type: 'unittest', ...JSON.parse(json) }

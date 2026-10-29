@@ -28,3 +28,11 @@ export const skillMethods: Record<string, Method[]> = {
   'Code architecture': ['Code analysis'],
   'Git': ['Interview'],
 }
+
+/** a program reads and writes text: nothing about HTTP can be tested */
+export const skillMethodsOf = (
+  kind: 'api' | 'program',
+): Record<string, Method[]> =>
+  kind === 'program'
+    ? { ...skillMethods, 'REST API design': ['Interview'] }
+    : skillMethods
