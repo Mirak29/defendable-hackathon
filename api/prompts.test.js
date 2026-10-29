@@ -15,6 +15,14 @@ import {
   testsSchema,
   verdictsSchema,
 } from '/api/prompts.ts'
+import {
+  programJudgePrompt,
+  programNeedAnalysisPrompt,
+  programScenarioPrompt,
+  programScenarioSchema,
+  programTestsPrompt,
+  programTestsSchema,
+} from '/api/program-prompts.ts'
 import { parseRequest, parseResponse, parseStep } from '/api/test-steps.ts'
 import { skillCatalog } from '/web/lib/skills.ts'
 import { demoAssessment, demoJobDescription } from '/fixtures/demo.ts'
@@ -170,5 +178,44 @@ test('the prompts say what the demo scenario shows', async (step) => {
       true,
     )
     eq(demoAssessment.tests.filter((t) => t.visibility === 'hidden').length, 3)
+  })
+})
+
+test('the prompts of a program follow their schemas too', async (step) => {
+  const empty = { io: {}, requirements: [], constraints: [] }
+  const cases = [
+    ['need analysis', programNeedAnalysisPrompt(input), needAnalysisSchema],
+    ['scenario', programScenarioPrompt(input, []), programScenarioSchema],
+    ['tests', programTestsPrompt(empty), programTestsSchema],
+    [
+      'judge',
+      programJudgePrompt('brief', 'code', 'failures'),
+      verdictsSchema(['T3']),
+    ],
+  ]
+  for (const [name, prompt, schema] of cases) {
+    await step(name, () => validate(example(prompt), schema.schema))
+  }
+  await step('the example of the tests is a real test: an output', () => {
+    const [t] = example(programTestsPrompt(empty)).tests
+    eq(t.output.trim().length > 0, true)
+    eq(typeof t.input, 'string')
+  })
+  await step('the settings and the instruction reach the prompts', () => {
+    const prompt = programScenarioPrompt(input, [], 'More edge cases')
+    eq(prompt.includes(demoJobDescription), true)
+    eq(prompt.includes('More edge cases'), true)
+    eq(prompt.includes('standard input'), true)
+    eq(programTestsPrompt(empty, 'Harder').includes('Harder'), true)
+  })
+  await step('a program is not told it is an API', () => {
+    for (
+      const p of [
+        programNeedAnalysisPrompt(input),
+        programScenarioPrompt(input, []),
+      ]
+    ) {
+      eq(p.includes('HTTP API in TypeScript'), false)
+    }
   })
 })

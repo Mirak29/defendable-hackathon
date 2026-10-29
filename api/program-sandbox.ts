@@ -20,13 +20,26 @@ import {
   withImportCheck,
 } from '/api/sandbox.ts'
 import { makeQueue } from '/api/lib/make-queue.ts'
-import type { CandidateFiles, Language, TestResult } from '/web/types.ts'
+import type {
+  CandidateFiles,
+  Language,
+  TestCase,
+  TestResult,
+} from '/web/types.ts'
 
 /** the file that reads the input: the entry point of a program */
 export const entryOf = (language: Language) =>
   language === 'python' ? 'main.py' : 'src/main.ts'
 
 export type ProgramCase = { id: string; stdin: string; expected: string }
+
+/** a test of a program is one step: the input, then the output it must give */
+export const programCases = (tests: TestCase[]): ProgramCase[] =>
+  tests.map((t) => ({
+    id: t.id,
+    stdin: t.steps[0]?.request ?? '',
+    expected: t.steps[0]?.response ?? '',
+  }))
 
 const nextSlot = makeQueue(2)
 const SHOWN = 300

@@ -16,7 +16,16 @@ import { demoJobDescription } from '/fixtures/demo.ts'
 import { computeChecks } from '/web/lib/assessment-checks.ts'
 
 const args = parseArgs(Deno.args, {
-  string: ['model', 'fallback', 'file', 'out', 'level', 'skills', 'duration'],
+  string: [
+    'model',
+    'fallback',
+    'file',
+    'out',
+    'level',
+    'skills',
+    'duration',
+    'kind',
+  ],
   default: {
     runs: 1,
     level: 'intermediate',
@@ -73,7 +82,13 @@ const writeRun = async (
     `${s.name} (${s.importance}: ${s.methods.join(', ')})`
   ).join('; ')
   const tests = spec.tests.map((t) => {
-    const steps = t.steps.map((s) => `    ${s.request}  =>  ${s.response}`)
+    const steps = t.steps.map((s) =>
+      spec.kind === 'program'
+        ? `    input ${JSON.stringify(s.request)}  =>  output ${
+          JSON.stringify(s.response)
+        }`
+        : `    ${s.request}  =>  ${s.response}`
+    )
     return [
       `### ${t.id} ${t.title} (${t.visibility}) -> ${
         t.requirementIds.join(', ')
@@ -88,11 +103,13 @@ const writeRun = async (
     `Level ${spec.level}, ${spec.durationMin} min · skills: ${skills}`,
     `## What the candidate reads\n**Context.** ${spec.candidateBrief.context}\n\n**Mission.** ${spec.candidateBrief.mission}`,
     `## Constraints\n${bullets(spec.constraints)}`,
-    `## Routes\n${
-      bullets(spec.routes.map((r) =>
-        `${r.method} ${r.path} — ${r.description} (${r.codes.join(', ')})`
-      ))
-    }`,
+    spec.kind === 'program'
+      ? `## Input and output\nInput: ${spec.io?.input}\nOutput: ${spec.io?.output}`
+      : `## Routes\n${
+        bullets(spec.routes.map((r) =>
+          `${r.method} ${r.path} — ${r.description} (${r.codes.join(', ')})`
+        ))
+      }`,
     `## Requirements\n${
       spec.requirements.map((r) =>
         `- **${r.id} ${r.title}** [${
@@ -120,6 +137,7 @@ for (let run = 1; run <= Number(args.runs); run++) {
     level: args.level as 'junior' | 'intermediate' | 'senior',
     durationMin: Number(args.duration),
     skills: args.skills.split(',').map((x) => x.trim()),
+    kind: args.kind === 'program' ? 'program' : undefined,
   })
   let state = getAssessment(id)
   while (state.status === 'generating') {
