@@ -14,6 +14,7 @@ import { ENV } from '@01edu/api/env'
 import { converse, hasAiKey, llmConfig, type Message } from '/api/llm.ts'
 import { log } from '/api/lib/log.ts'
 import { isEcho } from '/web/lib/echo.ts'
+import { tts } from '/api/tts.ts'
 import type { InterviewLine } from '/web/types.ts'
 import { decodeSession } from '/api/member.ts'
 import {
@@ -52,7 +53,10 @@ const NOT_UNDERSTOOD = (text: string) =>
 
 /** what the browser receives */
 export type VoiceEvent =
-  | { type: 'ready' }
+  /** `voice`: who reads the interviewer's words aloud */
+  | { type: 'ready'; voice: 'server' | 'browser' }
+  /** a sentence of the interviewer, with its sound (PCM 16-bit 24 kHz in base64) unless it could not be made: the browser reads it then */
+  | { type: 'speech'; text: string; pcm?: string }
   | { type: 'speech-start' }
   | { type: 'speech-end' }
   /** what is being said, replaced at each update */
@@ -149,6 +153,26 @@ const markerGuard = () => {
   }
 }
 
+/**
+ * The next piece of speech in written words, and what remains: a sentence of
+ * a few words ("Hi Sam." goes with what follows). With `early` (the first
+ * piece of an answer) a comma ends it too, so that the first sound does not
+ * wait for the end of a long sentence; later ones are made faster than they
+ * are played, and whole sentences keep the voice natural.
+ */
+export const nextPiece = (
+  text: string,
+  early = false,
+): [string, string] | undefined => {
+  for (const m of text.matchAll(/([.!?,;:])\s/g)) {
+    const piece = text.slice(0, m.index + 1)
+    const sentence = '.!?'.includes(m[1])
+    if (sentence ? piece.length >= 12 : early && piece.length >= 14) {
+      return [piece, text.slice(m.index + 2).replace(/^\s+/, '')]
+    }
+  }
+}
+
 export class VoiceInterview {
   #send: (event: VoiceEvent) => void
   #facts: InterviewFacts
@@ -169,6 +193,15 @@ export class VoiceInterview {
   #carry = ''
   /** while the answer is held back: withdraws it if the candidate goes on */
   #withdraw?: () => void
+  /** the sentences of the interviewer are made here, not in the browser */
+  #serverVoice = false
+  /** words written but not yet a whole sentence */
+  #unspoken = ''
+  /** a piece of this answer was already made */
+  #spokeYet = false
+  /** changes when what was being said is dropped: late sentences are lost */
+  #epoch = 0
+  #sentences: Promise<void> = Promise.resolve()
   #asked = 0
   #speechEndAt = 0
   #transcriptAt = 0
@@ -234,6 +267,7 @@ export class VoiceInterview {
 
   close() {
     this.#closed = true
+    this.#dropSpeech()
     this.#withdraw?.()
     this.#controller?.abort()
     try {
@@ -254,7 +288,11 @@ export class VoiceInterview {
       for (const frame of this.#queue) this.#asr!.send(frame)
       this.#queue = []
       this.#queued = 0
-      this.#send({ type: 'ready' })
+      this.#serverVoice = tts.loaded()
+      this.#send({
+        type: 'ready',
+        voice: this.#serverVoice ? 'server' : 'browser',
+      })
       this.#running = this.#answer(INTERVIEW_START)
       return
     }
@@ -278,6 +316,7 @@ export class VoiceInterview {
             this.#busy && this.#controller && !isEcho(heard, this.#said)
           ) {
             this.#interrupted = true
+            this.#dropSpeech()
             this.#controller.abort()
           }
         }
@@ -325,11 +364,53 @@ export class VoiceInterview {
 
   #deliver(text: string) {
     this.#send({ type: 'ai-delta', text })
+    if (this.#serverVoice) this.#say(text)
+  }
+
+  /** what was being said is dropped: sentences still in the making are lost */
+  #dropSpeech() {
+    this.#epoch++
+    this.#unspoken = ''
+    this.#spokeYet = false
+  }
+
+  /**
+   * Speech is made as soon as a piece is whole, in order, while the one before
+   * is playing (see `nextPiece`).
+   */
+  #say(delta: string, flush = false) {
+    this.#unspoken += delta
+    const pieces: string[] = []
+    for (
+      let next = nextPiece(this.#unspoken, !this.#spokeYet);
+      next;
+      next = nextPiece(next[1])
+    ) {
+      pieces.push(next[0])
+      this.#unspoken = next[1]
+      this.#spokeYet = true
+    }
+    if (flush && this.#unspoken.trim()) {
+      pieces.push(this.#unspoken.trim())
+      this.#unspoken = ''
+      this.#spokeYet = true
+    }
+    const epoch = this.#epoch
+    for (const text of pieces) {
+      const sound = tts.synthesize(text, () => epoch === this.#epoch)
+      this.#sentences = this.#sentences.then(async () => {
+        const pcm = await sound
+        // dropped (the candidate spoke over it) or over: nobody hears it
+        if (epoch !== this.#epoch || this.#closed) return
+        this.#send({ type: 'speech', text, pcm })
+      })
+    }
   }
 
   /** one turn of the interviewer, streamed to the browser while it is written */
   async #answer(userText: string, turnId?: number, heardText = userText) {
     this.#history.push({ role: 'user', content: userText })
+    this.#dropSpeech()
     const controller = new AbortController()
     this.#controller = controller
     this.#busy = true
@@ -400,6 +481,7 @@ export class VoiceInterview {
           ? `${spoken} [the candidate interrupted here]`
           : spoken,
       })
+      if (this.#serverVoice && !interrupted) this.#say('', true)
       this.#send({ type: 'ai-done', text: spoken, interrupted })
       if (!interrupted && !isUnclear(heardText)) this.#asked++
       if (turnId !== undefined && firstWordAt) {
@@ -416,6 +498,8 @@ export class VoiceInterview {
       }
       // the marker, or a safety stop if the model forgets to finish
       if (!interrupted && (ended || this.#asked > voiceConfig.questions + 1)) {
+        // the last words are still being made: they are heard before the end
+        await this.#sentences
         this.#send({ type: 'end' })
         this.close()
       }

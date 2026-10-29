@@ -9,7 +9,7 @@ import {
 } from '/web/lib/candidate-store.ts'
 import { startVoice, stopVoice, voice } from '/web/lib/voice-client.ts'
 import { Spinner } from '/web/ui/spinner.tsx'
-import { OracleOrb } from '/web/ui/oracle-orb.tsx'
+import { OracleOrb, STAGE_BACKGROUND } from '/web/ui/oracle-orb.tsx'
 import { Logo } from '/web/ui/topbar.tsx'
 import { CircleCheck, CircleX, Mic } from '/web/assets/icons.tsx'
 import type { ProgressState } from '/web/types.ts'
@@ -111,6 +111,12 @@ export const InterviewPage = () => {
           <h1 tw='m-0 text-[18px] font-semibold'>
             {preparation?.error ? 'Something went wrong' : 'Getting ready'}
           </h1>
+          {!preparation?.error && (
+            <p tw='m-0 text-[13px] text-content-secondary'>
+              Nothing to do here, it takes a few seconds. Then Oracle will talk
+              with you about the code you wrote.
+            </p>
+          )}
           <ul tw='list-none m-0 p-0 flex flex-col gap-2.5'>
             {STEPS.map((label, i) => (
               <StepRow
@@ -143,50 +149,92 @@ export const InterviewPage = () => {
   const talking = live === 'live' || live === 'connecting'
   const lines = voice.lines.value
   const state = voice.listening.value
-    ? 'Listening'
+    ? "I'm listening"
     : voice.speaking.value
     ? 'Speaking'
     : voice.writing.value
-    ? 'Thinking'
+    ? 'Thinking about it'
     : live === 'connecting'
     ? 'Connecting'
     : live === 'ended'
-    ? 'Interview over'
-    : 'Ready'
+    ? 'Thank you, that was the last question'
+    : live === 'live'
+    ? 'Take your time'
+    : 'Waiting for you'
+  // what Oracle says now, in writing: a voice alone is easy to lose
+  const caption = voice.writing.value ||
+    (voice.speaking.value ? lines.findLast((l) => l.who === 'ai')?.text : '') ||
+    ''
+  const asking = !talking && live !== 'ended' &&
+    (needsGesture || live === 'error' || demo)
   return (
     <div tw='h-screen flex flex-col bg-surface-page text-content-primary'>
       <header tw='h-12 flex-none flex items-center justify-between px-5 border-b border-border-primary'>
         <Logo />
         <span tw='text-[12.5px] text-content-tertiary'>
-          Interview about your code
+          A conversation about your code
         </span>
       </header>
       <div tw='flex-1 min-h-0 flex flex-col lg:flex-row'>
         <section
           aria-label='Oracle'
           tw='relative flex-1 min-h-0 overflow-hidden'
-          style={{ background: '#000' }}
+          style={{ background: STAGE_BACKGROUND }}
         >
           <OracleOrb />
-          <div tw='absolute inset-x-0 bottom-0 flex flex-col items-center gap-2 px-6 pb-6 pt-16'>
-            <span
-              tw='font-display text-[18px] tracking-[0.04em]'
-              style={{ color: '#e4e4e7' }}
-            >
-              Oracle
-            </span>
-            <span
-              data-test='oracle-state'
-              role='status'
-              tw='badge'
-              style={{
-                background: 'rgba(255,255,255,.08)',
-                color: '#b4b4bb',
-                borderColor: 'rgba(255,255,255,.14)',
-              }}
-            >
-              {state}
-            </span>
+          <div tw='absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 px-6 pb-8 pt-16'>
+            {!asking && (
+              <p
+                aria-live='polite'
+                tw='m-0 max-w-[620px] min-h-[84px] text-center text-[18px] leading-[1.5]'
+                style={{ color: '#dbe7ff' }}
+              >
+                {caption}
+              </p>
+            )}
+            {asking && (
+              <div
+                tw='w-[440px] max-w-full rounded-2xl p-5 flex flex-col gap-3 text-center'
+                style={{
+                  background: 'rgba(8,16,36,.72)',
+                  border: '1px solid rgba(120,170,255,.22)',
+                  color: '#dbe7ff',
+                }}
+              >
+                <h2 tw='m-0 text-[17px] font-semibold'>
+                  {live === 'error'
+                    ? 'We could not open the conversation'
+                    : 'Ready when you are'}
+                </h2>
+                <p
+                  tw='m-0 text-[14px] leading-[1.55]'
+                  style={{ opacity: 0.85 }}
+                >
+                  {live === 'error'
+                    ? 'Check that your microphone is allowed, then try again.'
+                    : 'Oracle has read your code and will talk it through with you, out loud. There are no trick questions, you can take your time, and a person reads the result afterwards.'}
+                </p>
+                <p tw='m-0 text-[12.5px]' style={{ opacity: 0.65 }}>
+                  Headphones help. The browser will ask for your microphone.
+                </p>
+              </div>
+            )}
+            <div tw='flex flex-col items-center gap-1'>
+              <span
+                tw='font-display text-[16px] tracking-[0.04em]'
+                style={{ color: '#e8f0ff' }}
+              >
+                Oracle
+              </span>
+              <span
+                data-test='oracle-state'
+                role='status'
+                tw='text-[13px]'
+                style={{ color: '#8fb0ee' }}
+              >
+                {state}
+              </span>
+            </div>
             {voice.error.value && (
               <p role='alert' tw='m-0 text-err text-[13px] text-center'>
                 {voice.error.value}
@@ -215,9 +263,7 @@ export const InterviewPage = () => {
                       <Mic tw='w-4 h-4' />
                       {live === 'error'
                         ? 'Try again'
-                        : needsGesture && !demo
-                        ? 'Resume the interview'
-                        : 'Start'}
+                        : 'Start the conversation'}
                     </button>
                   )}
               </div>
@@ -239,7 +285,8 @@ export const InterviewPage = () => {
           >
             {!lines.length && !voice.writing.value && (
               <p tw='m-0 text-content-tertiary text-[13px]'>
-                Oracle will start in a moment. The conversation appears here.
+                Oracle will start in a moment. Everything said is written here,
+                so you can follow along.
               </p>
             )}
             {lines.map((line, i) => (

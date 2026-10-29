@@ -24,6 +24,8 @@ export const voice = {
   error: signal(''),
   /** microphone level, 0 to 1 */
   level: signal(0),
+  /** how loud Oracle's own voice is now, 0 to 1 (0: the voice cannot be read) */
+  amplitude: signal(0),
   /** the sentence being spoken and how far the voice is in it (lip sync) */
   speech: signal({ text: '', charIndex: 0, at: 0 }),
 }
@@ -78,8 +80,15 @@ type Session = {
   stream: MediaStream
 }
 let session: Session | undefined
+/** where the voice made by the server is played, and measured */
+let playback:
+  | { context: AudioContext; gain: GainNode; analyser: AnalyserNode }
+  | undefined
 
 /* ---------- the interviewer's voice ---------- */
+
+/** the server makes the voice (the browser's is the fallback) */
+let serverVoice = false
 
 let spokenBuffer = ''
 /** what the interviewer said or is saying: the microphone may hear it back */
@@ -101,6 +110,85 @@ const pickVoice = () => {
     voices.find((v) => v.lang === 'en-US') ?? voices[0]
 }
 
+/** the first sound of an answer: the delay the candidate felt */
+const voiceStarted = (text: string) => {
+  voice.speaking.value = true
+  voice.speech.value = { text, charIndex: 0, at: performance.now() }
+  if (awaitingVoice && heardAt) {
+    awaitingVoice = false
+    const last = voice.delays.value.at(-1)
+    if (last && last.heardToVoiceMs === undefined) {
+      const heardToVoiceMs = Math.round(performance.now() - heardAt)
+      voice.delays.value = [...voice.delays.value.slice(0, -1), {
+        ...last,
+        heardToVoiceMs,
+      }]
+    }
+  }
+}
+
+/* the voice of the server: sentences of PCM 24 kHz, played one after another */
+const SPEECH_RATE = 24_000
+let playingFrom = 0
+let sounds = new Set<AudioBufferSourceNode>()
+let meter: ReturnType<typeof setInterval> | undefined
+
+/** how loud the voice is now: it moves the presence of Oracle */
+const measure = () => {
+  const analyser = playback?.analyser
+  if (!analyser) return
+  const samples = new Float32Array(analyser.fftSize)
+  analyser.getFloatTimeDomainData(samples)
+  let sum = 0
+  for (const s of samples) sum += s * s
+  voice.amplitude.value = Math.min(1, Math.sqrt(sum / samples.length) * 4.5)
+}
+
+const stopSounds = () => {
+  for (const sound of sounds) {
+    sound.onended = null
+    try {
+      sound.stop()
+    } catch { /* never started */ }
+  }
+  sounds = new Set()
+  playingFrom = 0
+  clearInterval(meter)
+  meter = undefined
+  voice.amplitude.value = 0
+}
+
+const playPcm = (text: string, base64: string) => {
+  if (!playback) return
+  const { context, gain } = playback
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
+  const pcm = new Int16Array(bytes.buffer, 0, bytes.length >> 1)
+  const buffer = context.createBuffer(1, pcm.length, SPEECH_RATE)
+  const channel = buffer.getChannelData(0)
+  for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768
+  const sound = context.createBufferSource()
+  sound.buffer = buffer
+  sound.connect(gain)
+  // right after the sentence before it, with no gap and no overlap
+  const at = Math.max(context.currentTime + 0.02, playingFrom)
+  playingFrom = at + buffer.duration
+  sounds.add(sound)
+  sound.onended = () => {
+    sounds.delete(sound)
+    if (sounds.size) return
+    voice.speaking.value = false
+    clearInterval(meter)
+    meter = undefined
+    voice.amplitude.value = 0
+  }
+  if (context.state === 'suspended') context.resume()
+  sound.start(at)
+  if (!meter) meter = setInterval(measure, 40)
+  setTimeout(() => {
+    if (sounds.has(sound)) voiceStarted(text)
+  }, Math.max(0, (at - context.currentTime) * 1000))
+}
+
 const speak = (text: string) => {
   const clean = text.trim()
   if (!clean) return
@@ -109,21 +197,7 @@ const speak = (text: string) => {
   if (chosen) utterance.voice = chosen
   utterance.lang = 'en-US'
   utterance.rate = 1.05
-  utterance.onstart = () => {
-    voice.speaking.value = true
-    voice.speech.value = { text: clean, charIndex: 0, at: performance.now() }
-    if (awaitingVoice && heardAt) {
-      awaitingVoice = false
-      const last = voice.delays.value.at(-1)
-      if (last && last.heardToVoiceMs === undefined) {
-        const heardToVoiceMs = Math.round(performance.now() - heardAt)
-        voice.delays.value = [...voice.delays.value.slice(0, -1), {
-          ...last,
-          heardToVoiceMs,
-        }]
-      }
-    }
-  }
+  utterance.onstart = () => voiceStarted(clean)
   // not every voice reports its words: the face then follows the clock
   utterance.onboundary = (e) => {
     voice.speech.value = {
@@ -161,6 +235,7 @@ const speakPieces = (delta: string, flush = false) => {
 
 const silence = () => {
   spokenBuffer = ''
+  stopSounds()
   speechSynthesis.cancel()
   playing.clear()
   voice.speaking.value = false
@@ -171,7 +246,13 @@ const silence = () => {
 const onEvent = (event: VoiceEvent) => {
   switch (event.type) {
     case 'ready':
+      serverVoice = event.voice === 'server'
       voice.status.value = 'live'
+      break
+    case 'speech':
+      // the sound made by the server, or the text alone when it could not
+      if (event.pcm) playPcm(event.text, event.pcm)
+      else speak(event.text)
       break
     case 'speech-start':
       // a sound only: the interviewer stops when words that are not its own
@@ -206,10 +287,10 @@ const onEvent = (event: VoiceEvent) => {
       if (!voice.writing.value) said = ''
       said += event.text
       voice.writing.value += event.text
-      speakPieces(event.text)
+      if (!serverVoice) speakPieces(event.text)
       break
     case 'ai-done':
-      if (!event.interrupted) speakPieces('', true)
+      if (!event.interrupted && !serverVoice) speakPieces('', true)
       voice.writing.value = ''
       if (event.text) {
         voice.lines.value = [...voice.lines.value, {
@@ -279,7 +360,15 @@ export const startVoice = async () => {
       if (socket.readyState === WebSocket.OPEN) socket.send(e.data.pcm)
     }
     source.connect(pcm)
+    // the voice of the server: played here, and measured to move the presence
+    const gain = context.createGain()
+    const analyser = context.createAnalyser()
+    analyser.fftSize = 1024
+    gain.connect(analyser)
+    analyser.connect(context.destination)
+    serverVoice = false
     session = { socket, context, stream }
+    playback = { context, gain, analyser }
     // the voices of the browser load late: ask once so the first sentence has one
     speechSynthesis.getVoices()
   } catch (err) {
@@ -299,7 +388,13 @@ export const stopVoice = (tell = true, keepVoice = false) => {
   }
   current.socket.close()
   current.stream.getTracks().forEach((t) => t.stop())
-  current.context.close().catch(() => {})
+  // the last sentence of an interview that is over is still being played
+  const closeWhenSilent = () => {
+    if (sounds.size) return void setTimeout(closeWhenSilent, 200)
+    if (playback?.context === current.context) playback = undefined
+    current.context.close().catch(() => {})
+  }
+  closeWhenSilent()
   voice.listening.value = false
   voice.level.value = 0
   if (voice.status.value === 'live' || voice.status.value === 'connecting') {

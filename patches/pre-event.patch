@@ -54,10 +54,10 @@ index 9a23581..acd7092 100644
 +# runs of `deno task llm:generate --out=generated`
 +generated/
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 395848d..2730034 100644
+index 395848d..3c28486 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -5,153 +5,128 @@ code in this repository.
+@@ -5,153 +5,132 @@ code in this repository.
  
  ## What this is
  
@@ -171,8 +171,12 @@ index 395848d..2730034 100644
 +  link, cookie session, editor (save, run, type check), submission, preparation
 +  of the interview (hidden tests, type check). `/api/voice` is a WebSocket the
 +  browser opens with the candidate cookie: microphone to Meta's transcription,
-+  Oracle's answer streamed from the interviewer model, spoken by the browser.
-+  The transcript is stored when the interview ends.
++  Oracle's answer streamed from the interviewer model, spoken by a voice made on
++  the server (`tts.ts`: Kokoro fp32 on the CPU, pieces sent as `speech` events
++  with PCM in base64, dropped when the candidate speaks over; `ready` says
++  `server` or `browser`, the browser's voice being the fallback). The presence
++  of Oracle (`web/ui/oracle-orb.tsx`, test page `/dev/orb`) follows the loudness
++  of that voice. The transcript is stored when the interview ends.
 +- **Report** (`api/report.ts`): the facts are measured by the server (tests,
 +  type check, durations, tools, what was said). The model reads the transcript
 +  and the code; every quote, line range and test it cites is checked against
@@ -9809,16 +9813,17 @@ index 263037b..50c3916 100644
      memberPassword: demoHash!,
      memberCreatedAt: Date.now(),
 diff --git a/api/server.ts b/api/server.ts
-index a751410..e824640 100644
+index a751410..f6f5b81 100644
 --- a/api/server.ts
 +++ b/api/server.ts
-@@ -2,41 +2,29 @@ import { log } from '/api/lib/log.ts'
+@@ -2,43 +2,34 @@ import { log } from '/api/lib/log.ts'
  import { routeHandler } from '/api/routes.ts'
  import '/api/schema.ts'
  import { recoverInterruptedJobs } from '/api/recovery.ts'
 -import { withAiScope } from '/api/lib/ai-context.ts'
 -import { translateMessage } from '/web/lib/messages.ts'
 +import { handleVoice } from '/api/voice.ts'
++import { tts } from '/api/tts.ts'
 +import { labFacts } from '/api/voice-lab.ts'
 +import { candidateVoice } from '/api/interview.ts'
  
@@ -9865,6 +9870,10 @@ index a751410..e824640 100644
    },
  }
  
+ recoverInterruptedJobs()
++// Oracle's voice loads while the server idles, not when somebody waits for it
++tts.warmUp()
+ log.info('server-start')
 diff --git a/api/signup.test.js b/api/signup.test.js
 index f506745..f85449f 100644
 --- a/api/signup.test.js
@@ -10202,7 +10211,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..3352c99 100644
+index 5f704a5..726f88b 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -10242,7 +10251,7 @@ index 5f704a5..3352c99 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +48,39 @@
+@@ -45,41 +48,40 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
@@ -10254,6 +10263,7 @@ index 5f704a5..3352c99 100644
      "@01edu/signal-router": "jsr:@01edu/signal-router@^0.2.3",
      "fflate": "npm:fflate@^0.8.3",
 -    "unpdf": "npm:unpdf@^1.8.1"
++    "kokoro-js": "npm:kokoro-js@1.2.1",
 +    "pyodide": "npm:pyodide@0.28.2",
 +    "unpdf": "npm:unpdf@^1.8.1",
 +    "preact/": "npm:/preact@10.29.8/",
@@ -12117,7 +12127,7 @@ index ad9d7a5..5519abf 100644
  
  console.log('\nduration:', `${yellow(String((Date.now() - start) / 1000))}s`)
 diff --git a/web/app.tsx b/web/app.tsx
-index da0b0a9..0d15d9a 100644
+index da0b0a9..220d620 100644
 --- a/web/app.tsx
 +++ b/web/app.tsx
 @@ -1,6 +1,6 @@
@@ -12129,7 +12139,7 @@ index da0b0a9..0d15d9a 100644
  import { buildPreflightTokens, customClasses, semanticColors } from './theme.ts'
  import { url } from '/web/lib/router-signal.ts'
  import { tailwindColors } from '/web/tailwind-colors.ts'
-@@ -13,23 +13,22 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
+@@ -13,23 +13,23 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
  import { makePlaceholder } from '/web/pages/placeholder-page.tsx'
  import { screens } from '/web/screens.ts'
  import { Notifications } from '/web/ui/notifications.tsx'
@@ -12141,6 +12151,7 @@ index da0b0a9..0d15d9a 100644
  import { LoginPage, SignupPage } from '/web/pages/auth/auth-pages.tsx'
 +import { VoiceLabPage } from '/web/pages/voice/voice-lab.tsx'
 +import { TtsLabPage } from '/web/pages/voice/tts-lab.tsx'
++import { OrbLabPage } from '/web/pages/voice/orb-lab.tsx'
  import { memberStatus } from '/web/lib/member-store.ts'
 +import { ConsentPage } from '/web/pages/candidate/consent-page.tsx'
 +import { InterviewPage } from '/web/pages/candidate/interview-page.tsx'
@@ -12160,7 +12171,7 @@ index da0b0a9..0d15d9a 100644
  import '/web/ui/themetoggle.tsx'
  
  Object.assign(globalThis, { h, Fragment })
-@@ -37,8 +36,6 @@ setup({
+@@ -37,8 +37,6 @@ setup({
    darkMode: 'class',
    preflight: (preflight) => ({
      ...preflight,
@@ -12169,7 +12180,7 @@ index da0b0a9..0d15d9a 100644
      ...customClasses,
      // `@apply placeholder:…` gives an invalid `:placeholder` selector
      '.input::placeholder': { color: 'var(--color-content-tertiary)' },
-@@ -54,7 +51,7 @@ setup({
+@@ -54,7 +52,7 @@ setup({
          'wide-narrow': 'minmax(0,1.3fr) minmax(0,1fr)',
          'split': 'minmax(0,1.4fr) minmax(0,1fr)',
          'nav-main': '168px minmax(0,1fr)',
@@ -12178,7 +12189,7 @@ index da0b0a9..0d15d9a 100644
          'report': '168px minmax(0,880px) 280px',
          'report-md': 'minmax(0,1fr) 264px',
          'cards': 'repeat(auto-fill, minmax(min(340px, 100%), 1fr))',
-@@ -75,23 +72,27 @@ setup({
+@@ -75,23 +73,28 @@ setup({
    },
  })
  
@@ -12193,6 +12204,7 @@ index da0b0a9..0d15d9a 100644
    [paths.signup]: SignupPage,
 +  [paths.voiceLab]: VoiceLabPage,
 +  [paths.ttsLab]: TtsLabPage,
++  [paths.orbLab]: OrbLabPage,
 +  [paths.candidate]: ConsentPage,
 +  [paths.workspace]: () => (
 +    <DesktopOnly>
@@ -12212,7 +12224,7 @@ index da0b0a9..0d15d9a 100644
    [paths.done]: DonePage,
  }
  
-@@ -111,14 +112,7 @@ const App = () => {
+@@ -111,14 +114,7 @@ const App = () => {
          : screen?.space === 'candidate'
          ? <CandidateTopBar />
          : <PublicHeader />)}
@@ -13479,7 +13491,7 @@ index 71c7b4d..e3beb2c 100644
        </p>
      </Card>
 diff --git a/web/pages/candidate/consent-page.tsx b/web/pages/candidate/consent-page.tsx
-index a8ac71c..5a37d9c 100644
+index a8ac71c..66d3291 100644
 --- a/web/pages/candidate/consent-page.tsx
 +++ b/web/pages/candidate/consent-page.tsx
 @@ -2,63 +2,60 @@ import { paths } from '/web/paths.ts'
@@ -13600,19 +13612,31 @@ index a8ac71c..5a37d9c 100644
  export const ConsentPage = () => {
    const ok = understood.value && accepted.value
    const info = invitation.value
-@@ -143,10 +138,7 @@ export const ConsentPage = () => {
+@@ -142,12 +137,17 @@ export const ConsentPage = () => {
+       <main tw='flex-1 flex items-center justify-center px-4 py-16'>
          {invitationError.value
            ? (
-             <p tw='m-0 card px-5 py-4 text-[14px] text-content-secondary'>
+-            <p tw='m-0 card px-5 py-4 text-[14px] text-content-secondary'>
 -              {t(
 -                'Ce lien d’évaluation n’est pas valide. Vérifiez le lien reçu.',
 -                'This assessment link is not valid. Check the link you received.',
 -              )}
-+              {'This assessment link is not valid. Check the link you received.'}
-             </p>
+-            </p>
++            <div
++              role='alert'
++              tw='card px-5 py-4 max-w-[420px] flex flex-col gap-1.5'
++            >
++              <p tw='m-0 text-[15px] font-semibold'>
++                {'This assessment link is not valid.'}
++              </p>
++              <p tw='m-0 text-[14px] text-content-secondary'>
++                {'Open the link exactly as you received it in your e-mail. If it still does not work, ask the person who invited you for a new one.'}
++              </p>
++            </div>
            )
            : <Spinner tw='w-5 h-5 text-content-tertiary' />}
-@@ -168,27 +160,14 @@ export const ConsentPage = () => {
+       </main>
+@@ -168,27 +168,14 @@ export const ConsentPage = () => {
            </span>
            <p tw='m-0 text-[15px] font-medium'>
              {closed
@@ -13647,7 +13671,7 @@ index a8ac71c..5a37d9c 100644
            </p>
            {state === 'started' && (
              <button
-@@ -199,7 +178,7 @@ export const ConsentPage = () => {
+@@ -199,7 +186,7 @@ export const ConsentPage = () => {
                onClick={beginBuild}
              >
                <Play tw='w-[15px] h-[15px]' />
@@ -13656,7 +13680,7 @@ index a8ac71c..5a37d9c 100644
              </button>
            )}
          </article>
-@@ -216,64 +195,43 @@ export const ConsentPage = () => {
+@@ -216,64 +203,43 @@ export const ConsentPage = () => {
            </span>
            {firstName && (
              <span tw='text-[14px] text-content-secondary'>
@@ -13706,7 +13730,7 @@ index a8ac71c..5a37d9c 100644
 -                  '10 timed questions on your own code, 6 multiple-choice and 4 open answers. Copy-paste disabled, page leaves recorded. A documentation assistant is available for open answers.',
 -                )}
 +                title='Interview (about 10 min)'
-+                text='An AI interviewer asks you about your own code, out loud. Use headphones and a quiet place. Nothing to prepare: you either know your code or you do not.'
++                text='Oracle, an AI interviewer, talks with you about your own code, out loud. There are no trick questions and nothing to prepare: take your time. Use headphones and a quiet place.'
                />
              </ol>
            </section>
@@ -13731,7 +13755,7 @@ index a8ac71c..5a37d9c 100644
              </p>
              <ul tw='list-none m-0 p-0 grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2 text-[13px] text-content-secondary'>
                {DATA().map(([Icon, text]) => (
-@@ -284,22 +242,35 @@ export const ConsentPage = () => {
+@@ -284,22 +250,35 @@ export const ConsentPage = () => {
                ))}
              </ul>
            </section>
@@ -13775,7 +13799,7 @@ index a8ac71c..5a37d9c 100644
              />
            </div>
          </div>
-@@ -310,15 +281,12 @@ export const ConsentPage = () => {
+@@ -310,15 +289,12 @@ export const ConsentPage = () => {
              tw='text-[13px] inline-flex items-center gap-[5px]'
            >
              <Accessibility tw='w-3.5 h-3.5' />
@@ -13793,7 +13817,7 @@ index a8ac71c..5a37d9c 100644
            </span>
            <button
              type='button'
-@@ -330,10 +298,7 @@ export const ConsentPage = () => {
+@@ -330,10 +306,7 @@ export const ConsentPage = () => {
              }}
            >
              <Play tw='w-[15px] h-[15px]' />
@@ -14001,10 +14025,10 @@ index 08078d9..bf1cc01 100644
      </main>
    )
 diff --git a/web/pages/landing/landing-sections.tsx b/web/pages/landing/landing-sections.tsx
-index b232fd7..cf45c73 100644
+index b232fd7..0c15710 100644
 --- a/web/pages/landing/landing-sections.tsx
 +++ b/web/pages/landing/landing-sections.tsx
-@@ -3,124 +3,86 @@ import {
+@@ -3,124 +3,90 @@ import {
    CodeXml,
    FileSearch,
    FileText,
@@ -14031,10 +14055,11 @@ index b232fd7..cf45c73 100644
 -    title: t('Coder, avec son IA.', 'Code, with their AI.'),
 -    text: t(
 -      'Le candidat construit son API dans un environnement dédié. Les outils d’IA sont autorisés et leur usage est déclaré.',
+-      'Candidates build their API in a dedicated environment. AI tools are allowed and their use is declared.',
+-    ),
 +    title: 'Code, with their AI.',
 +    text:
-       'Candidates build their API in a dedicated environment. AI tools are allowed and their use is declared.',
--    ),
++      'Candidates build a small API or a program in a dedicated environment, in the language they choose. AI tools are allowed and their use is declared.',
    },
    {
 -    icon: MessagesSquare,
@@ -14083,8 +14108,8 @@ index b232fd7..cf45c73 100644
 -      'Les comportements exécutables sont confrontés à des tests dans le bac à sable. Les interprétations de l’IA et les contradictions à discuter restent présentées séparément des faits vérifiés. Une seconde clé contribue à vérifier les réponses.',
 -      'Executable behaviours are checked against tests in the sandbox. AI interpretations and contradictions to discuss stay apart from verified facts. A second key helps check the answers.',
 -    ),
-+    'How do you know an answer is wrong?',
-+    'Executable behaviours are checked against tests in the sandbox. What the candidate says is compared with the code. AI interpretations and contradictions to discuss stay apart from verified facts.',
++    'What do candidates build, and in which language?',
++    'The recruiter chooses a small HTTP API (TypeScript) or a program that reads and writes text (TypeScript or Python). For a program, the candidate picks the language before the timer starts.',
    ],
    [
 -    t('Pourquoi pas de score ?', 'Why no score?'),
@@ -14092,8 +14117,8 @@ index b232fd7..cf45c73 100644
 -      'Un score résume trop vite ce qui mérite une conversation. Le rapport présente des indicateurs par compétence, les réponses et les preuves. La décision de recrutement vous appartient.',
 -      'A score sums up too quickly what deserves a conversation. The report shows indicators per skill, the answers and the evidence. The hiring decision is yours.',
 -    ),
-+    'Why no score?',
-+    'A score sums up too quickly what deserves a conversation. The report shows indicators per skill, the answers and the evidence. The hiring decision is yours.',
++    'How do you know an answer is wrong?',
++    'Executable behaviours are checked against tests in the sandbox. What the candidate says is compared with the code. AI interpretations and contradictions to discuss stay apart from verified facts.',
    ],
    [
 -    t('Quelles données sont conservées ?', 'What data is kept?'),
@@ -14101,8 +14126,8 @@ index b232fd7..cf45c73 100644
 -      'Le code, les exécutions, les réponses, l’usage déclaré de l’IA et les événements d’intégrité tels que les sorties de page. Aucune webcam, aucun microphone et aucun enregistrement d’écran.',
 -      'The code, the runs, the answers, the declared use of AI and integrity events such as leaving the page. No webcam, no microphone and no screen recording.',
 -    ),
-+    'What data is kept?',
-+    'The code, the runs, the declared use of AI, the interview transcript (text only, kept 30 days by default) and integrity events such as leaving the page. The audio is not stored. No webcam and no screen recording.',
++    'Why no score?',
++    'A score sums up too quickly what deserves a conversation. The report shows indicators per skill, the answers and the evidence. The hiring decision is yours.',
    ],
    [
 -    t(
@@ -14113,6 +14138,10 @@ index b232fd7..cf45c73 100644
 -      'Le recruteur choisit 60, 90 ou 120 minutes pour la construction. Une phase de questions chronométrée suit la soumission du code.',
 -      'The recruiter picks 60, 90 or 120 minutes for building. A timed question phase follows the code submission.',
 -    ),
++    'What data is kept?',
++    'The code, the runs, the declared use of AI, the interview transcript (text only, kept 30 days by default) and integrity events such as leaving the page. The audio is not stored. No webcam and no screen recording.',
++  ],
++  [
 +    'Do I need a microphone?',
 +    'Yes, for the interview. You can check your microphone before it starts, and nothing is recorded until you accept.',
 +  ],
@@ -14156,13 +14185,13 @@ index b232fd7..cf45c73 100644
 -            'Autoriser l’IA permet d’évaluer le métier tel qu’il se pratique.',
 -            'Allowing AI assesses the job as it is really done.',
 -          ),
-+          'AI writes an API in a few minutes.',
++          'AI writes working code in a few minutes.',
 +          'Shipped code alone is no longer enough to assess a person.',
 +          'Allowing AI assesses the job as it is really done.',
          ].map((text, i) => (
            <div key={i} tw='border-t border-border-strong pt-5'>
              <span tw='font-mono text-xs text-accent-text'>0{i + 1}</span>
-@@ -130,18 +92,18 @@ export const LandingSections = () => (
+@@ -130,18 +96,18 @@ export const LandingSections = () => (
        </div>
      </section>
      <section
@@ -14185,7 +14214,7 @@ index b232fd7..cf45c73 100644
        </h2>
        <ol tw='grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-9'>
          {steps().map(({ icon: Icon, title, text }, i) => (
-@@ -163,116 +125,98 @@ export const LandingSections = () => (
+@@ -163,116 +129,98 @@ export const LandingSections = () => (
        aria-labelledby='report-title'
      >
        <div>
@@ -14329,7 +14358,7 @@ index b232fd7..cf45c73 100644
        ].map((text, i) => (
          <p key={i} tw='flex items-center gap-3 text-sm'>
            <ShieldCheck tw='w-5 h-5 flex-none text-accent-text' />
-@@ -287,9 +231,9 @@ export const LandingSections = () => (
+@@ -287,9 +235,9 @@ export const LandingSections = () => (
        aria-labelledby='faq-title'
      >
        <p class='landing-eyebrow'>
@@ -14557,7 +14586,7 @@ index 54daae0..4649e89 100644
    </main>
  )
 diff --git a/web/pages/recruiter/assessment-page.tsx b/web/pages/recruiter/assessment-page.tsx
-index d5b6cab..6d543ff 100644
+index d5b6cab..3341b4e 100644
 --- a/web/pages/recruiter/assessment-page.tsx
 +++ b/web/pages/recruiter/assessment-page.tsx
 @@ -1,5 +1,5 @@
@@ -15147,7 +15176,7 @@ index d5b6cab..6d543ff 100644
          </span>
        </div>
        <div tw='flex flex-col gap-2'>
-@@ -761,54 +658,56 @@ export const AssessmentPage = () => {
+@@ -761,54 +658,60 @@ export const AssessmentPage = () => {
          <div tw='flex gap-1.5 flex-wrap'>
            <MetaTag>{levelLabels[spec.level]}</MetaTag>
            <MetaTag icon={Clock}>{spec.durationMin} min</MetaTag>
@@ -15161,7 +15190,12 @@ index d5b6cab..6d543ff 100644
            </Badge>
          </div>
        </div>
-       <div tw='grid grid-cols-1 lg:grid-cols-split gap-4'>
+-      <div tw='grid grid-cols-1 lg:grid-cols-split gap-4'>
++      {/* once there are candidates, they come first: the form follows */}
++      <div
++        tw='grid grid-cols-1 lg:grid-cols-split gap-4'
++        style={{ order: a.candidates.length ? 1 : 0 }}
++      >
          <InvitePanel a={a} />
 -        <Panel title={t('Récapitulatif', 'Summary')}>
 +        <Panel title='Summary'>
@@ -15226,7 +15260,7 @@ index d5b6cab..6d543ff 100644
              </th>
            </THead>
            <tbody>
-@@ -818,15 +717,12 @@ export const AssessmentPage = () => {
+@@ -818,15 +721,12 @@ export const AssessmentPage = () => {
                    colSpan={6}
                    tw={[td, 'pl-4 text-content-tertiary text-[13px]']}
                  >
@@ -15244,7 +15278,7 @@ index d5b6cab..6d543ff 100644
                return (
                  <tr key={c.id} tw='border-t border-border-primary'>
                    <td tw={[td, 'pl-4']}>
-@@ -844,7 +740,7 @@ export const AssessmentPage = () => {
+@@ -844,7 +744,7 @@ export const AssessmentPage = () => {
                        )
                        : (
                          <span tw='text-[13px] text-content-tertiary'>
@@ -15253,7 +15287,7 @@ index d5b6cab..6d543ff 100644
                          </span>
                        )}
                    </td>
-@@ -853,7 +749,7 @@ export const AssessmentPage = () => {
+@@ -853,7 +753,7 @@ export const AssessmentPage = () => {
                    <td tw={[td, 'text-content-secondary']}>
                      {c.buildMinutes
                        ? `${formatMinutes(c.buildMinutes)}${
@@ -15262,7 +15296,7 @@ index d5b6cab..6d543ff 100644
                        }`
                        : '—'}
                    </td>
-@@ -862,17 +758,17 @@ export const AssessmentPage = () => {
+@@ -862,17 +762,17 @@ export const AssessmentPage = () => {
                    </td>
                    <td tw={[td, 'pr-4 text-right']}>
                      <span tw='inline-flex items-center gap-2 justify-end flex-wrap'>
@@ -15283,7 +15317,7 @@ index d5b6cab..6d543ff 100644
                          <button
                            type='button'
                            data-test='revoke-btn'
-@@ -880,7 +776,7 @@ export const AssessmentPage = () => {
+@@ -880,7 +780,7 @@ export const AssessmentPage = () => {
                            onClick={() => revoke(c)}
                          >
                            <Ban tw='w-3.5 h-3.5' />
@@ -15292,7 +15326,7 @@ index d5b6cab..6d543ff 100644
                          </button>
                        )}
                        {done
-@@ -892,21 +788,18 @@ export const AssessmentPage = () => {
+@@ -892,21 +792,18 @@ export const AssessmentPage = () => {
                              tw='btn btn-secondary h-8 px-3 text-[13px]'
                            >
                              <FileText tw='w-3.5 h-3.5' />
@@ -15317,7 +15351,7 @@ index d5b6cab..6d543ff 100644
                            </button>
                          )}
                      </span>
-@@ -917,10 +810,7 @@ export const AssessmentPage = () => {
+@@ -917,10 +814,7 @@ export const AssessmentPage = () => {
            </tbody>
          </TableWrap>
          <p tw='m-0 text-[12.5px] text-content-tertiary'>
@@ -18944,10 +18978,10 @@ index a8ecf4b..92464ef 100644
 -  bottomTab.value = 'out'
 -})
 diff --git a/web/paths.ts b/web/paths.ts
-index 0c5de49..04f7cd0 100644
+index 0c5de49..144c876 100644
 --- a/web/paths.ts
 +++ b/web/paths.ts
-@@ -1,26 +1,26 @@
+@@ -1,26 +1,27 @@
  // Every route of the app, in one place: pages never hard-code a URL.
  // Two symmetric spaces, /recruiter/… and /candidate/…; ids stay in the
 -// query string (?id=, ?q=) like tournament's signal-router routes.
@@ -18989,6 +19023,7 @@ index 0c5de49..04f7cd0 100644
 +  done: '/candidate/done', // end of the assessment
 +  voiceLab: '/dev/voice', // test page of the voice interview
 +  ttsLab: '/dev/tts', // test page of Oracle's voice
++  orbLab: '/dev/orb', // the presence of Oracle in each of its states
  } as const
  
  export const isCandidatePath = (path: string) =>

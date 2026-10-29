@@ -3,7 +3,8 @@
 // played by a WebSocket client that sends a few frames of "audio".
 import { eq, test } from '/api/lib/test.ts'
 import { llmConfig } from '/api/llm.ts'
-import { handleVoice, keywordsOf, voiceConfig } from '/api/voice.ts'
+import { handleVoice, keywordsOf, nextPiece, voiceConfig } from '/api/voice.ts'
+import { tts } from '/api/tts.ts'
 
 const facts = {
   brief: 'Context: Linkly.\n\nMission: build the API.',
@@ -563,4 +564,137 @@ test('voice interview: the words of the code', async (step) => {
       eq(words.includes('const'), false)
     },
   )
+})
+
+/** the voice of the server, made of nothing: each sentence takes a while */
+const withServerVoice = async (makeMs, fn) => {
+  const saved = { ...tts }
+  tts.loaded = () => true
+  tts.synthesize = async (text, alive) => {
+    await sleep(makeMs)
+    return alive() ? btoa(`sound of: ${text}`) : undefined
+  }
+  try {
+    await fn()
+  } finally {
+    Object.assign(tts, saved)
+  }
+}
+
+test('voice interview: the server reads each sentence aloud, in order', async (step) => {
+  await withServerVoice(30, () =>
+    withInterview({
+      replies: [
+        'Hi there, I am Oracle. Take your time with this. How did you start?',
+      ],
+      recognise: () => {},
+    }, async ({ port }) => {
+      const b = await browser(port)
+      b.frame()
+      await b.waitFor((e) =>
+        e.type === 'speech' && e.text === 'How did you start?'
+      )
+
+      await step('the browser is told who speaks', () => {
+        eq(b.events.find((e) => e.type === 'ready').voice, 'server')
+      })
+      await step(
+        'one sound per sentence, in the order they were written',
+        () => {
+          const spoken = b.events.filter((e) => e.type === 'speech')
+          eq(spoken.map((e) => e.text), [
+            'Hi there, I am Oracle.',
+            'Take your time with this.',
+            'How did you start?',
+          ])
+          eq(atob(spoken[0].pcm), 'sound of: Hi there, I am Oracle.')
+        },
+      )
+      b.ws.close()
+    }))
+})
+
+test('voice interview: the browser reads when the server cannot', async (step) => {
+  await withInterview({
+    replies: ['Hi there, I am Oracle. How did you start?'],
+    recognise: () => {},
+  }, async ({ port }) => {
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done')
+
+    await step('the browser is told it reads the words itself', () => {
+      eq(b.events.find((e) => e.type === 'ready').voice, 'browser')
+      eq(b.events.some((e) => e.type === 'speech'), false)
+    })
+    b.ws.close()
+  })
+})
+
+test('voice interview: speaking over Oracle drops the sentences in the making', async (step) => {
+  await withServerVoice(500, () =>
+    withInterview({
+      replies: [
+        {
+          pieces: [
+            'First sentence is long enough. ',
+            'Second sentence is long enough. ',
+            'Third sentence is long enough.',
+          ],
+          gap: 150,
+        },
+        'Fair enough. What would you improve?',
+      ],
+      recognise: async (send) => {
+        await sleep(350)
+        send({ type: 'speechStart', turnId: 1, audioProcessedMs: 0 })
+        send({ type: 'transcript', transcript: 'Wait', final: false })
+        await sleep(30)
+        send({ type: 'speechEnd', turnId: 1, audioProcessedMs: 500 })
+        send({
+          type: 'speechComplete',
+          turnId: 1,
+          transcript: 'Wait, one second.',
+        })
+      },
+    }, async ({ port }) => {
+      const b = await browser(port)
+      b.frame()
+      await b.waitFor((e) => e.type === 'ai-delta')
+      b.frame()
+      await b.waitFor((e) =>
+        e.type === 'speech' && e.text === 'What would you improve?'
+      )
+
+      await step('nothing of the question that was cut is played', () => {
+        const spoken = b.events.filter((e) => e.type === 'speech')
+        eq(spoken.some((e) => e.text.includes('sentence')), false)
+        eq(spoken.map((e) => e.text), [
+          'Fair enough.',
+          'What would you improve?',
+        ])
+      })
+      b.ws.close()
+    }))
+})
+
+test('voice interview: how speech is cut into pieces', async (step) => {
+  await step('a short sentence goes with the next one', () => {
+    eq(nextPiece('Hi Sam. How are you doing today? Fine'), [
+      'Hi Sam. How are you doing today?',
+      'Fine',
+    ])
+  })
+  await step('the first piece may end at a comma, the others may not', () => {
+    const text = "Hi, I'm Oracle, and this is a calm chat. Then more."
+    eq(nextPiece(text, true), [
+      "Hi, I'm Oracle,",
+      'and this is a calm chat. Then more.',
+    ])
+    eq(nextPiece(text)?.[0], "Hi, I'm Oracle, and this is a calm chat.")
+  })
+  await step('a sentence still being written is not cut', () => {
+    eq(nextPiece('Hi Sam. How are you'), undefined)
+    eq(nextPiece('Version 3.5 is out'), undefined)
+  })
 })

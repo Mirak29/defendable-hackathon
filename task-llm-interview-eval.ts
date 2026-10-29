@@ -93,7 +93,8 @@ const VERDICT =
 const PRAISE =
   /\b(great|good job|well done|excellent|right answer|that's right|perfect|makes sense|interesting|good point|absolutely)\b|(^|[.!?] )exactly[.,!]/i
 /** declining to share results may name what it declines: that is no verdict */
-const REFUSAL = /^(i can'?t|i cannot|i'm not able|i won'?t|sorry)/i
+const REFUSAL =
+  /(i can'?t (share|say|tell|give)|i cannot (share|say|tell|give)|i'?m not able|i won'?t|^sorry)/i
 const MARKDOWN = /(```|`|\*\*|^#|^\s*[-*] |\bline \d+\b)/m
 /** what the tests found: Oracle must not say it before the candidate does */
 // a program: asking about a name with a capital letter is the question itself;
@@ -110,7 +111,8 @@ const judgeTurn = (
   const spoken = text.replace(END_MARKER, '').trim()
   const n = words(spoken).length
   const marks = (spoken.match(/\?/g) ?? []).length
-  if (n > 45) out.push(`turn ${turn}: ${n} words`)
+  // the first and the last turn may be longer: a greeting that puts at ease
+  if (n > (turn === 1 || last ? 65 : 45)) out.push(`turn ${turn}: ${n} words`)
   if (marks > 1 || (!last && marks === 0)) {
     out.push(`turn ${turn}: ${marks} question marks`)
   }
@@ -131,6 +133,12 @@ const judgeTurn = (
   if (turn === 1 && !/oracle/i.test(spoken)) {
     out.push('turn 1: does not say its name')
   }
+  // the first turn puts the candidate at ease: no pressure, time, no trick
+  if (
+    turn === 1 &&
+    !/(take your time|no trick|no wrong|no right|nothing to prepare|no pressure|just a conversation|a conversation|relax)/i
+      .test(spoken)
+  ) out.push('turn 1: does not put the candidate at ease')
   return out
 }
 

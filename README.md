@@ -103,6 +103,7 @@ or Modal Sandboxes), which is a decision for the hosting.
 | The report (interpretations, checked evidence)         | `muse-spark-1.3` at `high` (fallback `muse-spark-1.2`)      |
 | The interviewer Oracle (spoken, streamed)              | `muse-wonder-1.0` (fallback Muse Spark)                     |
 | Listening to the candidate                             | `muse-voice-transcribe-1.0`                                 |
+| Oracle's voice (Meta has no speech synthesis)          | Kokoro-82M, Apache-2.0, **on our server**                   |
 | Development and benchmarks with fictional data         | `muse-spark-1.3-contributor`                                |
 
 **Built with Muse Spark Open** (the Muse Model License asks for this line in the
@@ -115,6 +116,39 @@ model answered, where, and how long it took.
 
 Candidate code and answers are never sent to a Contributor-mode model (Meta may
 train on its content).
+
+### Oracle's voice
+
+Meta's models write and listen but do not speak, so the voice is
+[Kokoro-82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX)
+(Apache-2.0) in full precision on the server's CPU ([`api/tts.ts`](api/tts.ts)).
+**The candidate's browser downloads nothing**: the server cuts what Oracle
+writes into pieces (a sentence, the first piece may stop at a comma), makes each
+one while the previous one plays, and sends it as PCM 24 kHz over the
+interview's WebSocket. The browser plays it and measures its loudness, which
+moves Oracle's presence (the blue light). When the candidate speaks over Oracle,
+the pieces still in the making are dropped. If the model is not loaded
+(`TTS=off`, no weights, an error) the interview falls back to the browser's own
+voice.
+
+Measured on an 8-core laptop CPU (i7-11800H), factor = time to make the sound /
+length of the sound (below 1 keeps up):
+
+| Setup                                        | Factor            |
+| -------------------------------------------- | ----------------- |
+| In the browser, WASM, q8 (92 MB)             | about 2.3         |
+| On the server, native ONNX Runtime, **q8**   | 0.9               |
+| On the server, native ONNX Runtime, **fp32** | **0.3**           |
+| In the browser, WebGPU, fp32 (326 MB) / fp16 | 0.4 to 0.7 / 0.15 |
+
+The quantized model is slower on this CPU, not faster: fp32 is used. On a real
+interview (Muse Wonder + this voice) the first sound arrives about 0.7 s after
+the first word of the model: 2.8 to 4.4 s after the interview opens (4 runs).
+The delay after a turn of the candidate was not re-measured with this voice.
+Hosting: 4 or more fast cores and about 1 GB of memory for the model; the
+sentences of an interview are made one after the other, and the load of several
+interviews at once has **not been measured**. The weights (326 MB) are
+downloaded once by the server, on its first start.
 
 ### Model choice, measured
 
@@ -273,6 +307,8 @@ without any key.
 | `MODEL_OPEN_TASKS`   | steps run on it (comma list, empty for none)                   |
 | `MODEL_EFFORTS`      | effort per step, e.g. `report=xhigh,scenario=low`              |
 | `VOICE_HOLD_MS`      | interview: pause before Oracle speaks, default `900`           |
+| `TTS`                | `off` keeps the browser's voice for Oracle (default `on`)      |
+| `TTS_VOICE`          | Kokoro voice of Oracle, default `af_heart`                     |
 | `DEMO_ACCESS`        | `1`: a demo account can be signed in without a password        |
 | `DATABASE_PATH`      | SQLite file (`:memory:` in tests)                              |
 | `RESEND_API_KEY`     | e-mail of the personal link of a candidate (Resend)            |
