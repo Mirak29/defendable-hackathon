@@ -8,6 +8,7 @@ import {
   retryPreparation,
 } from '/web/lib/candidate-store.ts'
 import { startVoice, stopVoice, voice } from '/web/lib/voice-client.ts'
+import { noCopy, trackIntegrity } from '/web/lib/integrity.ts'
 import { Spinner } from '/web/ui/spinner.tsx'
 import { OracleOrb, STAGE_BACKGROUND } from '/web/ui/oracle-orb.tsx'
 import { Logo } from '/web/ui/topbar.tsx'
@@ -56,17 +57,21 @@ export const InterviewPage = () => {
     } else if (view?.finishedAt) navigate({ href: paths.done, replace: true })
   }, [status, view?.submittedAt, view?.finishedAt])
 
-  // the interviewer closed the interview: the server marks it finished
+  // The interviewer closed the interview: the server marks it finished. The
+  // page stays until its last words are said, then a moment more.
+  const speaking = voice.speaking.value
   useEffect(() => {
-    if (live !== 'ended') return
+    if (live !== 'ended' || speaking) return
     const timer = setTimeout(async () => {
       await loadMe()
       navigate({ href: paths.done })
-    }, 6000)
+    }, 2500)
     return () => clearTimeout(timer)
-  }, [live])
+  }, [live, speaking])
   // leaving the page ends the call
   useEffect(() => () => stopVoice(), [])
+  // the conditions of the interview, reported as facts
+  useEffect(() => trackIntegrity('interview'), [])
 
   // Oracle starts by itself. The browser only lets a page speak after a click
   // of the person: coming from the editor (Submit) it has one, after a reload
@@ -186,7 +191,8 @@ export const InterviewPage = () => {
             {!asking && (
               <p
                 aria-live='polite'
-                tw='m-0 max-w-[620px] min-h-[84px] text-center text-[18px] leading-[1.5]'
+                {...noCopy}
+                tw='m-0 max-w-[620px] min-h-[84px] text-center text-[18px] leading-[1.5] select-none'
                 style={{ color: '#dbe7ff' }}
               >
                 {caption}
@@ -281,7 +287,8 @@ export const InterviewPage = () => {
           <div
             ref={scroller}
             data-test='interview-lines'
-            tw='flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-3'
+            {...noCopy}
+            tw='flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-3 select-none'
           >
             {!lines.length && !voice.writing.value && (
               <p tw='m-0 text-content-tertiary text-[13px]'>

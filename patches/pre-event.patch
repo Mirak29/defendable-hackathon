@@ -1416,10 +1416,10 @@ index 46b79c9..04e8a48 100644
    }
    Assessment.update({
 diff --git a/api/candidate.test.js b/api/candidate.test.js
-index 2d5d576..38b9973 100644
+index 2d5d576..f91830c 100644
 --- a/api/candidate.test.js
 +++ b/api/candidate.test.js
-@@ -1,60 +1,296 @@
+@@ -1,60 +1,362 @@
 +// The journey of a candidate on the real routes: invitation, start, editor
 +// (save, run, type check), submission, and the preparation of the interview
 +// (every test run on the frozen code, the facts the interviewer receives).
@@ -1453,6 +1453,7 @@ index 2d5d576..38b9973 100644
 +  signup,
 +} from '/api/lib/journey-test.js'
 +import { Candidate } from '/api/schema.ts'
++import { readIntegrity } from '/api/candidate.ts'
 +import { factsOf } from '/api/interview.ts'
 +import { demoFiles } from '/fixtures/demo-files.ts'
 +
@@ -1606,21 +1607,9 @@ index 2d5d576..38b9973 100644
 +      })).status,
 +      401,
 +    )
-   })
- })
- 
--test('assistant limit under parallel calls (AUD-007)', async (step) => {
--  await step('4 calls at once: 3 replies, 1 refused', async () => {
--    const row = atQuestion(1_000, 7) // Q7 is a free answer
--    const calls = await Promise.allSettled(
--      [1, 2, 3, 4].map((i) =>
--        askAssistant(row(), { n: 7, message: `Question ${i}` })
--      ),
--    )
--    eq(calls.filter((c) => c.status === 'fulfilled').length, ASSISTANT_LIMIT)
--    eq(calls.filter((c) => c.status === 'rejected').length, 1)
--    const stored = answersOf(row())[7].assistant
--    eq(stored.filter((m) => m.role === 'user').length, ASSISTANT_LIMIT)
++  })
++})
++
 +test('candidate: build, submit, and the facts of the interview', async (step) => {
 +  const member = await signup('Builds')
 +  const assessment = await approvedAssessment(member)
@@ -1763,11 +1752,88 @@ index 2d5d576..38b9973 100644
 +    eq((await res.json()).declaredTools, ['Claude'])
    })
  })
+ 
+-test('assistant limit under parallel calls (AUD-007)', async (step) => {
+-  await step('4 calls at once: 3 replies, 1 refused', async () => {
+-    const row = atQuestion(1_000, 7) // Q7 is a free answer
+-    const calls = await Promise.allSettled(
+-      [1, 2, 3, 4].map((i) =>
+-        askAssistant(row(), { n: 7, message: `Question ${i}` })
+-      ),
+-    )
+-    eq(calls.filter((c) => c.status === 'fulfilled').length, ASSISTANT_LIMIT)
+-    eq(calls.filter((c) => c.status === 'rejected').length, 1)
+-    const stored = answersOf(row())[7].assistant
+-    eq(stored.filter((m) => m.role === 'user').length, ASSISTANT_LIMIT)
++test('candidate: the conditions of the session are measured, not judged', async (step) => {
++  const member = await signup('Conditions')
++  const assessment = await approvedAssessment(member)
++  const { body } = await invite(member, assessment)
++  const started = await call('POST', '/api/candidate/start', {
++    invitation: body.invitation,
++  })
++  const cookies = { dfd_candidate: cookieOf(started, 'dfd_candidate') }
++  const row = () => Candidate.get(body.candidateId)
++  const report = (event) =>
++    call('POST', '/api/candidate/integrity', event, cookies)
++
++  await step(
++    'a candidate with nothing reported has zeros, not a verdict',
++    () => {
++      const integrity = readIntegrity(row())
++      eq(integrity.resumes, 0)
++      eq(integrity.leaves, {
++        build: { count: 0, ms: 0 },
++        interview: { count: 0, ms: 0 },
++      })
++      eq(integrity.copies, 0)
++      eq(integrity.extendedScreen, undefined)
++    },
++  )
++
++  await step('absences are counted by phase, with their duration', async () => {
++    eq(
++      (await report({ kind: 'page-leave', phase: 'build', ms: 4200 })).status,
++      204,
++    )
++    await report({ kind: 'page-leave', phase: 'build', ms: 800 })
++    await report({ kind: 'page-leave', phase: 'interview', ms: 10 ** 9 })
++    const { leaves } = readIntegrity(row())
++    eq(leaves.build, { count: 2, ms: 5000 })
++    // a laptop that slept is not a day of absence: one hour at most
++    eq(leaves.interview, { count: 1, ms: 3_600_000 })
++  })
++
++  await step('copy attempts are counted', async () => {
++    await report({ kind: 'copy', phase: 'interview' })
++    await report({ kind: 'copy', phase: 'interview' })
++    eq(readIntegrity(row()).copies, 2)
++  })
++
++  await step('a second display, once seen, stays seen', async () => {
++    await report({ kind: 'screens', phase: 'build', extended: false })
++    eq(readIntegrity(row()).extendedScreen, false)
++    await report({ kind: 'screens', phase: 'interview', extended: true })
++    await report({ kind: 'screens', phase: 'interview', extended: false })
++    eq(readIntegrity(row()).extendedScreen, true)
++  })
++
++  await step('only the candidate of the session can report', async () => {
++    eq(
++      (await call('POST', '/api/candidate/integrity', {
++        kind: 'copy',
++        phase: 'build',
++      })).status,
++      401,
++    )
++    eq((await report({ kind: 'nonsense', phase: 'build' })).status, 400)
+   })
+ })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..be058a7 100644
+index 9a19ccb..8212cce 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
-@@ -1,63 +1,67 @@
+@@ -1,63 +1,70 @@
 -import { companyOfAssessment } from '/api/schema.ts'
 -// Candidate journey (C1 → C7). The candidate is identified by a token in an
 -// httpOnly cookie, set when they start (no account, brief §6). The server is
@@ -1825,7 +1891,9 @@ index 9a19ccb..be058a7 100644
 -  AssistantMessage,
    CandidateFiles,
    CandidateView,
--  IntegrityKind,
+   IntegrityKind,
++  IntegrityPhase,
++  InterviewIntegrity,
 +  InterviewLine,
    Invitation,
    InvitationState,
@@ -1870,7 +1938,7 @@ index 9a19ccb..be058a7 100644
  
  const byInvitation = Candidate.sql`
    SELECT * FROM candidate WHERE candidateInvitation = :invitation
-@@ -90,13 +94,16 @@ const findInvitation = (invitation?: string) => {
+@@ -90,13 +97,16 @@ const findInvitation = (invitation?: string) => {
    const c = invitation ? byInvitation({ invitation }) : undefined
    const a = c && Assessment.get(c.assessmentId)
    if (!c || !a || a.assessmentStatus !== 'approved') {
@@ -1888,7 +1956,7 @@ index 9a19ccb..be058a7 100644
  export const getInvitation = (invitation?: string): Invitation => {
    const { c, a } = findInvitation(invitation)
    const spec = specOf(a)
-@@ -108,12 +115,15 @@ export const getInvitation = (invitation?: string): Invitation => {
+@@ -108,12 +118,15 @@ export const getInvitation = (invitation?: string): Invitation => {
      durationMin: a.assessmentDuration,
      firstName: c.candidateFirstName ?? undefined,
      state: invitationState(c),
@@ -1907,7 +1975,7 @@ index 9a19ccb..be058a7 100644
      Array.from(crypto.getRandomValues(new Uint8Array(2)), (n) =>
        n.toString(16).padStart(2, '0')).join('').toUpperCase()
    }`
-@@ -125,15 +135,19 @@ const field = (
+@@ -125,15 +138,19 @@ const field = (
  ) => {
    const clean = (value ?? '').trim()
    if (clean.length > max) {
@@ -1932,7 +2000,7 @@ index 9a19ccb..be058a7 100644
  export const inviteCandidate = (
    assessmentId: number,
    memberId: number,
-@@ -143,44 +157,44 @@ export const inviteCandidate = (
+@@ -143,44 +160,44 @@ export const inviteCandidate = (
      email: string
      profileUrl?: string | null
      note?: string | null
@@ -1987,7 +2055,7 @@ index 9a19ccb..be058a7 100644
      assessmentId,
      candidateCreatedAt: now,
      candidateInvitation: invitation,
-@@ -191,62 +205,62 @@ export const inviteCandidate = (
+@@ -191,62 +208,62 @@ export const inviteCandidate = (
      candidateEmail: email,
      candidateProfileUrl: profileUrl || undefined,
      candidateNote: note || undefined,
@@ -2073,7 +2141,7 @@ index 9a19ccb..be058a7 100644
    })
    Entry.insert.CANDIDATE_BUILD_STARTED({
      companyId: companyOfAssessment(a.assessmentId),
-@@ -261,7 +275,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
+@@ -261,7 +278,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
  export const findCandidate = (token?: string) => {
    const row = token ? byToken({ token }) : undefined
    if (!row) {
@@ -2084,7 +2152,7 @@ index 9a19ccb..be058a7 100644
    }
    return row
  }
-@@ -272,27 +288,24 @@ const deadline = (c: CandidateRow) =>
+@@ -272,27 +291,24 @@ const deadline = (c: CandidateRow) =>
    (c.candidateStartedAt ?? Date.now()) +
    assessmentOf(c).assessmentDuration * 60_000
  
@@ -2115,7 +2183,7 @@ index 9a19ccb..be058a7 100644
      assessment: {
        title: spec.title,
        company: spec.company,
-@@ -308,6 +321,7 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -308,6 +324,7 @@ export const toView = (c: CandidateRow): CandidateView => {
        constraints: spec.constraints,
        publicTests: spec.tests.filter((t) => t.visibility === 'public'),
        hiddenCount: spec.tests.filter((t) => t.visibility !== 'public').length,
@@ -2123,7 +2191,7 @@ index 9a19ccb..be058a7 100644
      },
      startedAt: c.candidateStartedAt ?? undefined,
      submittedAt: c.candidateSubmittedAt ?? undefined,
-@@ -316,18 +330,17 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -316,18 +333,17 @@ export const toView = (c: CandidateRow): CandidateView => {
      files: json<CandidateFiles>(c.candidateFiles) ?? {},
      savedAt: c.candidateSavedAt ?? undefined,
      preparation: json(c.candidatePreparation),
@@ -2145,7 +2213,7 @@ index 9a19ccb..be058a7 100644
      })
    }
  }
-@@ -343,30 +356,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
+@@ -343,30 +359,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
    return { savedAt }
  }
  
@@ -2216,7 +2284,7 @@ index 9a19ccb..be058a7 100644
  
  export const submitCode = (
    c: CandidateRow,
-@@ -376,261 +422,133 @@ export const submitCode = (
+@@ -376,261 +425,188 @@ export const submitCode = (
      auto?: boolean
    },
  ) => {
@@ -2431,8 +2499,8 @@ index 9a19ccb..be058a7 100644
 -    buildReport(c.candidateId)
 -  }
 -  return { finished }
--}
--
+ }
+ 
 -/* ---------- documentation assistant (C6) ---------- */
 -
 -const ASSISTANT_SYSTEM =
@@ -2473,23 +2541,28 @@ index 9a19ccb..be058a7 100644
 -    const left = (pendingAssistant.get(slot) ?? 1) - 1
 -    if (left) pendingAssistant.set(slot, left)
 -    else pendingAssistant.delete(slot)
--  }
++/** what was measured about the conditions of the session (nothing: zeros) */
++export const readIntegrity = (c: CandidateRow): InterviewIntegrity => {
++  const stored = json<Partial<InterviewIntegrity>>(c.candidateIntegrity) ?? {}
++  return {
++    resumes: stored.resumes ?? 0,
++    leaves: {
++      build: stored.leaves?.build ?? { count: 0, ms: 0 },
++      interview: stored.leaves?.interview ?? { count: 0, ms: 0 },
++    },
++    copies: stored.copies ?? 0,
++    extendedScreen: stored.extendedScreen,
+   }
  }
  
 -const replyAssistant = async (
-+/**
-+ * The interview is over. The transcript is kept either way; the candidate is
-+ * finished only when the interviewer closed it, otherwise they may start over
-+ * (connection lost, page closed).
-+ */
-+export const finishInterview = (
++const saveIntegrity = (
    c: CandidateRow,
 -  n: number,
 -  message: string,
 -  stored: StoredAnswer,
 -  used: number,
-+  transcript: InterviewLine[],
-+  completed: boolean,
++  change: (integrity: InterviewIntegrity) => void,
  ) => {
 -  const text = message.trim().slice(0, 500)
 -  const history = stored.assistant
@@ -2526,11 +2599,13 @@ index 9a19ccb..be058a7 100644
 -            : 'Je peux expliquer un concept ou une API, sans voir votre code ni la question.')
 -    },
 -    demoTrace: demoTraces.assistant,
++  // the session is over: nothing changes what the report will say
 +  if (c.candidateFinishedAt) return
++  const integrity = readIntegrity(c)
++  change(integrity)
 +  Candidate.update({
 +    candidateId: c.candidateId,
-+    candidateInterview: transcript,
-+    ...(completed ? { candidateFinishedAt: Date.now() } : {}),
++    candidateIntegrity: integrity,
    })
 -  const latest = answersOf(Candidate.require(c.candidateId))
 -  latest[n] = {
@@ -2543,19 +2618,56 @@ index 9a19ccb..be058a7 100644
 -  }
 -  Candidate.update({ candidateId: c.candidateId, candidateAnswers: latest })
 -  return { reply: data, trace, left: ASSISTANT_LIMIT - used - 1 }
--}
--
+ }
+ 
 -/* ---------- integrity (C6): facts, no automatic penalty ---------- */
--
++/** the candidate came back to an interview already begun (page reloaded) */
++export const recordResume = (c: CandidateRow) =>
++  saveIntegrity(c, (i) => i.resumes++)
+ 
 -export const logIntegrity = (
--  c: CandidateRow,
--  event: {
--    kind: IntegrityKind
++/** what the browser of the candidate reports: a fact, never a verdict */
++export const recordIntegrity = (
+   c: CandidateRow,
+   event: {
+     kind: IntegrityKind
 -    question: number
 -    durationSec?: number | null
--  },
--) => {
++    phase: IntegrityPhase
++    ms?: number
++    extended?: boolean
+   },
++) =>
++  saveIntegrity(c, (i) => {
++    if (event.kind === 'page-leave') {
++      const leave = i.leaves[event.phase]
++      leave.count++
++      // an hour at most: a laptop that slept is not an hour of absence
++      leave.ms += Math.max(0, Math.min(Math.round(event.ms ?? 0), 3_600_000))
++    } else if (event.kind === 'copy') i.copies++
++    else if (event.extended !== undefined) {
++      // once a second display was seen, it stays seen
++      i.extendedScreen = (i.extendedScreen ?? false) || event.extended
++    }
++  })
++
++/**
++ * The interview is over. The transcript is kept either way; the candidate is
++ * finished only when the interviewer closed it, otherwise they may start over
++ * (connection lost, page closed).
++ */
++export const finishInterview = (
++  c: CandidateRow,
++  transcript: InterviewLine[],
++  completed: boolean,
+ ) => {
 -  Entry.insert.CANDIDATE_INTEGRITY_EVENT({
++  if (c.candidateFinishedAt) return
++  Candidate.update({
++    candidateId: c.candidateId,
++    candidateInterview: transcript,
++    ...(completed ? { candidateFinishedAt: Date.now() } : {}),
++  })
 +  if (!completed) return
 +  Entry.insert.CANDIDATE_FINISHED({
      companyId: companyOfAssessment(c.assessmentId),
@@ -6458,10 +6570,10 @@ index 58b4786..777e643 100644
    log.info('reference-check', {
      passed: results.filter((r) => r.passed).length,
 diff --git a/api/report.test.js b/api/report.test.js
-index f8db3f1..eec60cc 100644
+index f8db3f1..628a0ba 100644
 --- a/api/report.test.js
 +++ b/api/report.test.js
-@@ -1,161 +1,471 @@
+@@ -1,161 +1,513 @@
 +// The report on the real routes, against a local mock of the model: the facts
 +// the server measures, the evidence of the model checked against what exists,
 +// the failure and its retry, the human decision, and the start of the report
@@ -6492,7 +6604,11 @@ index f8db3f1..eec60cc 100644
 +} from '/api/lib/journey-test.js'
 +import { json } from '/api/assessment.ts'
 +import { Assessment, Candidate } from '/api/schema.ts'
-+import { finishInterview } from '/api/candidate.ts'
++import {
++  finishInterview,
++  recordIntegrity,
++  recordResume,
++} from '/api/candidate.ts'
 +import { candidateVoice } from '/api/interview.ts'
 +import { buildReport } from '/api/report.ts'
 +
@@ -6995,7 +7111,10 @@ index f8db3f1..eec60cc 100644
 +      (await call('GET', '/api/report', { candidate: candidateId }, other))
 +        .status,
 +      404,
-+    )
+     )
+-    eq(status, 'ready')
+-    const q1 = report.qcm.find((q) => q.n === 1)
+-    eq([q1.check, q1.isCorrect, q1.aiNote], ['disputed', false, undefined])
 +    eq(
 +      (await call('POST', '/api/report/decision', {
 +        candidate: candidateId,
@@ -7012,11 +7131,8 @@ index f8db3f1..eec60cc 100644
 +      ))
 +        .status,
 +      404,
-     )
--    eq(status, 'ready')
--    const q1 = report.qcm.find((q) => q.n === 1)
--    eq([q1.check, q1.isCorrect, q1.aiNote], ['disputed', false, undefined])
-   })
++    )
++  })
 +
 +  await step('without a session nothing is open', async () => {
 +    eq(
@@ -7061,12 +7177,50 @@ index f8db3f1..eec60cc 100644
 +      eq(v.transcript.length, 3)
 +    },
 +  )
++})
++
++test('report: the conditions of the session are facts, frozen at the end', async (step) => {
++  const { member, candidateId } = await setup('Conditions')
++  const row = () => Candidate.require(candidateId)
++
++  await step(
++    'what was reported during the session is in the facts',
++    async () => {
++      recordIntegrity(row(), { kind: 'page-leave', phase: 'build', ms: 7000 })
++      recordIntegrity(row(), {
++        kind: 'page-leave',
++        phase: 'interview',
++        ms: 12000,
++      })
++      recordIntegrity(row(), { kind: 'copy', phase: 'interview' })
++      recordIntegrity(row(), {
++        kind: 'screens',
++        phase: 'build',
++        extended: true,
++      })
++      recordResume(row())
++      finishInterview(row(), TRANSCRIPT, true)
++      const { facts } = await view(member, candidateId)
++      eq(facts.integrity.leaves.build, { count: 1, ms: 7000 })
++      eq(facts.integrity.leaves.interview, { count: 1, ms: 12000 })
++      eq(facts.integrity.copies, 1)
++      eq(facts.integrity.extendedScreen, true)
++      eq(facts.integrity.resumes, 1)
++    },
++  )
++
++  await step('once the interview is over, nothing is added', async () => {
++    recordIntegrity(row(), { kind: 'copy', phase: 'interview' })
++    recordResume(row())
++    const { facts } = await view(member, candidateId)
++    eq([facts.integrity.copies, facts.integrity.resumes], [1, 1])
+   })
  })
 diff --git a/api/report.ts b/api/report.ts
-index 75d54dc..acaa9af 100644
+index 75d54dc..254f9de 100644
 --- a/api/report.ts
 +++ b/api/report.ts
-@@ -1,1032 +1,523 @@
+@@ -1,1032 +1,524 @@
 -import { contentLang, tc, withContentLang } from '/api/lib/content-lang.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import { companyOfAssessment } from '/api/schema.ts'
@@ -7098,7 +7252,7 @@ index 75d54dc..acaa9af 100644
 -  verifyCitation,
 -} from '/api/analysis.ts'
 +import { json } from '/api/assessment.ts'
-+import type { StoredResults } from '/api/candidate.ts'
++import { readIntegrity, type StoredResults } from '/api/candidate.ts'
 +import { candidateBriefText } from '/api/reference.ts'
  import { AiError, aiErrorText, ask } from '/api/llm.ts'
 +import { arr, obj, oneOf, optStr, str } from '/api/lib/check.ts'
@@ -7318,6 +7472,7 @@ index 75d54dc..acaa9af 100644
 +    declaredTools: json<string[]>(c.candidateTools) ?? [],
 +    autoSubmitted: !!c.candidateAutoSubmitted,
 +    interviewCompleted: !!c.candidateFinishedAt,
++    integrity: readIntegrity(c),
 +    candidateTurns: lines.length,
 +    candidateWords: lines.reduce(
 +      (n, l) => n + l.text.trim().split(/\s+/).filter(Boolean).length,
@@ -8536,7 +8691,7 @@ index 75d54dc..acaa9af 100644
 -
 -export type { Question }
 diff --git a/api/routes.ts b/api/routes.ts
-index 20228a8..71e67a2 100644
+index 20228a8..c035726 100644
 --- a/api/routes.ts
 +++ b/api/routes.ts
 @@ -3,25 +3,17 @@ import type { RequestContext } from '@01edu/api/context'
@@ -8570,7 +8725,7 @@ index 20228a8..71e67a2 100644
    demoMemberId,
    entryInsertListeners,
    type EntryListener,
-@@ -49,86 +41,96 @@ import {
+@@ -49,86 +41,97 @@ import {
    updateAssessment,
  } from '/api/assessment.ts'
  import {
@@ -8582,6 +8737,7 @@ index 20228a8..71e67a2 100644
    inviteCandidate,
 -  logIntegrity,
 -  openQuestion,
++  recordIntegrity,
 +  retryPreparation,
    revokeInvitation,
    runCode,
@@ -8700,7 +8856,7 @@ index 20228a8..71e67a2 100644
  // Same host only: behind a TLS proxy the server sees http:// while the
  // browser sends Origin: https://, so the scheme is not compared.
  const checkOrigin = (ctx: RequestContext) => {
-@@ -138,13 +140,13 @@ const checkOrigin = (ctx: RequestContext) => {
+@@ -138,13 +141,13 @@ const checkOrigin = (ctx: RequestContext) => {
      host = origin ? new URL(origin).host : undefined
    } catch { /* malformed Origin: refused below */ }
    if (origin && host !== ctx.url.host) {
@@ -8716,7 +8872,7 @@ index 20228a8..71e67a2 100644
    }
    const response = respond.OK(memberView(session.memberId))
    setCookie(response.headers, {
-@@ -160,32 +162,13 @@ const sessionResponse = async (token: string) => {
+@@ -160,32 +163,13 @@ const sessionResponse = async (token: string) => {
    return response
  }
  
@@ -8750,7 +8906,7 @@ index 20228a8..71e67a2 100644
  // The framework's default validator report echoes invalid values. Auth fields
  // must never be echoed, even when a password has an unexpected JSON type.
  const signupInput = {
-@@ -246,7 +229,7 @@ const defs = {
+@@ -246,7 +230,7 @@ const defs = {
    'POST/api/demo/session': route({
      fn: async (ctx) => {
        if (!demoAccess()) {
@@ -8759,7 +8915,7 @@ index 20228a8..71e67a2 100644
        }
        checkOrigin(ctx)
        return sessionResponse(await generateSession(demoMemberId))
-@@ -256,7 +239,7 @@ const defs = {
+@@ -256,7 +240,7 @@ const defs = {
    'GET/api/demo': route({
      fn: () => ({ available: demoAccess() }),
      output: OBJ({ available: BOOL('Demo account available (DEMO_ACCESS)') }),
@@ -8768,7 +8924,7 @@ index 20228a8..71e67a2 100644
    }),
    'GET/api/health': route({
      fn: () => ({ status: 'ok', env: APP_ENV }),
-@@ -267,13 +250,13 @@ const defs = {
+@@ -267,13 +251,13 @@ const defs = {
      description: 'Healthcheck used by docker and the dev tooling',
    }),
  
@@ -8784,7 +8940,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'GET/api/assessment': route({
-@@ -281,7 +264,7 @@ const defs = {
+@@ -281,7 +265,7 @@ const defs = {
      fn: (ctx, { id: value }) => getAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: STR('Assessment id') }),
      output: ASSESSMENT,
@@ -8793,7 +8949,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'POST/api/assessment/prefill': route({
-@@ -293,35 +276,35 @@ const defs = {
+@@ -293,35 +277,35 @@ const defs = {
        skills: ARR(STR('Skill name'), 'Suggested skills, 5 at most'),
        trace: TRACE,
      }),
@@ -8837,7 +8993,7 @@ index 20228a8..71e67a2 100644
          memberOf(ctx),
        )
      },
-@@ -330,21 +313,21 @@ const defs = {
+@@ -330,21 +314,21 @@ const defs = {
        level: LEVEL,
        durationMin: NUM('60, 90 or 120 minutes'),
        skills: ARR(STR('Skill name'), '1 to 5 skills'),
@@ -8865,7 +9021,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'POST/api/assessment/update': route({
-@@ -360,7 +343,7 @@ const defs = {
+@@ -360,7 +344,7 @@ const defs = {
        mission: optional(STR('New mission, as the candidate reads it')),
      }),
      output: ASSESSMENT,
@@ -8874,7 +9030,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'POST/api/assessment/deleted-tests': route({
-@@ -374,7 +357,7 @@ const defs = {
+@@ -374,7 +358,7 @@ const defs = {
        testIds: ARR(STR('Test id'), 'Tests removed before approval'),
      }),
      output: ASSESSMENT,
@@ -8883,7 +9039,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'POST/api/assessment/regenerate': route({
-@@ -385,7 +368,7 @@ const defs = {
+@@ -385,7 +369,7 @@ const defs = {
        id: NUM('Assessment id'),
        instruction: STR('Recruiter instruction'),
      }),
@@ -8892,7 +9048,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'POST/api/assessment/approve': route({
-@@ -393,10 +376,10 @@ const defs = {
+@@ -393,10 +377,10 @@ const defs = {
      fn: (ctx, { id: value }) => approveAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: NUM('Assessment id') }),
      output: ASSESSMENT,
@@ -8905,7 +9061,7 @@ index 20228a8..71e67a2 100644
  
    'POST/api/candidate/invite': route({
      authorize: withMember,
-@@ -424,9 +407,10 @@ const defs = {
+@@ -424,9 +408,10 @@ const defs = {
      output: OBJ({
        candidateId: NUM('Invited candidate'),
        invitation: STR('Token of the personal link'),
@@ -8917,7 +9073,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'POST/api/candidate/send-link': route({
-@@ -435,7 +419,7 @@ const defs = {
+@@ -435,7 +420,7 @@ const defs = {
        sendCandidateLink(Candidate.require(ownedCandidate(ctx, candidate))),
      input: OBJ({ candidate: NUM('Candidate id') }),
      output: JSON_OF<LinkSent>('Sent, or the reason of the failure'),
@@ -8926,7 +9082,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'POST/api/candidate/cv': route({
-@@ -445,14 +429,14 @@ const defs = {
+@@ -445,14 +430,14 @@ const defs = {
        // base64 of 5 MB at most: the file never leaves this request
        if (data.length > Math.ceil(CV_MAX_BYTES / 3) * 4 + 4) {
          throw new respond.BadRequestError({
@@ -8943,7 +9099,7 @@ index 20228a8..71e67a2 100644
        }
        return readCv(bytes)
      },
-@@ -460,60 +444,35 @@ const defs = {
+@@ -460,60 +445,35 @@ const defs = {
        assessment: NUM('Assessment id the candidate will be invited to'),
        data: STR('The CV file (PDF or DOCX), base64'),
      }),
@@ -8980,8 +9136,9 @@ index 20228a8..71e67a2 100644
 +    },
      input: OBJ({ candidate: NUM('Candidate id') }),
 -    description: 'R6 « Réessayer » after a failed report',
--  }),
--
++    description: 'The link stops working, the report stays',
+   }),
+ 
 -  'POST/api/decision': route({
 -    authorize: withMember,
 -    fn: (ctx, { candidate, choice, note }) =>
@@ -8993,9 +9150,8 @@ index 20228a8..71e67a2 100644
 -    }),
 -    output: JSON_OF<Decision>('Saved decision and its timestamp'),
 -    description: 'R6 « Enregistrer la décision » (decision is human only)',
-+    description: 'The link stops working, the report stays',
-   }),
- 
+-  }),
+-
 -  /* ---------- candidate (C1 → C7) ---------- */
 +  /* ---------- candidate journey ---------- */
  
@@ -9019,7 +9175,7 @@ index 20228a8..71e67a2 100644
        const response = respond.OK(toView(findCandidate(token)))
        setCookie(response.headers, {
          name: CANDIDATE_COOKIE,
-@@ -528,10 +487,12 @@ const defs = {
+@@ -528,10 +488,12 @@ const defs = {
      },
      input: OBJ({
        invitation: STR('Token of the candidate link'),
@@ -9034,7 +9190,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'GET/api/candidate/me': route({
-@@ -545,18 +506,15 @@ const defs = {
+@@ -545,18 +507,36 @@ const defs = {
      authorize: withCandidate,
      fn: (ctx, { files }) => saveFiles(candidateOf(ctx), files),
      input: OBJ({ files: FILES }),
@@ -9042,6 +9198,27 @@ index 20228a8..71e67a2 100644
 -    description: 'C2 auto-save',
 +    output: OBJ({ savedAt: NUM('Server time of the save, ms') }),
 +    description: 'Auto-save of the editor',
++  }),
++
++  'POST/api/candidate/integrity': route({
++    authorize: withCandidate,
++    fn: (ctx, { kind, phase, ms, extended }) => {
++      recordIntegrity(candidateOf(ctx), {
++        kind,
++        phase,
++        ms: ms ?? undefined,
++        extended: extended ?? undefined,
++      })
++      return respond.NoContent()
++    },
++    input: OBJ({
++      kind: LIST(['page-leave', 'copy', 'screens'], 'What the browser saw'),
++      phase: LIST(['build', 'interview'], 'Building or interview'),
++      ms: optional(NUM('page-leave: how long the page was left, ms')),
++      extended: optional(BOOL('screens: a second display is connected')),
++    }),
++    description:
++      'Conditions of the session reported by the browser (facts, no verdict)',
    }),
  
    'POST/api/candidate/run': route({
@@ -9056,7 +9233,7 @@ index 20228a8..71e67a2 100644
        files: FILES,
      }),
      output: JSON_OF<{
-@@ -565,15 +523,15 @@ const defs = {
+@@ -565,15 +545,15 @@ const defs = {
        own?: OwnTestsRun
        results?: TestResult[]
      }>('Output of the sandbox'),
@@ -9075,7 +9252,7 @@ index 20228a8..71e67a2 100644
    }),
  
    'POST/api/candidate/submit': route({
-@@ -582,7 +540,7 @@ const defs = {
+@@ -582,7 +562,7 @@ const defs = {
        const c = candidateOf(ctx)
        if (!tools.length) {
          throw new respond.BadRequestError({
@@ -9084,7 +9261,7 @@ index 20228a8..71e67a2 100644
          })
        }
        if (files && !c.candidateSubmittedAt) saveFiles(c, files)
-@@ -594,76 +552,54 @@ const defs = {
+@@ -594,76 +574,54 @@ const defs = {
      },
      input: OBJ({
        tools: ARR(STR('AI tool'), 'Declared AI tools'),
@@ -9109,7 +9286,8 @@ index 20228a8..71e67a2 100644
 -    fn: (ctx) => startQuestions(candidateOf(ctx)),
 -    description: 'C4 « Commencer (plein écran) »',
 -  }),
--
++  /* ---------- report ---------- */
+ 
 -  'GET/api/candidate/question': route({
 -    authorize: withCandidate,
 -    fn: (ctx) => openQuestion(candidateOf(ctx)),
@@ -9118,8 +9296,7 @@ index 20228a8..71e67a2 100644
 -    ),
 -    description: 'C5/C6: one question at a time, no going back',
 -  }),
-+  /* ---------- report ---------- */
- 
+-
 -  'POST/api/candidate/answer': route({
 -    authorize: withCandidate,
 -    fn: (ctx, input) => sendAnswer(candidateOf(ctx), input),
@@ -9192,7 +9369,7 @@ index 20228a8..71e67a2 100644
    }),
  
    /* ---------- events ---------- */
-@@ -675,27 +611,22 @@ const defs = {
+@@ -675,27 +633,22 @@ const defs = {
            message: 'Must accept event-stream',
          })
        }
@@ -9227,7 +9404,7 @@ index 20228a8..71e67a2 100644
          }
        }
        let listener: EntryListener
-@@ -705,9 +636,9 @@ const defs = {
+@@ -705,9 +658,9 @@ const defs = {
            controller.enqueue(ACK_PAYLOAD)
            ackInterval = setInterval(async () => {
              try {
@@ -9239,7 +9416,7 @@ index 20228a8..71e67a2 100644
                ) {
                  clearInterval(ackInterval)
                  entryInsertListeners.delete(listener)
-@@ -737,7 +668,6 @@ const defs = {
+@@ -737,7 +690,6 @@ const defs = {
            entryInsertListeners.delete(listener)
          },
        })
@@ -9247,7 +9424,7 @@ index 20228a8..71e67a2 100644
        return new Response(body, {
          headers: {
            'Content-Type': 'text/event-stream',
-@@ -748,11 +678,10 @@ const defs = {
+@@ -748,11 +700,10 @@ const defs = {
      },
      input: OBJ({
        assessment: optional(STR('Followed assessment')),
@@ -9605,7 +9782,7 @@ index d0468a6..8c31fce 100644
    const out: Record<string, ProbeResponse[] | undefined> = {}
    for (const s of sequences) {
 diff --git a/api/schema.ts b/api/schema.ts
-index 263037b..50c3916 100644
+index 263037b..9d0890e 100644
 --- a/api/schema.ts
 +++ b/api/schema.ts
 @@ -1,16 +1,8 @@
@@ -9657,7 +9834,7 @@ index 263037b..50c3916 100644
    assessmentInvitation: { type: 'TEXT', optional: true }, // candidate link
    companyId: { type: 'INTEGER', join: Company, optional: true },
    assessmentCreatedBy: { type: 'INTEGER', join: Member, optional: true },
-@@ -57,26 +48,24 @@ export const Candidate = createTable('candidate', {
+@@ -57,26 +48,25 @@ export const Candidate = createTable('candidate', {
    candidateToken: { type: 'TEXT' },
    candidatePseudonym: { type: 'TEXT' }, // e.g. "Candidat A7F3", never a name
    assessmentId: { type: 'INTEGER', join: Assessment },
@@ -9683,6 +9860,7 @@ index 263037b..50c3916 100644
 +  candidatePreparation: { type: 'JSON', optional: true }, // progress of the preparation
 +  candidateInterviewStartedAt: { type: 'REAL', optional: true },
 +  candidateInterview: { type: 'JSON', optional: true }, // transcript of the interview
++  candidateIntegrity: { type: 'JSON', optional: true }, // InterviewIntegrity, measured by the server
    candidateFinishedAt: { type: 'REAL', optional: true },
 -  candidateReport: { type: 'JSON', optional: true }, // R6
 +  candidateReport: { type: 'JSON', optional: true }, // report of the recruiter
@@ -9694,7 +9872,7 @@ index 263037b..50c3916 100644
    candidateInvitation: { type: 'TEXT', optional: true }, // token of the link
    candidateInvitedAt: { type: 'REAL', optional: true },
    candidateInvitedBy: { type: 'INTEGER', optional: true }, // memberId
-@@ -87,7 +76,7 @@ export const Candidate = createTable('candidate', {
+@@ -87,7 +77,7 @@ export const Candidate = createTable('candidate', {
    candidateProfileUrl: { type: 'TEXT', optional: true }, // https://
    candidateNote: { type: 'TEXT', optional: true }, // internal, recruiter only
    candidateIdentitySource: { type: 'TEXT', optional: true }, // manual | cv
@@ -9703,7 +9881,7 @@ index 263037b..50c3916 100644
    candidateEmailSentAt: { type: 'REAL', optional: true },
    candidateEmailError: { type: 'TEXT', optional: true }, // last failure
  })
-@@ -140,6 +129,13 @@ export const Entry = initEntries(entries, relations, {
+@@ -140,6 +130,13 @@ export const Entry = initEntries(entries, relations, {
    MEMBER_CREATED: { companyId: 'company', memberId: 'member' },
    MEMBER_LOGIN: { companyId: 'company', memberId: 'member' },
    MEMBER_LOGIN_FAILED: { data: 'normalized email only, never a password' },
@@ -9717,7 +9895,7 @@ index 263037b..50c3916 100644
  
    /*
     * Assessment entries
-@@ -175,62 +171,49 @@ export const Entry = initEntries(entries, relations, {
+@@ -175,62 +172,49 @@ export const Entry = initEntries(entries, relations, {
      candidateId: 'invited candidate',
      trigger: sameAssessment,
    },
@@ -9770,7 +9948,7 @@ index 263037b..50c3916 100644
      candidateId: 'candidate',
 -    data:
 -      'kind (page-leave, paste-blocked, fullscreen-exit), question, duration',
-+    data: 'kind (page-leave, paste-blocked, fullscreen-exit), duration',
++    data: 'kind (page-leave, copy, screens), duration',
    },
    CANDIDATE_FINISHED: {
      companyId: 'owning company',
@@ -9788,7 +9966,7 @@ index 263037b..50c3916 100644
      trigger: sameCandidate,
    },
    DECISION_SAVED: {
-@@ -256,7 +239,7 @@ export type EntryListener = {
+@@ -256,7 +240,7 @@ export type EntryListener = {
  export const entryInsertListeners = Entry.insertListeners
  export const archiveEntry = Entry.archive
  
@@ -9797,7 +9975,7 @@ index 263037b..50c3916 100644
  const demoEmail = 'demo@defendable.invalid'
  const existingDemo = Member.sql<'memberId' | 'companyId', string>`
    SELECT memberId, companyId FROM member WHERE memberEmail = ?
-@@ -275,12 +258,12 @@ const demoHash = !existingDemo
+@@ -275,12 +259,12 @@ const demoHash = !existingDemo
    : undefined
  const demo = existingDemo ?? db.transaction(() => {
    const companyId = Company.insert({
@@ -16957,10 +17135,10 @@ index a38b80c..17958d8 100644
              )}
            </AnchorLink>
 diff --git a/web/pages/report/report-page.tsx b/web/pages/report/report-page.tsx
-index 6370463..80ce7b8 100644
+index 6370463..93c6de9 100644
 --- a/web/pages/report/report-page.tsx
 +++ b/web/pages/report/report-page.tsx
-@@ -1,222 +1,568 @@
+@@ -1,222 +1,612 @@
 +// The report of a candidate. Two kinds of content, never mixed: what the
 +// server measured (verified facts) and what the AI read (interpretations, each
 +// with the evidence that was checked and a confidence). There is no global
@@ -17040,6 +17218,7 @@ index 6370463..80ce7b8 100644
 +import type {
 +  CodeRef,
 +  DecisionChoice,
++  InterviewIntegrity,
 +  ReportView,
 +  SkillReading,
 +  SkillStatus,
@@ -17273,6 +17452,48 @@ index 6370463..80ce7b8 100644
 +  </article>
 +)
 +
++/** 1500 ms → "2 s", 95 000 ms → "1 min 35 s" */
++const spell = (ms: number) => {
++  const s = Math.round(ms / 1000)
++  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`
++}
++
++const Away = ({ leave }: { leave: { count: number; ms: number } }) => (
++  <>
++    {leave.count ? `${leave.count}× · ${spell(leave.ms)}` : 'never'}
++  </>
++)
++
++/** how the session went: facts about the conditions, never about the person */
++const Conditions = ({ integrity: i }: { integrity: InterviewIntegrity }) => (
++  <div tw='flex flex-col gap-2'>
++    <h3 tw='m-0 text-[13.5px] font-semibold'>Conditions of the session</h3>
++    <div tw='grid grid-cols-2 md:grid-cols-4 gap-2.5'>
++      <Stat label='Left the page · building'>
++        <Away leave={i.leaves.build} />
++      </Stat>
++      <Stat label='Left the page · interview'>
++        <Away leave={i.leaves.interview} />
++      </Stat>
++      <Stat label='Second display'>
++        {i.extendedScreen === undefined
++          ? 'unknown'
++          : i.extendedScreen
++          ? 'seen'
++          : 'no'}
++      </Stat>
++      <Stat label='Interview resumed after a reload'>
++        {i.resumes ? `${i.resumes}×` : 'no'}
++      </Stat>
++    </div>
++    <p tw='m-0 text-[12.5px] text-content-tertiary'>
++      These facts say how the session went, not what the candidate understands:
++      a call, a notification or a laptop on a dock explain most of them. Only
++      Chrome and Edge can report a second display.
++    </p>
++  </div>
++)
++
 +const Facts = ({ v }: { v: ReportView }) => {
 +  const f = v.facts
 +  const failed = f.tests.filter((t) => !t.passed)
@@ -17315,6 +17536,7 @@ index 6370463..80ce7b8 100644
 +        <Stat label='Answers spoken'>{f.candidateTurns}</Stat>
 +        <Stat label='Words spoken'>{f.candidateWords}</Stat>
 +      </div>
++      {f.integrity && <Conditions integrity={f.integrity} />}
 +      {failed.length > 0 && (
 +        <div tw='card px-4 py-3 flex flex-col gap-2'>
 +          <h3 tw='m-0 text-[13.5px] font-semibold'>Failing tests</h3>
@@ -18550,18 +18772,21 @@ index df9fc76..112f5ec 100644
        </div>
      </ModalDialog>
 diff --git a/web/pages/workspace/workspace-page.tsx b/web/pages/workspace/workspace-page.tsx
-index 17f075a..6d1075b 100644
+index 17f075a..ff28e52 100644
 --- a/web/pages/workspace/workspace-page.tsx
 +++ b/web/pages/workspace/workspace-page.tsx
-@@ -1,6 +1,6 @@
+@@ -1,8 +1,9 @@
  import { paths } from '/web/paths.ts'
  import { effect } from '@preact/signals'
 -import { useEffect } from 'npm:preact/hooks'
 +import { useEffect } from 'preact/hooks'
  import { navigate, url } from '/web/lib/router-signal.ts'
  import { eachSec } from '/web/lib/signals.ts'
++import { trackIntegrity } from '/web/lib/integrity.ts'
  import { formatClock } from '/web/lib/format.ts'
-@@ -25,7 +25,6 @@ import { SidePanel } from '/web/pages/workspace/side-panel.tsx'
+ import {
+   buildSeconds,
+@@ -25,7 +26,6 @@ import { SidePanel } from '/web/pages/workspace/side-panel.tsx'
  import { ConsolePanel } from '/web/pages/workspace/console-panel.tsx'
  import { SubmitDialog } from '/web/pages/workspace/submit-dialog.tsx'
  import { SaveIndicator } from '/web/ui/timer.tsx'
@@ -18569,7 +18794,7 @@ index 17f075a..6d1075b 100644
  import {
    FlaskConical,
    Hammer,
-@@ -36,7 +35,7 @@ import {
+@@ -36,7 +36,7 @@ import {
    Timer,
  } from '/web/assets/icons.tsx'
  
@@ -18578,7 +18803,7 @@ index 17f075a..6d1075b 100644
  addEventListener('keydown', (e) => {
    if (!(e.ctrlKey || e.metaKey) || e.key !== 'Enter') return
    if (url.peek().pathname !== paths.workspace) return
-@@ -82,9 +81,7 @@ const Clock = ({ elapsed }: { elapsed: number }) => {
+@@ -82,9 +82,7 @@ const Clock = ({ elapsed }: { elapsed: number }) => {
    return (
      <span
        role='timer'
@@ -18589,7 +18814,7 @@ index 17f075a..6d1075b 100644
        tw={[
          'inline-flex items-center gap-1.5 h-6 px-2 rounded-md font-mono font-bold text-[13px] whitespace-nowrap',
          level,
-@@ -93,7 +90,7 @@ const Clock = ({ elapsed }: { elapsed: number }) => {
+@@ -93,7 +91,7 @@ const Clock = ({ elapsed }: { elapsed: number }) => {
        <Timer tw='w-3.5 h-3.5' />
        {formatClock(elapsed)}
        <span tw='font-main font-medium text-[11.5px]'>
@@ -18598,7 +18823,7 @@ index 17f075a..6d1075b 100644
        </span>
      </span>
    )
-@@ -111,20 +108,20 @@ const WorkspaceBar = (
+@@ -111,20 +109,20 @@ const WorkspaceBar = (
      </span>
      <span tw='badge badge-accent h-[22px] font-semibold text-[11.5px]'>
        <Hammer tw='w-3 h-3' />
@@ -18624,7 +18849,7 @@ index 17f075a..6d1075b 100644
      </RunButton>
      <span tw='w-px h-[22px] bg-border-strong mx-0.5' />
      <button
-@@ -134,19 +131,18 @@ const WorkspaceBar = (
+@@ -134,19 +132,18 @@ const WorkspaceBar = (
        onClick={() => navigate({ params: { dialog: 'submit' } })}
      >
        <Send tw='w-3.5 h-3.5' />
@@ -18647,7 +18872,7 @@ index 17f075a..6d1075b 100644
    if (!expired) return
    if (!me.value.submittedAt && !expiredLoaded) {
      expiredLoaded = true
-@@ -157,16 +153,20 @@ effect(() => {
+@@ -157,16 +154,22 @@ effect(() => {
    }
  })
  
@@ -18656,6 +18881,8 @@ index 17f075a..6d1075b 100644
  export const WorkspacePage = () => {
    const view = me.value
    const status = meStatus.value
++  // the conditions of the session, reported as facts (see web/lib/integrity.ts)
++  useEffect(() => trackIntegrity('build'), [])
    useEffect(() => {
 -    // no session: back to the candidate link (C1)
 +    // no session: back to the candidate link (welcome page)
@@ -18672,7 +18899,7 @@ index 17f075a..6d1075b 100644
      }
    }, [status, view?.submittedAt])
    eachSec.value // re-render every second for the clock
-@@ -179,7 +179,7 @@ export const WorkspacePage = () => {
+@@ -179,7 +182,7 @@ export const WorkspacePage = () => {
    }
    const total = buildSeconds()
    const elapsed = elapsedBuildSeconds()
@@ -19195,7 +19422,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..4756ef6 100644
+index 83f3535..44d5063 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,13 @@
@@ -19337,7 +19564,7 @@ index 83f3535..4756ef6 100644
  }
  
  export type GenerationInput = {
-@@ -130,68 +136,89 @@ export type GenerationInput = {
+@@ -130,68 +136,90 @@ export type GenerationInput = {
    durationMin: number
    skills: string[]
    domain?: string
@@ -19451,13 +19678,14 @@ index 83f3535..4756ef6 100644
 -  auto?: boolean // sent by the timer at 00:00
 -  seconds: number // time spent
 -}
-+export type IntegrityKind = 'page-leave' | 'paste-blocked' | 'fullscreen-exit'
++export type IntegrityKind = 'page-leave' | 'copy' | 'screens'
++export type IntegrityPhase = 'build' | 'interview'
  
 -/** what C1 shows before the candidate starts */
  /** what the personal link allows: start, resume, or nothing any more */
  export type InvitationState =
    | 'invited'
-@@ -200,6 +227,7 @@ export type InvitationState =
+@@ -200,6 +228,7 @@ export type InvitationState =
    | 'expired'
    | 'revoked'
  
@@ -19465,7 +19693,7 @@ index 83f3535..4756ef6 100644
  export type Invitation = {
    invitation: string
    title: string
-@@ -208,15 +236,29 @@ export type Invitation = {
+@@ -208,15 +237,44 @@ export type Invitation = {
    durationMin: number
    firstName?: string
    state: InvitationState
@@ -19485,6 +19713,21 @@ index 83f3535..4756ef6 100644
 +  interrupted?: boolean
 +}
 +
++/**
++ * What the server measured about the conditions of the interview (facts: they
++ * say how it went, not what the candidate understands).
++ */
++export type InterviewIntegrity = {
++  /** times the candidate came back to an interview already begun */
++  resumes: number
++  /** times the page was left (tab hidden, window out of focus), and for how long */
++  leaves: Record<IntegrityPhase, { count: number; ms: number }>
++  /** attempts to copy what the interviewer says */
++  copies: number
++  /** a second display is connected (undefined: this browser cannot tell) */
++  extendedScreen?: boolean
++}
++
 +/** the candidate's own session: never the hidden tests nor their results */
  export type CandidateView = {
    id: number
@@ -19497,7 +19740,7 @@ index 83f3535..4756ef6 100644
    assessment: {
      title: string
      company: string
-@@ -228,162 +270,107 @@ export type CandidateView = {
+@@ -228,162 +286,109 @@ export type CandidateView = {
      constraints: string[]
      publicTests: TestCase[]
      hiddenCount: number
@@ -19633,6 +19876,8 @@ index 83f3535..4756ef6 100644
 +  interviewCompleted: boolean
 +  candidateTurns: number
 +  candidateWords: number
++  /** how the session went: facts about the conditions, not about the person */
++  integrity?: InterviewIntegrity
  }
  
 -export type QcmReview = {

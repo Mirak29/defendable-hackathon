@@ -119,14 +119,17 @@ const browser = async (port) => {
 }
 
 /** the whole setup: server, mocks, configuration restored afterwards */
-const withInterview = async ({ replies, recognise }, fn) => {
+const withInterview = async (
+  { replies, recognise, interviewFacts = facts },
+  fn,
+) => {
   const asr = mockAsr(recognise)
   const model = mockModel(replies)
   const front = Deno.serve(
     { port: 0, onListen() {} },
     (req) =>
       handleVoice(req, {
-        facts: () => Promise.resolve(facts),
+        facts: () => Promise.resolve(interviewFacts),
         authorize: () => Promise.resolve(true),
       }),
   )
@@ -696,5 +699,156 @@ test('voice interview: how speech is cut into pieces', async (step) => {
   await step('a sentence still being written is not cut', () => {
     eq(nextPiece('Hi Sam. How are you'), undefined)
     eq(nextPiece('Version 3.5 is out'), undefined)
+  })
+})
+
+test('voice interview: a candidate who reloads the page goes on, not again', async (step) => {
+  const previous = [
+    { who: 'ai', text: 'Hello, I am Oracle. How did you start?' },
+    { who: 'candidate', text: 'I began with the repository.' },
+    { who: 'ai', text: 'Thanks. Why that order?' },
+    { who: 'candidate', text: 'It felt simplest.' },
+  ]
+  await withInterview({
+    interviewFacts: { ...facts, previous },
+    replies: ['Glad you are back. What would you change in it?'],
+    recognise: () => {},
+  }, async ({ port, model }) => {
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done')
+
+    await step('the browser gets back what was already said', () => {
+      eq(b.events.find((e) => e.type === 'ready').history, previous)
+    })
+    await step('the model knows the conversation and is told to go on', () => {
+      const messages = model.calls[0].messages.filter((m) =>
+        m.role !== 'system'
+      )
+      eq(messages.map((m) => m.role), [
+        'user',
+        'assistant',
+        'user',
+        'assistant',
+        'user',
+      ])
+      eq(messages[1].content, 'Hello, I am Oracle. How did you start?')
+      // the words that were not answered yet are carried in the note
+      eq(messages.at(-1).content.includes('It felt simplest.'), true)
+      eq(messages.at(-1).content.includes('reloaded'), true)
+      eq(
+        messages.filter((m) => m.content.includes('Begin the interview'))
+          .length,
+        1,
+      )
+    })
+    b.ws.close()
+  })
+})
+
+test('voice interview: the time is counted from the first opening, a reload does not restart it', async (step) => {
+  await withInterview({
+    // the interview opened eleven minutes ago: it closes at once
+    interviewFacts: {
+      ...facts,
+      previous: [{ who: 'ai', text: 'Hello, I am Oracle. How did you start?' }],
+      interviewStartedAt: Date.now() - 11 * 60_000,
+    },
+    // the model forgets the end marker: the interview ends anyway
+    replies: ['Thank you for your time, a person will read this.'],
+    recognise: () => {},
+  }, async ({ port, model }) => {
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'end')
+
+    await step(
+      'the interviewer is told the time is over, and asks nothing more',
+      () => {
+        const last = model.calls[0].messages.at(-1).content
+        eq(last.includes('time of the interview is over'), true)
+        eq(model.calls.length, 1)
+      },
+    )
+    b.ws.close()
+  })
+})
+
+test('voice interview: the interview closes when the time is over, even in silence', async (step) => {
+  await withInterview({
+    replies: [
+      'Hello, I am Oracle. How did you start?',
+      'Thank you, a person will read our conversation. [END]',
+    ],
+    recognise: () => {},
+  }, async ({ port, model }) => {
+    // a few hundred milliseconds instead of ten minutes
+    Object.assign(voiceConfig, { interviewMs: 800, graceMs: 300 })
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'end')
+
+    await step('a question, then the closing, then the end', () => {
+      eq(model.calls.length, 2)
+      eq(
+        model.calls[1].messages.at(-1).content.includes(
+          'time of the interview is over',
+        ),
+        true,
+      )
+      eq(b.events.filter((e) => e.type === 'ai-done').length, 2)
+    })
+    b.ws.close()
+  })
+})
+
+test('voice interview: a candidate who is speaking when the time is over is heard out', async (step) => {
+  await withInterview({
+    replies: [
+      'Hello, I am Oracle. How did you start?',
+      'Thank you, a person will read our conversation. [END]',
+    ],
+    recognise: async (send) => {
+      // the candidate starts to speak before the time is over, and goes on
+      await sleep(300)
+      send({ type: 'speechStart', turnId: 1, audioProcessedMs: 0 })
+      await sleep(2600)
+      send({ type: 'speechEnd', turnId: 1, audioProcessedMs: 2900 })
+      send({
+        type: 'speechComplete',
+        turnId: 1,
+        transcript: 'One last thing I wanted to say about the order.',
+      })
+    },
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, { interviewMs: 1500, graceMs: 500 })
+    const opened = Date.now()
+    const b = await browser(port)
+    b.frame()
+    await sleep(100)
+    b.frame()
+    // the time is over at 1.5 s and the timer fires at 2 s, while they speak
+    await sleep(Math.max(0, opened + 2400 - Date.now()))
+    await step(
+      'the interviewer does not talk over a candidate who speaks',
+      () => {
+        eq(model.calls.length, 1)
+        eq(b.events.some((e) => e.type === 'end'), false)
+      },
+    )
+    await b.waitFor((e) => e.type === 'end')
+
+    await step(
+      'their words are heard, then the interviewer concludes and stops',
+      () => {
+        const types = b.events.map((e) => e.type)
+        eq(types.indexOf('heard') < types.lastIndexOf('ai-done'), true)
+        const last = model.calls[1].messages.at(-1).content
+        eq(last.includes('One last thing I wanted to say'), true)
+        eq(last.includes('time of the interview is over'), true)
+        eq(types.at(-1), 'end')
+      },
+    )
+    b.ws.close()
   })
 })

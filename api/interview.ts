@@ -4,6 +4,7 @@ import { json } from '/api/assessment.ts'
 import {
   findCandidate,
   finishInterview,
+  recordResume,
   startInterview,
   type StoredResults,
 } from '/api/candidate.ts'
@@ -54,6 +55,8 @@ export const factsOf = (c: CandidateRow): InterviewFacts | undefined => {
       ? `${passed} pass, ${failed} fail`
       : 'none written',
     questions: voiceConfig.questions,
+    previous: json<InterviewLine[]>(c.candidateInterview) ?? undefined,
+    interviewStartedAt: c.candidateInterviewStartedAt ?? undefined,
   }
 }
 
@@ -71,7 +74,12 @@ export const candidateVoice = {
     }
   },
   facts: (req: Request) => Promise.resolve(factsOf(candidateOf(req))!),
-  onStart: (req: Request) => startInterview(candidateOf(req)),
+  onStart: (req: Request) => {
+    const c = candidateOf(req)
+    // words were already said: this is a return, not a beginning
+    if (json<InterviewLine[]>(c.candidateInterview)?.length) recordResume(c)
+    startInterview(c)
+  },
   onFinish: (
     req: Request,
     transcript: InterviewLine[],

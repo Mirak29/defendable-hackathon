@@ -255,6 +255,12 @@ const onEvent = (event: VoiceEvent) => {
   switch (event.type) {
     case 'ready':
       serverVoice = event.voice === 'server'
+      // back after a reload: what was said is shown again
+      voice.lines.value = (event.history ?? []).map((l) => ({
+        who: l.who === 'ai' ? 'ai' : 'you',
+        text: l.text,
+        interrupted: l.interrupted,
+      }))
       voice.status.value = 'live'
       break
     case 'speech':

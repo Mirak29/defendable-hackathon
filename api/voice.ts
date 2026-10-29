@@ -19,7 +19,9 @@ import type { InterviewLine } from '/web/types.ts'
 import { decodeSession } from '/api/member.ts'
 import {
   END_MARKER,
+  INTERVIEW_RESUME,
   INTERVIEW_START,
+  INTERVIEW_TIME_UP,
   type InterviewFacts,
   interviewSystem,
 } from '/api/prompts.ts'
@@ -39,6 +41,15 @@ export const voiceConfig = {
    * is spent waiting for the model anyway.
    */
   holdMs: Number(ENV('VOICE_HOLD_MS', '900')),
+  /**
+   * How long the interview lasts, from the first time it opened: reloading the
+   * page does not restart it. After that the interviewer closes at the next
+   * turn of the candidate, or `graceMs` later at the latest.
+   */
+  interviewMs: Number(ENV('INTERVIEW_MS', String(10 * 60_000))),
+  graceMs: Number(ENV('INTERVIEW_GRACE_MS', '45000')),
+  /** a candidate who is still speaking is heard out, at most this long */
+  patienceMs: 60_000,
 }
 
 /**
@@ -53,8 +64,12 @@ const NOT_UNDERSTOOD = (text: string) =>
 
 /** what the browser receives */
 export type VoiceEvent =
-  /** `voice`: who reads the interviewer's words aloud */
-  | { type: 'ready'; voice: 'server' | 'browser' }
+  /** `voice`: who reads the interviewer's words aloud; `history`: what was already said before a reload */
+  | {
+    type: 'ready'
+    voice: 'server' | 'browser'
+    history?: InterviewLine[]
+  }
   /** a sentence of the interviewer, with its sound (PCM 16-bit 24 kHz in base64) unless it could not be made: the browser reads it then */
   | { type: 'speech'; text: string; pcm?: string }
   | { type: 'speech-start' }
@@ -206,9 +221,50 @@ export class VoiceInterview {
   #speechEndAt = 0
   #transcriptAt = 0
 
+  /** what the interviewer is told when the interview opens */
+  #opening: string
+  /** when the time of the interview is over (ms) */
+  #deadline: number
+  /** a voice is heard now (speech-start received, no speech-end yet) */
+  #speaking = false
+  #timer?: ReturnType<typeof setTimeout>
+
   constructor(facts: InterviewFacts, send: (event: VoiceEvent) => void) {
     this.#facts = facts
     this.#send = send
+    this.#deadline = (facts.interviewStartedAt ?? Date.now()) +
+      voiceConfig.interviewMs
+    this.#opening = facts.previous?.length
+      ? this.#restore(facts.previous)
+      : INTERVIEW_START
+  }
+
+  /**
+   * The candidate is back (page reloaded): the interviewer knows what was
+   * said and goes on, instead of starting over and asking the same questions.
+   * Returns what it is told when the interview reopens.
+   */
+  #restore(previous: InterviewLine[]) {
+    const lines = [...previous]
+    // the candidate spoke last and was not answered yet
+    const unanswered = lines.at(-1)?.who === 'candidate'
+      ? lines.pop()!.text
+      : ''
+    this.#history.push({ role: 'user', content: INTERVIEW_START })
+    for (const line of lines) {
+      if (line.who === 'candidate') {
+        this.#history.push({ role: 'user', content: line.text })
+        continue
+      }
+      this.#history.push({
+        role: 'assistant',
+        content: line.interrupted
+          ? `${line.text} [the candidate interrupted here]`
+          : line.text,
+      })
+      if (!line.interrupted) this.#asked++
+    }
+    return INTERVIEW_RESUME(unanswered)
   }
 
   /** opens the transcription; the first question comes when it is ready */
@@ -265,8 +321,27 @@ export class VoiceInterview {
     }
   }
 
+  /**
+   * The time is over for good: the interviewer closes after what it is
+   * saying. By politeness, a candidate who is speaking is heard out first (their
+   * turn then ends in the closing, see `#heard`).
+   */
+  #timeUp(waited = 0) {
+    if (this.#closed) return
+    if (this.#speaking && waited < voiceConfig.patienceMs) {
+      this.#timer = setTimeout(() => this.#timeUp(waited + 1_000), 1_000)
+      return
+    }
+    this.#running = this.#running.then(() =>
+      this.#closed
+        ? undefined
+        : this.#answer(INTERVIEW_TIME_UP(), undefined, undefined, true)
+    )
+  }
+
   close() {
     this.#closed = true
+    clearTimeout(this.#timer)
     this.#dropSpeech()
     this.#withdraw?.()
     this.#controller?.abort()
@@ -292,14 +367,24 @@ export class VoiceInterview {
       this.#send({
         type: 'ready',
         voice: this.#serverVoice ? 'server' : 'browser',
+        history: this.#facts.previous,
       })
-      this.#running = this.#answer(INTERVIEW_START)
+      // back after the time was over: it closes at once
+      const left = this.#deadline - Date.now()
+      this.#timer = setTimeout(
+        () => this.#timeUp(),
+        Math.max(0, left) + voiceConfig.graceMs,
+      )
+      this.#running = left > 0
+        ? this.#answer(this.#opening)
+        : this.#answer(INTERVIEW_TIME_UP(), undefined, undefined, true)
       return
     }
     switch (msg.type) {
       case 'speechStart':
         // a sound is not yet a voice: a breath, a click, the room, or the
         // interviewer itself through the speakers. It stops nothing.
+        this.#speaking = true
         this.#send({ type: 'speech-start' })
         break
       case 'transcript':
@@ -322,6 +407,7 @@ export class VoiceInterview {
         }
         break
       case 'speechEnd':
+        this.#speaking = false
         this.#speechEndAt = performance.now()
         this.#send({ type: 'speech-end' })
         break
@@ -342,6 +428,7 @@ export class VoiceInterview {
   async #heard(turnId: number, text: string) {
     // the answer cut short by this turn is in the history before the turn is
     await this.#running
+    if (this.#closed) return
     const wasInterrupted = this.#interrupted
     this.#interrupted = false
     if (!text && !wasInterrupted) return
@@ -350,14 +437,19 @@ export class VoiceInterview {
     const full = merge ? `${this.#carry} ${text}` : text || this.#carry
     this.#carry = ''
     this.#send({ type: 'heard', turnId, text: full, merge })
+    // the time is over: this turn is answered by the closing
+    const over = Date.now() >= this.#deadline
     this.#running = this.#answer(
-      !full
+      over
+        ? INTERVIEW_TIME_UP(full)
+        : !full
         ? '(Something was said but it was not understandable.)'
         : isUnclear(full)
         ? NOT_UNDERSTOOD(full)
         : full,
       turnId,
       full,
+      over,
     )
     await this.#running
   }
@@ -409,7 +501,12 @@ export class VoiceInterview {
   }
 
   /** one turn of the interviewer, streamed to the browser while it is written */
-  async #answer(userText: string, turnId?: number, heardText = userText) {
+  async #answer(
+    userText: string,
+    turnId?: number,
+    heardText = userText,
+    closing = false,
+  ) {
     this.#history.push({ role: 'user', content: userText })
     this.#dropSpeech()
     const controller = new AbortController()
@@ -498,7 +595,10 @@ export class VoiceInterview {
         })
       }
       // the marker, or a safety stop if the model forgets to finish
-      if (!interrupted && (ended || this.#asked > voiceConfig.questions + 1)) {
+      if (
+        !interrupted &&
+        (ended || closing || this.#asked > voiceConfig.questions + 1)
+      ) {
         // the last words are still being made: they are heard before the end
         await this.#sentences
         this.#send({ type: 'end' })
@@ -549,7 +649,8 @@ export const handleVoice = async (
   const asked = new Request(req.url, { headers: new Headers(req.headers) })
   const { socket, response } = Deno.upgradeWebSocket(req)
   socket.binaryType = 'arraybuffer'
-  const transcript: InterviewLine[] = []
+  // what was said before a reload stays in the transcript
+  const transcript: InterviewLine[] = [...(facts.previous ?? [])]
   let completed = false
   const interview = new VoiceInterview(facts, (event) => {
     if (event.type === 'heard') {

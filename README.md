@@ -150,6 +150,21 @@ sentences of an interview are made one after the other, and the load of several
 interviews at once has **not been measured**. The weights (326 MB) are
 downloaded once by the server, on its first start.
 
+### Conditions of the interview
+
+- **One clock, kept by the server.** The interview lasts 10 minutes from the
+  first time it opened (`INTERVIEW_MS`); reloading the page does not restart it.
+  When time is over, Oracle hears out a candidate who is speaking, answers them
+  in a few words, thanks them and closes. A page reloaded mid-interview resumes
+  from the saved conversation instead of starting over, so the questions cannot
+  be seen twice.
+- **Facts about the session, never a verdict.** The report shows how many times
+  the page was left and for how long (building and interview), whether a second
+  display was seen (Chromium only, otherwise "unknown"), reloads, and copy
+  attempts on the words of the interviewer. These have many innocent causes and
+  say nothing about the candidate's understanding; the report says so. Nothing
+  is inferred from how the code was written, since AI is allowed.
+
 ### Model choice, measured
 
 Each step runs on the model and the reasoning effort that measured best for it
@@ -294,25 +309,27 @@ without any key.
 
 ## Environment
 
-| Variable             | Role                                                           |
-| -------------------- | -------------------------------------------------------------- |
-| `MODEL_API_KEY`      | Meta Model API key (`LLM_…`)                                   |
-| `MODEL_NAME`         | main model, default `muse-spark-1.3`                           |
-| `MODEL_FALLBACK`     | fallback model, default `muse-spark-1.2`, empty for none       |
-| `MODEL_EFFORT`       | default reasoning effort, `low`                                |
-| `MODEL_API_BASE_URL` | default `https://api.meta.ai/v1`                               |
-| `BASETEN_API_KEY`    | Baseten key: runs Muse Spark Open (open weights)               |
-| `BASETEN_BASE_URL`   | default `https://inference.baseten.co/v1`                      |
-| `MODEL_OPEN`         | open-weights model, default `meta-models/muse-spark-open-1026` |
-| `MODEL_OPEN_TASKS`   | steps run on it (comma list, empty for none)                   |
-| `MODEL_EFFORTS`      | effort per step, e.g. `report=xhigh,scenario=low`              |
-| `VOICE_HOLD_MS`      | interview: pause before Oracle speaks, default `900`           |
-| `TTS`                | `off` keeps the browser's voice for Oracle (default `on`)      |
-| `TTS_VOICE`          | Kokoro voice of Oracle, default `af_heart`                     |
-| `DEMO_ACCESS`        | `1`: a demo account can be signed in without a password        |
-| `DATABASE_PATH`      | SQLite file (`:memory:` in tests)                              |
-| `RESEND_API_KEY`     | e-mail of the personal link of a candidate (Resend)            |
-| `RESEND_FROM`        | sender, a verified domain, e.g. `Defendable <hi@you.com>`      |
+| Variable             | Role                                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------------------- |
+| `MODEL_API_KEY`      | Meta Model API key (`LLM_…`)                                                                              |
+| `MODEL_NAME`         | main model, default `muse-spark-1.3`                                                                      |
+| `MODEL_FALLBACK`     | fallback model, default `muse-spark-1.2`, empty for none                                                  |
+| `MODEL_EFFORT`       | default reasoning effort, `low`                                                                           |
+| `MODEL_API_BASE_URL` | default `https://api.meta.ai/v1`                                                                          |
+| `BASETEN_API_KEY`    | Baseten key: runs Muse Spark Open (open weights)                                                          |
+| `BASETEN_BASE_URL`   | default `https://inference.baseten.co/v1`                                                                 |
+| `MODEL_OPEN`         | open-weights model, default `meta-models/muse-spark-open-1026`                                            |
+| `MODEL_OPEN_TASKS`   | steps run on it (comma list, empty for none)                                                              |
+| `MODEL_EFFORTS`      | effort per step, e.g. `report=xhigh,scenario=low`                                                         |
+| `VOICE_HOLD_MS`      | interview: pause before Oracle speaks, default `900`                                                      |
+| `INTERVIEW_MS`       | duration of the interview from its first opening, default `600000` (10 min); a reload does not restart it |
+| `INTERVIEW_GRACE_MS` | after that, the longest wait for a turn before Oracle closes, default `45000`                             |
+| `TTS`                | `off` keeps the browser's voice for Oracle (default `on`)                                                 |
+| `TTS_VOICE`          | Kokoro voice of Oracle, default `af_heart`                                                                |
+| `DEMO_ACCESS`        | `1`: a demo account can be signed in without a password                                                   |
+| `DATABASE_PATH`      | SQLite file (`:memory:` in tests)                                                                         |
+| `RESEND_API_KEY`     | e-mail of the personal link of a candidate (Resend)                                                       |
+| `RESEND_FROM`        | sender, a verified domain, e.g. `Defendable <hi@you.com>`                                                 |
 
 ## Layout
 

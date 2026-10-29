@@ -4,7 +4,7 @@
 // priority, the exact grammar of what the sandbox reads, and a check to do
 // before answering. Edit them with the tests of api/assessment.test.js and
 // `deno task llm:generate` at hand.
-import type { GenerationInput } from '/web/types.ts'
+import type { GenerationInput, InterviewLine } from '/web/types.ts'
 
 const FENCE = '```'
 
@@ -556,6 +556,10 @@ export type InterviewFacts = Subject & {
   ownTests?: string
   /** how many questions you ask before stopping */
   questions: number
+  /** what was already said, when the candidate comes back (page reloaded) */
+  previous?: InterviewLine[]
+  /** when the interview first opened (ms): a reload does not restart the clock */
+  interviewStartedAt?: number
 }
 
 const capital = (text: string) => text[0].toUpperCase() + text.slice(1)
@@ -612,6 +616,23 @@ ${
 /** the very first message: nobody has spoken yet */
 export const INTERVIEW_START =
   'The candidate has joined and you can hear them. Begin the interview.'
+
+/**
+ * The candidate came back (the page was reloaded): the conversation goes on.
+ * `unanswered` is what they said last when the interviewer had not answered.
+ */
+/** the time of the interview is over: it closes, with a few warm words */
+export const INTERVIEW_TIME_UP = (unanswered = '') =>
+  `The time of the interview is over. Answer in one or two short sentences what they just said if they said something, thank them warmly, tell them a person will read the conversation, and close the interview now: ask no question and end your message with ${END_MARKER}.${
+    unanswered ? ` The last thing they said: "${unanswered}"` : ''
+  }`
+
+export const INTERVIEW_RESUME = (unanswered = '') =>
+  `The candidate's page was reloaded and they are back. Say in a few warm words that you are glad they are back and that you go on from where you were (never start over, never greet them again), then ask your next question. Never repeat a question already answered.${
+    unanswered
+      ? ` They had just said this, and you had not answered it yet: "${unanswered}". React to it in a few words before your question, as if you had heard it.`
+      : ''
+  }`
 
 /* ---------- the report ---------- */
 
