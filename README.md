@@ -150,6 +150,40 @@ sentences of an interview are made one after the other, and the load of several
 interviews at once has **not been measured**. The weights (326 MB) are
 downloaded once by the server, on its first start.
 
+### A second look at the evidence
+
+The report checks every piece of evidence exists (the quote word for word in the
+transcript, the lines in the code, the test ids). A reading can still cite real
+evidence that does not back what it claims, so a second model call reads each
+reading again with **only its evidence** (the quote with the question that came
+before it, the lines, the test results) and says whether it backs the status and
+the summary. The idea of a check that runs outside the author of the reading
+comes from Meta's
+[legal agent workshop](https://github.com/meta-models/legal-agent-workshop).
+
+Only a clear "no" changes the report: the status goes down a level, the
+confidence to low, and the card says why and asks the reader to look at the
+evidence. A reading that the check backs shows "the evidence below backs this
+reading"; a check that cannot run is said in the limits.
+
+Measured on the 18 fictional candidates (70 readings,
+`deno task llm:eval
+--efforts=high --support`), with readings falsified on
+purpose for the check:
+
+| Reading                             | backed | "partly" | "no" |
+| ----------------------------------- | ------ | -------- | ---- |
+| Right readings                      | 77 %   | 23 %     | 0 %  |
+| Evidence swapped between two skills | 14 %   | 50 %     | 36 % |
+| Status raised to "Demonstrated"     | 5 %    | 44 %     | 51 % |
+
+"No" is the signal: no false alarm on the right readings, and it doubts a third
+to a half of the falsified ones. "Partly" is not: it is said as often of right
+readings (the excerpts cannot prove that something is absent) as of wrong ones,
+so it is recorded and changes nothing. One run of 70 readings per row; the first
+prompt, without the rule on absences, doubted 31 % of the right readings
+("partly" or "no").
+
 ### Conditions of the interview
 
 - **One clock, kept by the server.** The interview lasts 10 minutes from the

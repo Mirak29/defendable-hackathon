@@ -54,10 +54,10 @@ index 9a23581..acd7092 100644
 +# runs of `deno task llm:generate --out=generated`
 +generated/
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 395848d..3c28486 100644
+index 395848d..f0ab666 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -5,153 +5,132 @@ code in this repository.
+@@ -5,153 +5,134 @@ code in this repository.
  
  ## What this is
  
@@ -182,9 +182,11 @@ index 395848d..3c28486 100644
 +  and the code; every quote, line range and test it cites is checked against
 +  what exists, evidence not found is removed, a skill with none is "Not
 +  assessed", and the confidence and the status are capped by the checks (see
-+  `checkReading`). No global score; the decision is saved as written by a
-+  person. `fixtures/report-cases.ts` holds fictional candidates with a known
-+  right reading, run by `deno task llm:eval`.
++  `checkReading`), then a second model call (`checkSupport`, task
++  `report-support`) reads each reading against only its evidence; only a "no"
++  lowers it (measured by `deno task llm:eval --support`). No global score; the
++  decision is saved as written by a person. `fixtures/report-cases.ts` holds
++  fictional candidates with a known right reading, run by `deno task llm:eval`.
 +- **Two kinds of assessment** (`spec.kind`, missing = `api`): `api` (a handler
 +  in TypeScript, HTTP steps) and `program` (stdin to stdout, TypeScript or
 +  Python). A program test is one step: the input, then the output
@@ -6570,10 +6572,10 @@ index 58b4786..777e643 100644
    log.info('reference-check', {
      passed: results.filter((r) => r.passed).length,
 diff --git a/api/report.test.js b/api/report.test.js
-index f8db3f1..628a0ba 100644
+index f8db3f1..49df1c0 100644
 --- a/api/report.test.js
 +++ b/api/report.test.js
-@@ -1,161 +1,513 @@
+@@ -1,161 +1,631 @@
 +// The report on the real routes, against a local mock of the model: the facts
 +// the server measures, the evidence of the model checked against what exists,
 +// the failure and its retry, the human decision, and the start of the report
@@ -6711,13 +6713,8 @@ index f8db3f1..628a0ba 100644
 +    eq(v.reading, undefined)
 +    eq(v.transcript.length, TRANSCRIPT.length)
 +    eq(v.identity.firstName, 'Awa')
-   })
- 
--  await step('second model down: nothing confirmed, reasons kept', async () => {
--    await using m = mockLlm(() => [503])
--    const { confirmed, unavailable } = await confirmContradictions(
--      files,
--      claims,
++  })
++
 +  await step(
 +    'every piece of evidence is checked, the rest removed',
 +    async () => {
@@ -6774,8 +6771,13 @@ index f8db3f1..628a0ba 100644
 +    // few answers cannot support a firm reading of the understanding
 +    eq(reading.understanding.confidence, 'medium')
 +    eq(reading.trace.model.length > 0, true)
-+  })
-+
+   })
+ 
+-  await step('second model down: nothing confirmed, reasons kept', async () => {
+-    await using m = mockLlm(() => [503])
+-    const { confirmed, unavailable } = await confirmContradictions(
+-      files,
+-      claims,
 +  await step('a single kind of evidence never gives a "high"', async () => {
 +    await withModel(
 +      answer(names, [{
@@ -6815,10 +6817,7 @@ index f8db3f1..628a0ba 100644
 +      eq(reading.skills[1].status, 'Not assessed')
 +    }
 +  })
- 
--test('a contradiction is anchored in the answer (LIVE-004)', async (step) => {
--  const answer =
--    'Je conteste la prémisse : la chaîne fait 31 caractères, pas 33. Une chaîne de 33 caractères retourne bien 400.'
++
 +  await step('a skill that is not assessed shows no evidence', async () => {
 +    await withModel(
 +      answer(names, [{
@@ -6840,15 +6839,9 @@ index f8db3f1..628a0ba 100644
 +    eq(reading.discarded, 0)
 +  })
  
--  await step('words the candidate wrote', () => {
--    eq(anchoredInAnswer(answer, 'la chaîne fait 31 caractères, pas 33'), true)
--    // apostrophes, spaces and case of the copy do not matter
--    eq(
--      anchoredInAnswer(
--        'Je valide déjà que l’URL est en http',
--        "je valide  déjà que l'URL",
--      ),
--      true,
+-test('a contradiction is anchored in the answer (LIVE-004)', async (step) => {
+-  const answer =
+-    'Je conteste la prémisse : la chaîne fait 31 caractères, pas 33. Une chaîne de 33 caractères retourne bien 400.'
 +  await step(
 +    'words that do not match the code lower a "Demonstrated"',
 +    async () => {
@@ -6865,7 +6858,16 @@ index f8db3f1..628a0ba 100644
 +      eq(first.capped.includes('does not match the code'), true)
 +    },
 +  )
-+
+ 
+-  await step('words the candidate wrote', () => {
+-    eq(anchoredInAnswer(answer, 'la chaîne fait 31 caractères, pas 33'), true)
+-    // apostrophes, spaces and case of the copy do not matter
+-    eq(
+-      anchoredInAnswer(
+-        'Je valide déjà que l’URL est en http',
+-        "je valide  déjà que l'URL",
+-      ),
+-      true,
 +  await step('a skill read in the interview needs their words', async () => {
 +    // code and tests alone do not defend a skill the interview reads
 +    const spec = json(Assessment.require(assessment).assessmentSpec)
@@ -7111,10 +7113,7 @@ index f8db3f1..628a0ba 100644
 +      (await call('GET', '/api/report', { candidate: candidateId }, other))
 +        .status,
 +      404,
-     )
--    eq(status, 'ready')
--    const q1 = report.qcm.find((q) => q.n === 1)
--    eq([q1.check, q1.isCorrect, q1.aiNote], ['disputed', false, undefined])
++    )
 +    eq(
 +      (await call('POST', '/api/report/decision', {
 +        candidate: candidateId,
@@ -7131,8 +7130,11 @@ index f8db3f1..628a0ba 100644
 +      ))
 +        .status,
 +      404,
-+    )
-+  })
+     )
+-    eq(status, 'ready')
+-    const q1 = report.qcm.find((q) => q.n === 1)
+-    eq([q1.check, q1.isCorrect, q1.aiNote], ['disputed', false, undefined])
+   })
 +
 +  await step('without a session nothing is open', async () => {
 +    eq(
@@ -7214,13 +7216,131 @@ index f8db3f1..628a0ba 100644
 +    recordResume(row())
 +    const { facts } = await view(member, candidateId)
 +    eq([facts.integrity.copies, facts.integrity.resumes], [1, 1])
-   })
++  })
++})
++
++test('report: a second check reads each reading against its evidence', async (step) => {
++  const { member, assessment, candidateId } = await setup('Support')
++  const names = skillNames(assessment)
++  const row = () => Candidate.require(candidateId)
++  finishInterview(row(), TRANSCRIPT, true)
++  const evidence = [
++    {
++      quotes: [
++        'My check only builds a URL object, so anything that parses is accepted',
++      ],
++      code: [{ file: 'src/validation.ts', from: 8, to: 14, note: 'check' }],
++      tests: ['T9'],
++    },
++    {
++      quotes: [
++        'I split it in three files: the handler, the validation and an in-memory repository.',
++      ],
++    },
++  ]
++  const run = async (support) => {
++    let seen
++    await withModel(answer(names, evidence), async (calls) => {
++      await buildReport(candidateId)
++      seen = calls.support
++    }, { support })
++    const { reading, status } = await view(member, candidateId)
++    return { reading, status, seen }
++  }
++
++  await step(
++    'what the checker reads: the evidence, with the question asked',
++    async () => {
++      const { seen } = await run({ verdicts: [] })
++      const text = seen[0].messages.find((m) => m.role === 'user').content
++      eq(text.includes(`## ${names[0]}`), true)
++      // the quote comes with the question of the interviewer before it
++      eq(
++        text.includes(
++          'Asked: "What happens if the address starts with something else?"',
++        ),
++        true,
++      )
++      // the lines of code are shown, numbered, and the failing test with its detail
++      eq(text.includes('src/validation.ts lines 8-14'), true)
++      eq(text.includes('T9 (hidden)'), true)
++      eq(text.includes('FAILED'), true)
++    },
++  )
++
++  await step(
++    'a reading the evidence does not back is marked and lowered',
++    async () => {
++      const { reading, status } = await run({
++        verdicts: [
++          {
++            skill: names[0],
++            support: 'no',
++            reason: 'The quote is about something else.',
++          },
++          { skill: names[1], support: 'yes', reason: '' },
++        ],
++      })
++      eq(status, 'ready')
++      const [first, second] = reading.skills
++      eq([first.status, first.confidence, first.support], [
++        'Partial',
++        'low',
++        'no',
++      ])
++      eq(first.capped.includes('does not back this reading'), true)
++      eq(first.capped.includes('The quote is about something else'), true)
++      // the evidence stays: the person reads it against the doubt
++      eq(first.quotes.length, 1)
++      eq([second.status, second.support], ['Demonstrated', 'yes'])
++      eq(
++        reading.limits.some((l) => l.includes('1 reading not backed')),
++        true,
++      )
++    },
++  )
++
++  await step(
++    'a reading only partly backed is left as it is',
++    async () => {
++      const { reading } = await run({
++        verdicts: [
++          { skill: names[0], support: 'partly', reason: 'One vague sentence.' },
++        ],
++      })
++      const [first] = reading.skills
++      // measured: "partly" is said as often of right readings as of wrong ones
++      eq([first.status, first.confidence, first.support], [
++        'Demonstrated',
++        'high',
++        'partly',
++      ])
++      eq(first.capped, undefined)
++      eq(reading.limits.some((l) => l.includes('second check found')), false)
++    },
++  )
++
++  await step(
++    'when the check cannot run, the report says so and stays',
++    async () => {
++      const { reading, status } = await run(() => undefined)
++      eq(status, 'ready')
++      eq(reading.skills[0].status, 'Demonstrated')
++      eq(reading.skills[0].support, undefined)
++      eq(
++        reading.limits.some((l) =>
++          l.includes('second check of the evidence could not run')
++        ),
++        true,
++      )
++    },
++  )
  })
 diff --git a/api/report.ts b/api/report.ts
-index 75d54dc..254f9de 100644
+index 75d54dc..ffa1494 100644
 --- a/api/report.ts
 +++ b/api/report.ts
-@@ -1,1032 +1,524 @@
+@@ -1,1032 +1,690 @@
 -import { contentLang, tc, withContentLang } from '/api/lib/content-lang.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import { companyOfAssessment } from '/api/schema.ts'
@@ -7281,6 +7401,10 @@ index 75d54dc..254f9de 100644
 +  reportPrompt,
 +  reportSchema,
 +  type Subject,
++  SUPPORT_CHECKER,
++  type SupportItem,
++  supportPrompt,
++  supportSchema,
 +} from '/api/prompts.ts'
 +import {
 +  Assessment,
@@ -7425,38 +7549,6 @@ index 75d54dc..254f9de 100644
 -    passages.push({ text: answer.slice(start, end), fromAssistant: true })
 -    cursor = end
 -    i = j + 1
--  }
--  if (cursor < answer.length) passages.push({ text: answer.slice(cursor) })
--  const percent = words.length
--    ? Math.round(copied.filter(Boolean).length * 100 / words.length)
--    : 0
--  return { passages: passages.length ? passages : [{ text: answer }], percent }
--}
--
--/* ---------- integrity (facts) ---------- */
--
--const integrityEvents = Entry.sql<'data', { candidateId: number }>`
--  SELECT data FROM ${Entry.view.CANDIDATE_INTEGRITY_EVENT}
--  WHERE candidateId = :candidateId
--  ORDER BY createdAt
--`.all
--
--const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`
--
--// the texts of a report follow the language of its assessment (tc)
--
--export const integrityLines = (
--  events: Pick<IntegrityEvent, 'type' | 'question' | 'durationSec'>[],
--  assistantUsed: number,
--  freeCount: number,
--): Report['integrity'] => {
--  const of = (type: IntegrityEvent['type']) =>
--    events.filter((e) => e.type === type)
--  const questions = (list: typeof events) => {
--    const numbers = [...new Set(list.map((e) => e.question))]
--    return `${numbers.length > 1 ? 'questions' : 'question'} ${
--      numbers.join(', ')
--    }`
 +  })
 +  return {
 +    tests,
@@ -7478,6 +7570,46 @@ index 75d54dc..254f9de 100644
 +      (n, l) => n + l.text.trim().split(/\s+/).filter(Boolean).length,
 +      0,
 +    ),
+   }
+-  if (cursor < answer.length) passages.push({ text: answer.slice(cursor) })
+-  const percent = words.length
+-    ? Math.round(copied.filter(Boolean).length * 100 / words.length)
+-    : 0
+-  return { passages: passages.length ? passages : [{ text: answer }], percent }
+ }
+ 
+-/* ---------- integrity (facts) ---------- */
+-
+-const integrityEvents = Entry.sql<'data', { candidateId: number }>`
+-  SELECT data FROM ${Entry.view.CANDIDATE_INTEGRITY_EVENT}
+-  WHERE candidateId = :candidateId
+-  ORDER BY createdAt
+-`.all
+-
+-const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`
++/* ---------- the reading of the model, checked ---------- */
+ 
+-// the texts of a report follow the language of its assessment (tc)
+-
+-export const integrityLines = (
+-  events: Pick<IntegrityEvent, 'type' | 'question' | 'durationSec'>[],
+-  assistantUsed: number,
+-  freeCount: number,
+-): Report['integrity'] => {
+-  const of = (type: IntegrityEvent['type']) =>
+-    events.filter((e) => e.type === type)
+-  const questions = (list: typeof events) => {
+-    const numbers = [...new Set(list.map((e) => e.question))]
+-    return `${numbers.length > 1 ? 'questions' : 'question'} ${
+-      numbers.join(', ')
+-    }`
++const parseCode = (v: unknown, path: string): CodeRef => {
++  const o = obj(v, path)
++  return {
++    file: str(o.file, `${path}.file`, 200),
++    from: Math.round(Number(o.from)),
++    to: Math.round(Number(o.to)),
++    note: optStr(o.note, `${path}.note`, 300) ?? '',
    }
 -  const leaves = of('page-leave')
 -  const pastes = of('paste-blocked')
@@ -7536,14 +7668,11 @@ index 75d54dc..254f9de 100644
  }
  
 -/* ---------- traces (facts) ---------- */
-+/* ---------- the reading of the model, checked ---------- */
- 
+-
 -const traceRow = (step: string, traces: AiTrace[]): TraceRow | undefined => {
 -  if (!traces.length) return undefined
 -  const [first] = traces
-+const parseCode = (v: unknown, path: string): CodeRef => {
-+  const o = obj(v, path)
-   return {
+-  return {
 -    step,
 -    // a step may have fallen back to the other model
 -    model: [...new Set(traces.map((t) => t.model))].join(' + '),
@@ -7555,19 +7684,7 @@ index 75d54dc..254f9de 100644
 -      formatInt(traces.reduce((s, t) => s + t.tokensOut, 0))
 -    }`,
 -    failures: failureLines(traces),
-+    file: str(o.file, `${path}.file`, 200),
-+    from: Math.round(Number(o.from)),
-+    to: Math.round(Number(o.to)),
-+    note: optStr(o.note, `${path}.note`, 300) ?? '',
-   }
- }
- 
--/** "Nemotron 3 Super : service surchargé (503) · 0,4 s", in order */
--const failureLines = (traces: AiTrace[]) => {
--  const lines = traces.flatMap((t) => t.failures ?? []).map((f) =>
--    `${f.model} : ${f.reason} · ${formatLatency(f.ms)}`
--  )
--  return lines.length ? lines : undefined
+-  }
 +type RawSkill = {
 +  skill: string
 +  status: SkillStatus
@@ -7577,6 +7694,19 @@ index 75d54dc..254f9de 100644
 +  quotes: string[]
 +  code: CodeRef[]
 +  tests: string[]
+ }
+ 
+-/** "Nemotron 3 Super : service surchargé (503) · 0,4 s", in order */
+-const failureLines = (traces: AiTrace[]) => {
+-  const lines = traces.flatMap((t) => t.failures ?? []).map((f) =>
+-    `${f.model} : ${f.reason} · ${formatLatency(f.ms)}`
+-  )
+-  return lines.length ? lines : undefined
++type Raw = {
++  understanding: { summary: string; confidence: Confidence }
++  skills: RawSkill[]
++  followUp: string[]
++  limits: string[]
  }
  
 -const sumTraces = (traces: AiTrace[]): AiTrace[] =>
@@ -7590,14 +7720,60 @@ index 75d54dc..254f9de 100644
 -      failures: traces.flatMap((t) => t.failures ?? []),
 -    }]
 -    : []
--
++/** the shape of the answer, nothing more: the evidence is checked after */
++export const parseReading = (v: unknown): Raw => {
++  const o = obj(v, 'answer')
++  const understanding = obj(o.understanding, 'understanding')
++  const text = (x: unknown, path: string) => str(x, path, 400)
++  return {
++    understanding: {
++      summary: str(understanding.summary, 'understanding.summary', 1200),
++      confidence: oneOf(
++        understanding.confidence,
++        CONFIDENCE,
++        'understanding.confidence',
++      ),
++    },
++    skills: arr(o.skills, 'skills', (x, path) => {
++      const s = obj(x, path)
++      return {
++        skill: str(s.skill, `${path}.skill`, 120),
++        status: oneOf(s.status, STATUS, `${path}.status`),
++        confidence: oneOf(s.confidence, CONFIDENCE, `${path}.confidence`),
++        summary: optStr(s.summary, `${path}.summary`, 500) ?? '',
++        words: oneOf(s.words, WORDS, `${path}.words`),
++        quotes: arr(s.quotes ?? [], `${path}.quotes`, text, {
++          max: 4,
++          clip: true,
++        }),
++        code: arr(s.code ?? [], `${path}.code`, parseCode, {
++          max: 4,
++          clip: true,
++        }),
++        tests: arr(s.tests ?? [], `${path}.tests`, text, {
++          max: 6,
++          clip: true,
++        }),
++      }
++    }, { max: 20, clip: true }),
++    followUp: arr(o.followUp ?? [], 'followUp', text, { max: 4, clip: true }),
++    limits: arr(o.limits ?? [], 'limits', text, { max: 6, clip: true }),
++  }
++}
+ 
 -/* ---------- evaluation by the model ---------- */
--
++/** lower case, no accents, no punctuation, single spaces: how words are matched */
++const fold = (text: string) =>
++  text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
++    .replace(/[^a-z0-9]+/g, ' ').trim()
+ 
 -const STATUS = ['Démontré', 'Partiel', 'Non démontré', 'Non évalué'] as const
 -const CONFIDENCE = ['faible', 'moyenne', 'élevée'] as const
 -const SIGNAL = ['present', 'partial', 'absent'] as const
 -export const UNDERSTANDING = 'Compréhension de son propre code'
--
++const lowerConfidence = (c: Confidence, max: Confidence): Confidence =>
++  CONFIDENCE.indexOf(c) > CONFIDENCE.indexOf(max) ? max : c
+ 
 -type Claim = {
 -  claim: string
 -  verdict: 'exact' | 'faux'
@@ -7611,7 +7787,21 @@ index 75d54dc..254f9de 100644
 -  testId?: string
 -  proof?: Proof
 -}
--
++/**
++ * Keeps what can be found, drops the rest and counts it. The model reads
++ * exactly the skills of the assessment, in their order.
++ */
++export const verifyReading = (
++  raw: Raw,
++  c: CandidateRow,
++): Omit<Reading, 'trace'> =>
++  checkReading(raw, {
++    spec: specOf(c),
++    files: json<CandidateFiles>(c.candidateFiles) ?? {},
++    transcript: transcriptOf(c),
++    facts: reportFacts(c),
++  })
+ 
 -type Evaluation = {
 -  free: {
 -    n: number
@@ -7630,24 +7820,38 @@ index 75d54dc..254f9de 100644
 -  }[]
 -  interviewPoints: string[]
 -  debrief: Report['debrief']
-+type Raw = {
-+  understanding: { summary: string; confidence: Confidence }
-+  skills: RawSkill[]
-+  followUp: string[]
-+  limits: string[]
++/** what a reading is checked against: everything that exists */
++export type Evidence = {
++  spec: AssessmentSpec
++  files: CandidateFiles
++  transcript: InterviewLine[]
++  facts: Pick<ReportFacts, 'tests' | 'interviewCompleted' | 'candidateTurns'>
  }
  
 -const parseEvaluation = (v: unknown): Evaluation => {
 -  const o = obj(v, 'réponse')
-+/** the shape of the answer, nothing more: the evidence is checked after */
-+export const parseReading = (v: unknown): Raw => {
-+  const o = obj(v, 'answer')
-+  const understanding = obj(o.understanding, 'understanding')
-+  const text = (x: unknown, path: string) => str(x, path, 400)
-   return {
+-  return {
 -    free: arr(o.free, 'free', (x, p) => {
 -      const f = obj(x, p)
--      return {
++export const checkReading = (
++  raw: Raw,
++  { spec, files, transcript, facts }: Evidence,
++): Omit<Reading, 'trace'> => {
++  const said = fold(
++    transcript.filter((l) => l.who === 'candidate').map((l) => l.text)
++      .join(' . '),
++  )
++  const known = new Set(facts.tests.map((t) => t.id))
++  let discarded = 0
++
++  const skills: SkillReading[] = spec.skills.map((wanted) => {
++    const given = raw.skills.find((s) => fold(s.skill) === fold(wanted.name))
++    const base = {
++      skill: wanted.name,
++      methods: wanted.methods,
++    }
++    if (!given) {
+       return {
 -        n: num(f.n, `${p}.n`),
 -        ownContribution: validItems(
 -          f.ownContribution,
@@ -7681,7 +7885,15 @@ index 75d54dc..254f9de 100644
 -            proof: parseProof(c.proof, `${cp}.proof`),
 -          }
 -        }, 6),
--      }
++        ...base,
++        status: 'Not assessed' as const,
++        confidence: 'low' as const,
++        summary: 'The model did not read this skill.',
++        words: 'none' as const,
++        quotes: [],
++        code: [],
++        tests: [],
+       }
 -    }, { max: 4 }),
 -    qcmNotes: arr(o.qcmNotes ?? [], 'qcmNotes', (x, p) => {
 -      const q = obj(x, p)
@@ -7689,7 +7901,10 @@ index 75d54dc..254f9de 100644
 -    }, { max: 6 }),
 -    dimensions: arr(o.dimensions, 'dimensions', (x, p) => {
 -      const d = obj(x, p)
--      return {
++    }
++    // "Not assessed" says there is nothing to read: it shows no evidence
++    if (given.status === 'Not assessed') {
+       return {
 -        name: str(d.name, `${p}.name`, 80),
 -        status: oneOfLoose(d.status, STATUS, `${p}.status`),
 -        confidence: oneOfLoose(
@@ -7706,245 +7921,6 @@ index 75d54dc..254f9de 100644
 -        ),
 -        proofs: num(d.proofs, `${p}.proofs`),
 -        note: optStr(d.note, `${p}.note`, 120),
--      }
--    }, { min: 1, max: 8 }),
--    interviewPoints: arr(o.interviewPoints, 'interviewPoints', strItem, {
--      min: 1,
--      max: 4,
--    }),
--    debrief: arr(o.debrief, 'debrief', (x, p) => {
--      const d = obj(x, p)
-+    understanding: {
-+      summary: str(understanding.summary, 'understanding.summary', 1200),
-+      confidence: oneOf(
-+        understanding.confidence,
-+        CONFIDENCE,
-+        'understanding.confidence',
-+      ),
-+    },
-+    skills: arr(o.skills, 'skills', (x, path) => {
-+      const s = obj(x, path)
-       return {
--        question: str(d.question, `${p}.question`, 300),
--        goodAnswer: str(d.goodAnswer, `${p}.goodAnswer`, 400),
-+        skill: str(s.skill, `${path}.skill`, 120),
-+        status: oneOf(s.status, STATUS, `${path}.status`),
-+        confidence: oneOf(s.confidence, CONFIDENCE, `${path}.confidence`),
-+        summary: optStr(s.summary, `${path}.summary`, 500) ?? '',
-+        words: oneOf(s.words, WORDS, `${path}.words`),
-+        quotes: arr(s.quotes ?? [], `${path}.quotes`, text, {
-+          max: 4,
-+          clip: true,
-+        }),
-+        code: arr(s.code ?? [], `${path}.code`, parseCode, {
-+          max: 4,
-+          clip: true,
-+        }),
-+        tests: arr(s.tests ?? [], `${path}.tests`, text, {
-+          max: 6,
-+          clip: true,
-+        }),
-       }
--    }, { min: 1, max: 4 }),
-+    }, { max: 20, clip: true }),
-+    followUp: arr(o.followUp ?? [], 'followUp', text, { max: 4, clip: true }),
-+    limits: arr(o.limits ?? [], 'limits', text, { max: 6, clip: true }),
-   }
- }
- 
--// the words of the brief's answers that carry its contradictions
--const demoAnswerQuotes: Record<'fr' | 'en', Record<number, string>> = {
--  fr: { 7: 'Je valide déjà que l’URL est en http ou https dans isValidUrl' },
--  en: { 7: 'I already check that the URL is http or https in isValidUrl' },
--}
--
--/** the evaluation of the demo, in the language of the assessment */
--const demoEvaluation = (): Evaluation => {
--  const demoReport = demoOf(contentLang()).report
--  return {
--    free: demoReport.free.map((f) => ({
--      n: f.n,
--      ownContribution: f.ownContribution,
--      signals: f.signals,
--      claims: f.contradiction
--        ? [{
--          claim: f.contradiction.text,
--          verdict: 'faux' as const,
--          why: f.contradiction.text.replace(/^Contradiction ?: /, ''),
--          answerQuote: demoAnswerQuotes[contentLang()][f.n],
--          file: f.contradiction.citation.file,
--          from: f.contradiction.citation.lines[0],
--          to: f.contradiction.citation.lines[1],
--          testId: f.contradiction.test?.id,
--        }]
--        : [],
--    })),
--    qcmNotes: demoReport.qcm.filter((q) => q.aiNote).map((q) => ({
--      n: q.n,
--      note: q.aiNote!,
--    })),
--    dimensions: demoReport.dimensions,
--    interviewPoints: demoReport.interviewPoints,
--    debrief: demoReport.debrief,
--  }
--}
--
--const numbered = (files: CandidateFiles) =>
--  Object.entries(files).filter(([p]) => p.endsWith('.ts')).map(([p, code]) =>
--    `=== ${p}\n${
--      code.split('\n').map((l, i) => `${String(i + 1).padStart(3)} | ${l}`)
--        .join('\n')
--    }`
--  ).join('\n\n')
--
--const EVALUATION_SYSTEM =
--  'Tu aides un recruteur à lire les réponses d’un candidat sur son propre code. Tu sépares les faits de tes interprétations, tu ne donnes aucune note globale, tu ne recommandes aucune décision et tu ne devines pas si une réponse a été écrite par une IA. Tu parles du candidat à la troisième personne et tu le vouvoies dans les questions de débrief. Réponds uniquement en JSON, en français.'
-+/** lower case, no accents, no punctuation, single spaces: how words are matched */
-+const fold = (text: string) =>
-+  text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
-+    .replace(/[^a-z0-9]+/g, ' ').trim()
- 
--const choiceLabel = (q: QcmQuestion, choice?: number | 'idk') =>
--  choice === 'idk'
--    ? 'Je ne sais pas'
--    : choice === undefined
--    ? 'Pas de réponse'
--    : q.options[choice]?.label ?? 'Pas de réponse'
-+const lowerConfidence = (c: Confidence, max: Confidence): Confidence =>
-+  CONFIDENCE.indexOf(c) > CONFIDENCE.indexOf(max) ? max : c
- 
--/** "Conception d'API REST" is "Conception d’API REST" */
--const nameKey = (name: string) =>
--  name.normalize('NFD').replace(/\p{M}/gu, '').replace(/[’'`]/g, "'")
--    .replace(/\s+/g, ' ').trim().toLowerCase()
--const sameName = (a: string, b: string) => nameKey(a) === nameKey(b)
--
--const normalized = (text: string) =>
--  text.toLowerCase()
--    .replace(/[’‘`]/g, "'")
--    .replace(/[«»“”]/g, '"')
--    .replace(/\s+/g, ' ')
--    .trim()
--
--/**
-- * A contradiction is only attributed to words the candidate wrote: the
-- * quote must be found in the answer, long enough to carry a claim (LIVE-004).
-- */
--export const anchoredInAnswer = (answer: string, quote?: string) => {
--  const q = normalized(quote ?? '').replace(/^["'\s]+|["'\s.,;:!?…]+$/g, '')
--  return q.length >= 12 && normalized(answer).includes(q)
--}
--
--const contradictions = (free: FreeReview[]) => {
--  // an unconfirmed contradiction is shown, never counted
--  const n = free.filter((f) => f.contradiction && !f.contradiction.unconfirmed)
--    .length
--  return n > 1
--    ? `${n} contradictions`
--    : n
--    ? tc('une contradiction', 'one contradiction')
--    : ''
--}
--
--/** "5/6", or "4/5 (1 clé contestée, non comptée)" */
- /**
-- * The QCMs as the evaluator reads them: a disputed key decides nothing, for
-- * the evaluator too (LIVE-007); a prediction checked by running its
-- * requests is a fact
-+ * Keeps what can be found, drops the rest and counts it. The model reads
-+ * exactly the skills of the assessment, in their order.
-  */
--export const qcmForEvaluator = (qcm: QcmReview[]) =>
--  qcm.map(({ n, prompt, chosen, correct, isCorrect, check, requests }) => ({
--    n,
--    prompt,
--    chosen,
--    ...(check === 'disputed' ? { cleContestee: true } : { correct, isCorrect }),
--    ...(check === 'execution' && {
--      faitVerifieParExecution: `pour ${
--        requests?.map((r) => r.slice(0, 2).join(' ')).join(' puis ')
--      }, le code renvoie réellement « ${correct} »`,
--    }),
--  }))
-+export const verifyReading = (
-+  raw: Raw,
-+  c: CandidateRow,
-+): Omit<Reading, 'trace'> =>
-+  checkReading(raw, {
-+    spec: specOf(c),
-+    files: json<CandidateFiles>(c.candidateFiles) ?? {},
-+    transcript: transcriptOf(c),
-+    facts: reportFacts(c),
-+  })
- 
--export const qcmScore = (qcm: QcmReview[]) => {
--  const counted = qcm.filter((q) => q.check !== 'disputed')
--  const disputed = qcm.length - counted.length
--  return `${counted.filter((q) => q.isCorrect).length}/${counted.length}${
--    disputed
--      ? ` (${disputed} ${
--        disputed > 1
--          ? tc('clés contestées, non comptées', 'disputed keys, not counted')
--          : tc('clé contestée, non comptée', 'disputed key, not counted')
--      })`
--      : ''
--  }`
-+/** what a reading is checked against: everything that exists */
-+export type Evidence = {
-+  spec: AssessmentSpec
-+  files: CandidateFiles
-+  transcript: InterviewLine[]
-+  facts: Pick<ReportFacts, 'tests' | 'interviewCompleted' | 'candidateTurns'>
- }
- 
--/** measured facts, so the model never counts nor invents a number */
--const factsText = (
--  spec: AssessmentSpec,
--  results: CandidateResults | undefined,
--  qcm: QcmReview[],
--) => {
--  if (!results) return 'Aucun résultat de test.'
--  const count = (list: { passed: boolean }[]) =>
--    `${list.filter((r) => r.passed).length}/${list.length}`
--  const failed = [...results.publicTests, ...results.hiddenTests]
--    .filter((r) => !r.passed)
--    .map((r) => {
--      const t = spec.tests.find((x) => x.id === r.id)
--      return `${r.id} « ${t?.title} » (attendu ${
--        r.expected ?? t?.expected
--      }, reçu ${r.received ?? '?'})`
-+export const checkReading = (
-+  raw: Raw,
-+  { spec, files, transcript, facts }: Evidence,
-+): Omit<Reading, 'trace'> => {
-+  const said = fold(
-+    transcript.filter((l) => l.who === 'candidate').map((l) => l.text)
-+      .join(' . '),
-+  )
-+  const known = new Set(facts.tests.map((t) => t.id))
-+  let discarded = 0
-+
-+  const skills: SkillReading[] = spec.skills.map((wanted) => {
-+    const given = raw.skills.find((s) => fold(s.skill) === fold(wanted.name))
-+    const base = {
-+      skill: wanted.name,
-+      methods: wanted.methods,
-+    }
-+    if (!given) {
-+      return {
-+        ...base,
-+        status: 'Not assessed' as const,
-+        confidence: 'low' as const,
-+        summary: 'The model did not read this skill.',
-+        words: 'none' as const,
-+        quotes: [],
-+        code: [],
-+        tests: [],
-+      }
-+    }
-+    // "Not assessed" says there is nothing to read: it shows no evidence
-+    if (given.status === 'Not assessed') {
-+      return {
 +        ...base,
 +        status: 'Not assessed' as const,
 +        confidence: 'low' as const,
@@ -7954,7 +7930,14 @@ index 75d54dc..254f9de 100644
 +        quotes: [],
 +        code: [],
 +        tests: [],
-+      }
+       }
+-    }, { min: 1, max: 8 }),
+-    interviewPoints: arr(o.interviewPoints, 'interviewPoints', strItem, {
+-      min: 1,
+-      max: 4,
+-    }),
+-    debrief: arr(o.debrief, 'debrief', (x, p) => {
+-      const d = obj(x, p)
 +    }
 +    const quotes = given.quotes.filter((q) => {
 +      const words = fold(q)
@@ -7962,76 +7945,13 @@ index 75d54dc..254f9de 100644
 +      const found = words.split(' ').length >= 3 && said.includes(words)
 +      if (!found) discarded++
 +      return found
-     })
--  return [
--    `- Tests d’évaluation publics réussis : ${
--      count(results.publicTests)
--    } ; cachés : ${count(results.hiddenTests)}`,
--    failed.length
--      ? `- Tests échoués : ${failed.join(' ; ')}`
--      : '- Aucun test d’évaluation échoué',
--    `- Tests écrits par le candidat : ${results.ownTests.passed}/${results.ownTests.total} réussis, ${results.ownTests.runs} exécutions pendant l’épreuve`,
--    `- Erreurs de type à la soumission : ${results.typeErrors}`,
--    `- QCM justes : ${qcmScore(qcm)}`,
--  ].join('\n')
--}
--
--/**
-- * Double key of the contradictions (like the QCMs): another model reads the
-- * code and the claim; a contradiction it does not confirm is not shown. If
-- * that check fails, the first reading stands.
-- */
--export const confirmContradictions = async (
--  files: CandidateFiles,
--  claims: {
--    id: string
--    answer: string
--    quote: string
--    claim: string
--    why: string
--  }[],
--  /** label of the model that found them: the second key is another one */
--  evaluator?: string,
--) => {
--  if (!claims.length) {
--    return { confirmed: new Set<string>(), unavailable: undefined }
--  }
--  try {
--    const { data, trace } = await ask({
--      task: 'contradiction-check',
--      // a second key: another model than the evaluator, even as fallback
--      tier: 'super',
--      fallback: 'nano',
--      avoid: evaluator,
--      patient: true,
--      timeoutMs: 120_000,
--      // demo and replay without key: the contradictions of the brief stand
--      demo: () => claims.map((c) => ({ id: c.id, confirmed: true })),
--      system:
--        'Tu vérifies, en relisant le code, si une affirmation d’un candidat sur son propre code est fausse. Réponds uniquement en JSON, en français.',
--      prompt: `Code du candidat (numéros de ligne à gauche) :
--${numbered(files)}
--
--Affirmations jugées fausses par un premier relecteur : ${JSON.stringify(claims)}
--
--Pour chacune, vérifie d’abord l’attribution : "quote" est l’extrait de la réponse ("answer") qui porterait l’affirmation ; si l’extrait, lu dans la réponse avec sa portée et ses négations, ne dit pas ce que l’affirmation lui prête (ou dit l’inverse), "confirmed": false. Sinon, "confirmed": true seulement si le fond de l’affirmation est faux (ce que fait ou renvoie le code) ; false si elle est exacte sur le fond, même mal formulée ou imprécise. "reason" : une phrase.
--JSON attendu : {"verdicts":[{"id":"8-0","confirmed":true,"reason":"…"}]}`,
--      parse: (v) =>
--        arr(obj(v, 'réponse').verdicts, 'verdicts', (x, p) => {
--          const o = obj(x, p)
--          return {
--            id: str(o.id, `${p}.id`, 20),
--            confirmed: bool(o.confirmed, `${p}.confirmed`),
--          }
--        }),
++    })
 +    const code = given.code.filter((r) => {
 +      const lines = files[r.file]?.split('\n').length
 +      const found = !!lines && r.from >= 1 && r.to >= r.from && r.to <= lines
 +      if (!found) discarded++
 +      return found
-     })
--    for (const v of data.filter((v) => !v.confirmed)) {
--      log.info('contradiction-not-confirmed', { id: v.id })
++    })
 +    const tests = [...new Set(given.tests)].filter((id) => {
 +      if (!known.has(id)) discarded++
 +      return known.has(id)
@@ -8039,7 +7959,9 @@ index 75d54dc..254f9de 100644
 +    const kinds = [quotes, code, tests].filter((e) => e.length).length
 +    // no evidence left, no interpretation
 +    if (!kinds) {
-+      return {
+       return {
+-        question: str(d.question, `${p}.question`, 300),
+-        goodAnswer: str(d.goodAnswer, `${p}.goodAnswer`, 400),
 +        ...base,
 +        status: 'Not assessed' as const,
 +        confidence: 'low' as const,
@@ -8048,11 +7970,17 @@ index 75d54dc..254f9de 100644
 +        quotes,
 +        code,
 +        tests,
-+      }
-     }
--    return {
--      confirmed: new Set(data.filter((v) => v.confirmed).map((v) => v.id)),
--      trace,
+       }
+-    }, { min: 1, max: 4 }),
+-  }
+-}
+-
+-// the words of the brief's answers that carry its contradictions
+-const demoAnswerQuotes: Record<'fr' | 'en', Record<number, string>> = {
+-  fr: { 7: 'Je valide déjà que l’URL est en http ou https dans isValidUrl' },
+-  en: { 7: 'I already check that the URL is http or https in isValidUrl' },
+-}
++    }
 +    let confidence = given.confidence
 +    // two kinds of evidence for a "high"; the interview alone is never above "medium"
 +    if (kinds < 2) confidence = lowerConfidence(confidence, 'medium')
@@ -8079,16 +8007,8 @@ index 75d54dc..254f9de 100644
 +          confidence = lowerConfidence(confidence, 'medium')
 +        }
 +      }
-     }
--  } catch (err) {
--    // unavailable is not confirmed: the claims are shown as unconfirmed,
--    // with the reasons, and never counted (AUD-004)
--    log.warn('contradiction-check-failed', { message: String(err) })
-     return {
--      confirmed: new Set<string>(),
--      unavailable: err instanceof AiError && err.failures.length
--        ? err.failures
--        : [{ model: 'Contre-vérification', reason: aiErrorText(err), ms: 0 }],
++    }
++    return {
 +      ...base,
 +      status,
 +      confidence,
@@ -8098,9 +8018,12 @@ index 75d54dc..254f9de 100644
 +      quotes,
 +      code,
 +      tests,
-     }
++    }
 +  })
-+
+ 
+-/** the evaluation of the demo, in the language of the assessment */
+-const demoEvaluation = (): Evaluation => {
+-  const demoReport = demoOf(contentLang()).report
 +  const limits = [...raw.limits]
 +  if (!facts.interviewCompleted) {
 +    limits.unshift('The candidate left before Oracle closed the interview.')
@@ -8117,7 +8040,31 @@ index 75d54dc..254f9de 100644
 +      } removed.`,
 +    )
 +  }
-+  return {
+   return {
+-    free: demoReport.free.map((f) => ({
+-      n: f.n,
+-      ownContribution: f.ownContribution,
+-      signals: f.signals,
+-      claims: f.contradiction
+-        ? [{
+-          claim: f.contradiction.text,
+-          verdict: 'faux' as const,
+-          why: f.contradiction.text.replace(/^Contradiction ?: /, ''),
+-          answerQuote: demoAnswerQuotes[contentLang()][f.n],
+-          file: f.contradiction.citation.file,
+-          from: f.contradiction.citation.lines[0],
+-          to: f.contradiction.citation.lines[1],
+-          testId: f.contradiction.test?.id,
+-        }]
+-        : [],
+-    })),
+-    qcmNotes: demoReport.qcm.filter((q) => q.aiNote).map((q) => ({
+-      n: q.n,
+-      note: q.aiNote!,
+-    })),
+-    dimensions: demoReport.dimensions,
+-    interviewPoints: demoReport.interviewPoints,
+-    debrief: demoReport.debrief,
 +    understanding: {
 +      summary: raw.understanding.summary,
 +      // a few answers cannot support a firm reading
@@ -8129,6 +8076,330 @@ index 75d54dc..254f9de 100644
 +    followUp: raw.followUp,
 +    limits,
 +    discarded,
+   }
+ }
+ 
+-const numbered = (files: CandidateFiles) =>
+-  Object.entries(files).filter(([p]) => p.endsWith('.ts')).map(([p, code]) =>
+-    `=== ${p}\n${
+-      code.split('\n').map((l, i) => `${String(i + 1).padStart(3)} | ${l}`)
+-        .join('\n')
+-    }`
+-  ).join('\n\n')
+-
+-const EVALUATION_SYSTEM =
+-  'Tu aides un recruteur à lire les réponses d’un candidat sur son propre code. Tu sépares les faits de tes interprétations, tu ne donnes aucune note globale, tu ne recommandes aucune décision et tu ne devines pas si une réponse a été écrite par une IA. Tu parles du candidat à la troisième personne et tu le vouvoies dans les questions de débrief. Réponds uniquement en JSON, en français.'
+-
+-const choiceLabel = (q: QcmQuestion, choice?: number | 'idk') =>
+-  choice === 'idk'
+-    ? 'Je ne sais pas'
+-    : choice === undefined
+-    ? 'Pas de réponse'
+-    : q.options[choice]?.label ?? 'Pas de réponse'
+-
+-/** "Conception d'API REST" is "Conception d’API REST" */
+-const nameKey = (name: string) =>
+-  name.normalize('NFD').replace(/\p{M}/gu, '').replace(/[’'`]/g, "'")
+-    .replace(/\s+/g, ' ').trim().toLowerCase()
+-const sameName = (a: string, b: string) => nameKey(a) === nameKey(b)
+-
+-const normalized = (text: string) =>
+-  text.toLowerCase()
+-    .replace(/[’‘`]/g, "'")
+-    .replace(/[«»“”]/g, '"')
+-    .replace(/\s+/g, ' ')
+-    .trim()
++/* ---------- the second check: does the evidence back the reading? ---------- */
+ 
+-/**
+- * A contradiction is only attributed to words the candidate wrote: the
+- * quote must be found in the answer, long enough to carry a claim (LIVE-004).
+- */
+-export const anchoredInAnswer = (answer: string, quote?: string) => {
+-  const q = normalized(quote ?? '').replace(/^["'\s]+|["'\s.,;:!?…]+$/g, '')
+-  return q.length >= 12 && normalized(answer).includes(q)
+-}
++type Support = Record<
++  string,
++  { support: 'yes' | 'partly' | 'no'; reason: string }
++>
+ 
+-const contradictions = (free: FreeReview[]) => {
+-  // an unconfirmed contradiction is shown, never counted
+-  const n = free.filter((f) => f.contradiction && !f.contradiction.unconfirmed)
+-    .length
+-  return n > 1
+-    ? `${n} contradictions`
+-    : n
+-    ? tc('une contradiction', 'one contradiction')
+-    : ''
++/** the shape of the answer of the second check */
++export const parseSupport = (v: unknown): Support => {
++  const o = obj(v, 'answer')
++  const verdicts = arr(o.verdicts, 'verdicts', (x, path) => {
++    const s = obj(x, path)
++    return {
++      skill: str(s.skill, `${path}.skill`, 120),
++      support: oneOf(
++        s.support,
++        ['yes', 'partly', 'no'] as const,
++        `${path}.support`,
++      ),
++      reason: optStr(s.reason, `${path}.reason`, 300) ?? '',
++    }
++  }, { max: 20, clip: true })
++  return Object.fromEntries(
++    verdicts.map((
++      s,
++    ) => [fold(s.skill), { support: s.support, reason: s.reason }]),
++  )
+ }
+ 
+-/** "5/6", or "4/5 (1 clé contestée, non comptée)" */
+ /**
+- * The QCMs as the evaluator reads them: a disputed key decides nothing, for
+- * the evaluator too (LIVE-007); a prediction checked by running its
+- * requests is a fact
++ * What the second check reads for each skill: the reading and only its
++ * evidence. A quote comes with the question that was asked before it, so that
++ * a short answer is read in its context.
+  */
+-export const qcmForEvaluator = (qcm: QcmReview[]) =>
+-  qcm.map(({ n, prompt, chosen, correct, isCorrect, check, requests }) => ({
+-    n,
+-    prompt,
+-    chosen,
+-    ...(check === 'disputed' ? { cleContestee: true } : { correct, isCorrect }),
+-    ...(check === 'execution' && {
+-      faitVerifieParExecution: `pour ${
+-        requests?.map((r) => r.slice(0, 2).join(' ')).join(' puis ')
+-      }, le code renvoie réellement « ${correct} »`,
++export const supportItems = (
++  skills: SkillReading[],
++  { files, transcript, facts }: Pick<
++    Evidence,
++    'files' | 'transcript' | 'facts'
++  >,
++): SupportItem[] => {
++  const asked = (quote: string) => {
++    const words = fold(quote)
++    const at = transcript.findIndex((l) =>
++      l.who === 'candidate' && fold(l.text).includes(words)
++    )
++    return at > 0 && transcript[at - 1].who === 'ai'
++      ? transcript[at - 1].text
++      : undefined
++  }
++  const byId = new Map(facts.tests.map((t) => [t.id, t]))
++  return skills.filter((s) => s.status !== 'Not assessed').map((s) => ({
++    skill: s.skill,
++    status: s.status,
++    confidence: s.confidence,
++    summary: s.summary,
++    quotes: s.quotes.map((said) => ({ asked: asked(said), said })),
++    code: s.code.map((r) => ({
++      ...r,
++      lines: (files[r.file] ?? '').split('\n').slice(r.from - 1, r.to)
++        .slice(0, 30).map((l, i) => `${r.from + i}  ${l}`).join('\n'),
++    })),
++    tests: s.tests.map((id) => {
++      const t = byId.get(id)
++      return t
++        ? `${id} (${t.visibility}) ${t.title}: ${
++          t.passed
++            ? 'passed'
++            : `FAILED, expected ${t.expected ?? '?'}, received ${
++              t.received ?? '?'
++            }`
++        }`
++        : id
+     }),
+   }))
+-
+-export const qcmScore = (qcm: QcmReview[]) => {
+-  const counted = qcm.filter((q) => q.check !== 'disputed')
+-  const disputed = qcm.length - counted.length
+-  return `${counted.filter((q) => q.isCorrect).length}/${counted.length}${
+-    disputed
+-      ? ` (${disputed} ${
+-        disputed > 1
+-          ? tc('clés contestées, non comptées', 'disputed keys, not counted')
+-          : tc('clé contestée, non comptée', 'disputed key, not counted')
+-      })`
+-      : ''
+-  }`
+-}
+-
+-/** measured facts, so the model never counts nor invents a number */
+-const factsText = (
+-  spec: AssessmentSpec,
+-  results: CandidateResults | undefined,
+-  qcm: QcmReview[],
+-) => {
+-  if (!results) return 'Aucun résultat de test.'
+-  const count = (list: { passed: boolean }[]) =>
+-    `${list.filter((r) => r.passed).length}/${list.length}`
+-  const failed = [...results.publicTests, ...results.hiddenTests]
+-    .filter((r) => !r.passed)
+-    .map((r) => {
+-      const t = spec.tests.find((x) => x.id === r.id)
+-      return `${r.id} « ${t?.title} » (attendu ${
+-        r.expected ?? t?.expected
+-      }, reçu ${r.received ?? '?'})`
+-    })
+-  return [
+-    `- Tests d’évaluation publics réussis : ${
+-      count(results.publicTests)
+-    } ; cachés : ${count(results.hiddenTests)}`,
+-    failed.length
+-      ? `- Tests échoués : ${failed.join(' ; ')}`
+-      : '- Aucun test d’évaluation échoué',
+-    `- Tests écrits par le candidat : ${results.ownTests.passed}/${results.ownTests.total} réussis, ${results.ownTests.runs} exécutions pendant l’épreuve`,
+-    `- Erreurs de type à la soumission : ${results.typeErrors}`,
+-    `- QCM justes : ${qcmScore(qcm)}`,
+-  ].join('\n')
+ }
+ 
+ /**
+- * Double key of the contradictions (like the QCMs): another model reads the
+- * code and the claim; a contradiction it does not confirm is not shown. If
+- * that check fails, the first reading stands.
++ * A reading the evidence does not back ("no") is marked and lowered, never
++ * hidden: the person who reads sees the doubt and the evidence side by side.
++ * "Partly" is kept on the reading but changes nothing: measured on the
++ * fictional candidates, it is said as often of right readings (23 %) as of
++ * falsified ones (about 45 %), mostly because excerpts cannot prove an absence.
+  */
+-export const confirmContradictions = async (
+-  files: CandidateFiles,
+-  claims: {
+-    id: string
+-    answer: string
+-    quote: string
+-    claim: string
+-    why: string
+-  }[],
+-  /** label of the model that found them: the second key is another one */
+-  evaluator?: string,
+-) => {
+-  if (!claims.length) {
+-    return { confirmed: new Set<string>(), unavailable: undefined }
++export const applySupport = (
++  reading: Omit<Reading, 'trace'>,
++  verdicts: Support,
++): Omit<Reading, 'trace'> => {
++  let doubted = 0
++  const skills = reading.skills.map((s): SkillReading => {
++    const verdict = verdicts[fold(s.skill)]
++    if (!verdict || s.status === 'Not assessed') return s
++    if (verdict.support !== 'no') return { ...s, support: verdict.support }
++    doubted++
++    const why = verdict.reason ? ` (${verdict.reason.replace(/\.$/, '')})` : ''
++    const note =
++      `Second check: the evidence does not back this reading${why}. Read it yourself.`
++    return {
++      ...s,
++      support: 'no',
++      status: s.status === 'Demonstrated' ? 'Partial' : s.status,
++      confidence: 'low',
++      capped: s.capped ? `${s.capped} ${note}` : note,
++    }
++  })
++  return {
++    ...reading,
++    skills,
++    limits: doubted
++      ? [
++        ...reading.limits,
++        `A second check found ${doubted} reading${
++          doubted > 1 ? 's' : ''
++        } not backed by ${doubted > 1 ? 'their' : 'its'} evidence: ${
++          doubted > 1 ? 'they are' : 'it is'
++        } marked.`,
++      ]
++      : reading.limits,
+   }
+-  try {
+-    const { data, trace } = await ask({
+-      task: 'contradiction-check',
+-      // a second key: another model than the evaluator, even as fallback
+-      tier: 'super',
+-      fallback: 'nano',
+-      avoid: evaluator,
+-      patient: true,
+-      timeoutMs: 120_000,
+-      // demo and replay without key: the contradictions of the brief stand
+-      demo: () => claims.map((c) => ({ id: c.id, confirmed: true })),
+-      system:
+-        'Tu vérifies, en relisant le code, si une affirmation d’un candidat sur son propre code est fausse. Réponds uniquement en JSON, en français.',
+-      prompt: `Code du candidat (numéros de ligne à gauche) :
+-${numbered(files)}
++}
+ 
+-Affirmations jugées fausses par un premier relecteur : ${JSON.stringify(claims)}
++/** the model reads each reading against its evidence */
++export const askSupport = (items: SupportItem[]) =>
++  ask({
++    task: 'report-support',
++    system: SUPPORT_CHECKER,
++    prompt: supportPrompt(items),
++    schema: supportSchema,
++    parse: parseSupport,
++    // a recorded run has nothing to doubt: the readings stay as they are
++    demo: (): Support => ({}),
++    effort: 'medium',
++    maxTokens: 10_000,
++    timeoutMs: 90_000,
++  })
+ 
+-Pour chacune, vérifie d’abord l’attribution : "quote" est l’extrait de la réponse ("answer") qui porterait l’affirmation ; si l’extrait, lu dans la réponse avec sa portée et ses négations, ne dit pas ce que l’affirmation lui prête (ou dit l’inverse), "confirmed": false. Sinon, "confirmed": true seulement si le fond de l’affirmation est faux (ce que fait ou renvoie le code) ; false si elle est exacte sur le fond, même mal formulée ou imprécise. "reason" : une phrase.
+-JSON attendu : {"verdicts":[{"id":"8-0","confirmed":true,"reason":"…"}]}`,
+-      parse: (v) =>
+-        arr(obj(v, 'réponse').verdicts, 'verdicts', (x, p) => {
+-          const o = obj(x, p)
+-          return {
+-            id: str(o.id, `${p}.id`, 20),
+-            confirmed: bool(o.confirmed, `${p}.confirmed`),
+-          }
+-        }),
+-    })
+-    for (const v of data.filter((v) => !v.confirmed)) {
+-      log.info('contradiction-not-confirmed', { id: v.id })
+-    }
+-    return {
+-      confirmed: new Set(data.filter((v) => v.confirmed).map((v) => v.id)),
+-      trace,
+-    }
++/** a failure is said, never thrown */
++const checkSupport = async (
++  reading: Omit<Reading, 'trace'>,
++  c: CandidateRow,
++): Promise<Omit<Reading, 'trace'>> => {
++  const items = supportItems(reading.skills, {
++    files: json<CandidateFiles>(c.candidateFiles) ?? {},
++    transcript: transcriptOf(c),
++    facts: reportFacts(c),
++  })
++  if (!items.length) return reading
++  try {
++    const { data } = await askSupport(items)
++    return applySupport(reading, data)
+   } catch (err) {
+-    // unavailable is not confirmed: the claims are shown as unconfirmed,
+-    // with the reasons, and never counted (AUD-004)
+-    log.warn('contradiction-check-failed', { message: String(err) })
++    log.warn('report-support-failed', { message: String(err) })
+     return {
+-      confirmed: new Set<string>(),
+-      unavailable: err instanceof AiError && err.failures.length
+-        ? err.failures
+-        : [{ model: 'Contre-vérification', reason: aiErrorText(err), ms: 0 }],
++      ...reading,
++      limits: [
++        ...reading.limits,
++        'The second check of the evidence could not run: the readings are checked for their quotes, lines and tests only.',
++      ],
+     }
    }
  }
  
@@ -8164,12 +8435,7 @@ index 75d54dc..254f9de 100644
  
 -const sectionOf = (methods: string[]) =>
 -  methods[0] === 'Tests' ? 's2' : methods[0] === 'Analyse du code' ? 's3' : 's4'
-+/** what the candidate wrote: an API or a program, and in which language */
-+const subjectOf = (c: CandidateRow): Subject => ({
-+  kind: specOf(c).kind === 'program' ? 'program' : 'api',
-+  language: c.candidateLanguage === 'python' ? 'python' : 'typescript',
-+})
- 
+-
 -/** R6 job, in the language of the assessment */
 -export const buildReport = (candidateId: number) =>
 -  withContentLang(
@@ -8177,7 +8443,12 @@ index 75d54dc..254f9de 100644
 -      .assessmentLanguage,
 -    () => writeReport(candidateId),
 -  )
--
++/** what the candidate wrote: an API or a program, and in which language */
++const subjectOf = (c: CandidateRow): Subject => ({
++  kind: specOf(c).kind === 'program' ? 'program' : 'api',
++  language: c.candidateLanguage === 'python' ? 'python' : 'typescript',
++})
+ 
 -const writeReport = async (candidateId: number) => {
 -  const c = Candidate.require(candidateId)
 -  const a = Assessment.require(c.assessmentId)
@@ -8563,7 +8834,7 @@ index 75d54dc..254f9de 100644
 -      candidateReport: { status: 'ready', report },
 +    store(candidateId, {
 +      status: 'ready',
-+      reading: { ...verifyReading(data, c), trace },
++      reading: { ...await checkSupport(verifyReading(data, c), c), trace },
 +      at: new Date().toISOString(),
      })
 +    announce(c)
@@ -10389,7 +10660,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..726f88b 100644
+index 5f704a5..6e4d9bb 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -10429,7 +10700,7 @@ index 5f704a5..726f88b 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +48,40 @@
+@@ -45,41 +48,41 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
@@ -10456,7 +10727,7 @@ index 5f704a5..726f88b 100644
 -    },
 -    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts & deno task test --watch api web fixtures --reporter=dot & deno task fmt --watch api web fixtures migrations *.ts & deno task lint --watch api web fixtures migrations *.ts",
 +    "lint": "deno lint",
-+    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-bench.ts task-llm-check.ts task-llm-report-eval.ts task-llm-generate.ts task-llm-interview.ts task-llm-interview-eval.ts task-llm-extraction-eval.ts api/py-runner.ts",
++    "check": "deno check web/app.tsx api/server.ts prod-server.ts task-llm-bench.ts task-llm-check.ts task-llm-report-eval.ts task-llm-generate.ts task-llm-interview.ts task-llm-interview-eval.ts task-llm-extraction-eval.ts task-tts-bench.ts api/py-runner.ts",
 +    "fmt": "deno fmt",
 +    "test": "deno test --env-file=.env-test -A --no-check",
 +    "dev": "deno serve --env-file=.env-dev --env-file=.env -A --unstable-ffi --watch --watch-exclude='{*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}' task-dev.ts",
@@ -10492,6 +10763,7 @@ index 5f704a5..726f88b 100644
 +    "all": "deno task check && deno task lint && deno task test",
 +    "llm:interview-eval": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-interview-eval.ts",
 +    "llm:extraction-eval": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-extraction-eval.ts",
++    "tts:bench": "deno run --env-file=.env-test -A --unstable-ffi task-tts-bench.ts",
 +    "llm:interview": "deno run --env-file=.env-test --env-file=.env -A --unstable-ffi task-llm-interview.ts"
    }
  }
@@ -17135,10 +17407,10 @@ index a38b80c..17958d8 100644
              )}
            </AnchorLink>
 diff --git a/web/pages/report/report-page.tsx b/web/pages/report/report-page.tsx
-index 6370463..93c6de9 100644
+index 6370463..ca45051 100644
 --- a/web/pages/report/report-page.tsx
 +++ b/web/pages/report/report-page.tsx
-@@ -1,222 +1,612 @@
+@@ -1,222 +1,621 @@
 +// The report of a candidate. Two kinds of content, never mixed: what the
 +// server measured (verified facts) and what the AI read (interpretations, each
 +// with the evidence that was checked and a confidence). There is no global
@@ -17388,6 +17660,15 @@ index 6370463..93c6de9 100644
 -        <span tw='text-content-tertiary'>
 -          {t('Pseudonyme :', 'Pseudonym:')} {view.pseudonym}
 +        {skill.capped}
++      </p>
++    )}
++    {skill.support === 'yes' && (
++      <p
++        data-test='skill-support'
++        tw='m-0 text-[12.5px] flex items-center gap-1.5 text-content-tertiary'
++      >
++        <Check tw='w-3 h-3' />
++        {'Second check: the evidence below backs this reading.'}
 +      </p>
 +    )}
 +    {skill.quotes.map((q) => (
@@ -19422,7 +19703,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..44d5063 100644
+index 83f3535..1695375 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,13 @@
@@ -19740,7 +20021,7 @@ index 83f3535..44d5063 100644
    assessment: {
      title: string
      company: string
-@@ -228,162 +286,109 @@ export type CandidateView = {
+@@ -228,162 +286,111 @@ export type CandidateView = {
      constraints: string[]
      publicTests: TestCase[]
      hiddenCount: number
@@ -19828,6 +20109,8 @@ index 83f3535..44d5063 100644
 +  words: Words
 +  /** why the status was lowered by the checks, when it was */
 +  capped?: string
++  /** a second check read the evidence against the reading: does it back it? */
++  support?: 'yes' | 'partly' | 'no'
 +  /** words of the candidate, found verbatim in the transcript */
 +  quotes: string[]
 +  /** lines of the code that exist */

@@ -103,13 +103,31 @@ export const submittedCandidate = async (member, assessment) => {
   return { cookies, candidateId: body.candidateId, invitation: body.invitation }
 }
 
-/** a mock of the model: `answer` is the content of its reply (undefined: down) */
-export const withModel = async (answer, fn) => {
+/**
+ * a mock of the model: `answer` is the content of its reply (undefined: down).
+ * The second check of the report is answered apart (`support`, by default it
+ * finds nothing to doubt) and counted in `calls.support`, not in `calls`.
+ */
+export const withModel = async (
+  answer,
+  fn,
+  { support = { verdicts: [] } } = {},
+) => {
   const calls = []
+  calls.support = []
   const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
     const body = await req.json()
-    calls.push(body)
-    const content = typeof answer === 'function' ? answer(calls.length) : answer
+    const second = body.messages?.some((m) =>
+      m.role === 'system' &&
+      m.content.includes('You check the work of a report writer')
+    )
+    if (second) calls.support.push(body)
+    else calls.push(body)
+    const content = second
+      ? typeof support === 'function' ? support(calls.support) : support
+      : typeof answer === 'function'
+      ? answer(calls.length)
+      : answer
     if (content === undefined) return new Response('down', { status: 503 })
     if (body.stream) {
       // a long step is streamed: one chunk with the answer, then the usage

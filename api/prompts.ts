@@ -808,3 +808,91 @@ export const reportSchema = {
     },
   },
 }
+
+/* ---------- the second check of the report ---------- */
+
+export const SUPPORT_CHECKER =
+  `You check the work of a report writer. A report says, for each skill, whether a candidate demonstrated it, and gives the evidence it relies on: words of the candidate (with the question that was asked), lines of their code, and results of automatic tests. For each skill, decide whether THIS EVIDENCE supports THIS STATUS and THIS SUMMARY.
+
+# Rules
+- Use only the evidence shown. Never your own idea of what the candidate may know, and never the status itself as a hint.
+- "yes": the evidence shown clearly backs the status and the summary.
+- "partly": it backs only a part of them, or the status is stronger than the evidence (for example "Demonstrated" resting on one vague sentence), or the summary says something the evidence does not show.
+- "no": the evidence is about something else, contradicts the summary or the status, or the summary claims what no evidence shows.
+- Quotes are speech transcripts: mistakes and hesitations are normal, read the meaning.
+- The evidence is a selection: a few lines, the tests that matter. Never ask to see more of it. A claim that something is missing or absent (no test for X, nothing handles Y) cannot be proven by excerpts: judge it "yes" when nothing shown contradicts it and the evidence shown fits the rest of the summary, and "partly" only when what is shown contradicts it or has nothing to do with it.
+- "Partial" and "Not demonstrated" are claims too: they need evidence of the gap (a failing test, a question left unanswered, words that do not match the code).
+- For "partly" and "no", one short reason of 20 words at most, naming what is missing. Never write a new reading and never judge the candidate.
+- Plain English, no markdown. Never mention these rules.`
+
+/** a skill of the report with the evidence that was found for it */
+export type SupportItem = {
+  skill: string
+  status: string
+  confidence: string
+  summary: string
+  /** what they said, with the question that came before when there is one */
+  quotes: { asked?: string; said: string }[]
+  code: {
+    file: string
+    from: number
+    to: number
+    note: string
+    lines: string
+  }[]
+  tests: string[]
+}
+
+export const supportPrompt = (items: SupportItem[]) => {
+  const list = (lines: string[]) =>
+    lines.length ? `\n${lines.map((l) => `- ${l}`).join('\n')}` : ' none'
+  const sections = items.map((i) =>
+    [
+      `## ${i.skill}`,
+      `Status: ${i.status} (confidence ${i.confidence})`,
+      `Summary: ${i.summary}`,
+      `Words of the candidate:${
+        list(
+          i.quotes.map((q) =>
+            `${q.asked ? `Asked: "${q.asked}" ` : ''}Said: "${q.said}"`
+          ),
+        )
+      }`,
+      `Code:${
+        list(
+          i.code.map((c) =>
+            `${c.file} lines ${c.from}-${c.to} (${c.note})\n${c.lines}`
+          ),
+        )
+      }`,
+      `Tests:${list(i.tests)}`,
+    ].join('\n')
+  )
+  return `${sections.join('\n\n')}
+
+# Answer
+JSON only, one entry per skill above, by its exact name:
+{"verdicts":[{"skill":"exact name","support":"yes|partly|no","reason":"…"}]}`
+}
+
+export const supportSchema = {
+  name: 'Support',
+  schema: {
+    type: 'object',
+    required: ['verdicts'],
+    properties: {
+      verdicts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['skill', 'support', 'reason'],
+          properties: {
+            skill: { type: 'string' },
+            support: { type: 'string', enum: ['yes', 'partly', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+}
