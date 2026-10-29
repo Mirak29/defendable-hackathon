@@ -1480,10 +1480,10 @@ index 46b79c9..04e8a48 100644
    }
    Assessment.update({
 diff --git a/api/candidate.test.js b/api/candidate.test.js
-index 2d5d576..f91830c 100644
+index 2d5d576..aad29ec 100644
 --- a/api/candidate.test.js
 +++ b/api/candidate.test.js
-@@ -1,60 +1,362 @@
+@@ -1,60 +1,385 @@
 +// The journey of a candidate on the real routes: invitation, start, editor
 +// (save, run, type check), submission, and the preparation of the interview
 +// (every test run on the frozen code, the facts the interviewer receives).
@@ -1671,9 +1671,21 @@ index 2d5d576..f91830c 100644
 +      })).status,
 +      401,
 +    )
-+  })
-+})
-+
+   })
+ })
+ 
+-test('assistant limit under parallel calls (AUD-007)', async (step) => {
+-  await step('4 calls at once: 3 replies, 1 refused', async () => {
+-    const row = atQuestion(1_000, 7) // Q7 is a free answer
+-    const calls = await Promise.allSettled(
+-      [1, 2, 3, 4].map((i) =>
+-        askAssistant(row(), { n: 7, message: `Question ${i}` })
+-      ),
+-    )
+-    eq(calls.filter((c) => c.status === 'fulfilled').length, ASSISTANT_LIMIT)
+-    eq(calls.filter((c) => c.status === 'rejected').length, 1)
+-    const stored = answersOf(row())[7].assistant
+-    eq(stored.filter((m) => m.role === 'user').length, ASSISTANT_LIMIT)
 +test('candidate: build, submit, and the facts of the interview', async (step) => {
 +  const member = await signup('Builds')
 +  const assessment = await approvedAssessment(member)
@@ -1814,21 +1826,32 @@ index 2d5d576..f91830c 100644
 +    }, cookies)
 +    eq(res.status, 200)
 +    eq((await res.json()).declaredTools, ['Claude'])
-   })
- })
- 
--test('assistant limit under parallel calls (AUD-007)', async (step) => {
--  await step('4 calls at once: 3 replies, 1 refused', async () => {
--    const row = atQuestion(1_000, 7) // Q7 is a free answer
--    const calls = await Promise.allSettled(
--      [1, 2, 3, 4].map((i) =>
--        askAssistant(row(), { n: 7, message: `Question ${i}` })
--      ),
--    )
--    eq(calls.filter((c) => c.status === 'fulfilled').length, ASSISTANT_LIMIT)
--    eq(calls.filter((c) => c.status === 'rejected').length, 1)
--    const stored = answersOf(row())[7].assistant
--    eq(stored.filter((m) => m.role === 'user').length, ASSISTANT_LIMIT)
++  })
++})
++
++test('candidate: the example test of the starter is not tests they wrote', async (step) => {
++  const member = await signup('Starter')
++  const assessment = await approvedAssessment(member)
++  const { body } = await invite(member, assessment)
++  const started = await call('POST', '/api/candidate/start', {
++    invitation: body.invitation,
++  })
++  const cookies = { dfd_candidate: cookieOf(started, 'dfd_candidate') }
++  const starter = (await (await call('GET', '/api/candidate/me', {}, cookies))
++    .json()).files
++
++  await step('a test file left as given counts for nothing', async () => {
++    const files = {
++      ...demoFiles,
++      'src/app_test.ts': starter['src/app_test.ts'],
++    }
++    await call('POST', '/api/candidate/files', { files }, cookies)
++    await call('POST', '/api/candidate/submit', { tools: ['Claude'] }, cookies)
++    await prepared(cookies)
++    eq(factsOf(Candidate.require(body.candidateId)).ownTests, 'none written')
++  })
++})
++
 +test('candidate: the conditions of the session are measured, not judged', async (step) => {
 +  const member = await signup('Conditions')
 +  const assessment = await approvedAssessment(member)
@@ -1894,7 +1917,7 @@ index 2d5d576..f91830c 100644
    })
  })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..8212cce 100644
+index 9a19ccb..e5c344e 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
 @@ -1,63 +1,70 @@
@@ -2348,7 +2371,7 @@ index 9a19ccb..8212cce 100644
  
  export const submitCode = (
    c: CandidateRow,
-@@ -376,261 +425,188 @@ export const submitCode = (
+@@ -376,261 +425,207 @@ export const submitCode = (
      auto?: boolean
    },
  ) => {
@@ -2389,7 +2412,8 @@ index 9a19ccb..8212cce 100644
  }
  
 -/* ---------- questions (C5, C6) ---------- */
--
++const TEST_FILE = /(^|\/)(test_[^/]+\.py|[^/]+_test\.(ts|py)|[^/]+\.test\.ts)$/
+ 
 -export const questionsOf = (c: CandidateRow) =>
 -  json<Question[]>(c.candidateQuestions) ?? []
 -
@@ -2401,8 +2425,21 @@ index 9a19ccb..8212cce 100644
 -  }
 -  const { example, ...rest } = q
 -  return { ...rest, assistantReply: '', example: demo ? example : '' }
--}
--
++/**
++ * Whether a test file is the candidate's: the example test of the starter, left
++ * as given, is not (it would be reported as tests they wrote).
++ */
++const wroteTests = (c: CandidateRow, files: CandidateFiles) => {
++  const a = assessmentOf(c)
++  const spec = specOf(a)
++  const starter = kindOf(spec) === 'api'
++    ? json<CandidateFiles>(a.assessmentStarterFiles) ?? starterFiles(spec)
++    : starterFiles(spec, languageOf(c))
++  return Object.entries(files).some(([path, text]) =>
++    TEST_FILE.test(path) && text !== starter[path]
++  )
+ }
+ 
 -export const startQuestions = (c: CandidateRow) => {
 -  if (!questionsOf(c).length) {
 -    throw new respond.ConflictError({
@@ -2436,7 +2473,9 @@ index 9a19ccb..8212cce 100644
 +      candidateResults: {
 +        tests,
 +        problems,
-+        own: { passed: own.passed, failed: own.failed },
++        own: wroteTests(c, files)
++          ? { passed: own.passed, failed: own.failed }
++          : { passed: 0, failed: 0 },
 +      } satisfies StoredResults,
      })
 +    progress.steps[1] = { state: 'done' }
@@ -14003,7 +14042,7 @@ index 71c7b4d..e3beb2c 100644
        </p>
      </Card>
 diff --git a/web/pages/candidate/consent-page.tsx b/web/pages/candidate/consent-page.tsx
-index a8ac71c..66d3291 100644
+index a8ac71c..dc55afa 100644
 --- a/web/pages/candidate/consent-page.tsx
 +++ b/web/pages/candidate/consent-page.tsx
 @@ -2,63 +2,60 @@ import { paths } from '/web/paths.ts'
@@ -14267,7 +14306,7 @@ index a8ac71c..66d3291 100644
              </p>
              <ul tw='list-none m-0 p-0 grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2 text-[13px] text-content-secondary'>
                {DATA().map(([Icon, text]) => (
-@@ -284,22 +250,35 @@ export const ConsentPage = () => {
+@@ -284,41 +250,47 @@ export const ConsentPage = () => {
                ))}
              </ul>
            </section>
@@ -14311,16 +14350,21 @@ index a8ac71c..66d3291 100644
              />
            </div>
          </div>
-@@ -310,15 +289,12 @@ export const ConsentPage = () => {
-             tw='text-[13px] inline-flex items-center gap-[5px]'
-           >
+         <footer tw='px-5 sm:px-7 py-4 border-t border-border-primary bg-surface-sunken flex items-center gap-4 flex-wrap'>
+-          <a
+-            href='#'
+-            onClick={(e) => e.preventDefault()}
+-            tw='text-[13px] inline-flex items-center gap-[5px]'
+-          >
++          <span tw='text-[13px] text-content-secondary inline-flex items-center gap-[5px]'>
              <Accessibility tw='w-3.5 h-3.5' />
 -            {t(
 -              'Besoin d’un aménagement (accessibilité) ?',
 -              'Need an adjustment (accessibility)?',
 -            )}
-+            {'Need an adjustment (accessibility)? Tell the recruiter.'}
-           </a>
+-          </a>
++            {'Need an adjustment (accessibility)? Contact the company that invited you before you start.'}
++          </span>
            <span tw='flex-1' />
            <span tw='text-[12.5px] text-content-tertiary inline-flex items-center gap-[5px]'>
              <Timer tw='w-[13px] h-[13px]' />
@@ -14329,7 +14373,7 @@ index a8ac71c..66d3291 100644
            </span>
            <button
              type='button'
-@@ -330,10 +306,7 @@ export const ConsentPage = () => {
+@@ -330,10 +302,7 @@ export const ConsentPage = () => {
              }}
            >
              <Play tw='w-[15px] h-[15px]' />
@@ -20463,7 +20507,7 @@ index 0385f27..d6e271e 100644
  export function Badge({ variant = 'neutral', tw, ...props }: BadgeProps) {
    return <span tw={['badge', variantStyles[variant], tw]} {...props} />
 diff --git a/web/ui/button.tsx b/web/ui/button.tsx
-index 890992a..10ebc79 100644
+index 890992a..1d9468a 100644
 --- a/web/ui/button.tsx
 +++ b/web/ui/button.tsx
 @@ -1,4 +1,4 @@
@@ -20472,15 +20516,18 @@ index 890992a..10ebc79 100644
  import { A, type LinkProps } from '/web/lib/router-signal.ts'
  /**
   * Props type for the Button component
-@@ -18,7 +18,7 @@ type ButtonProps =
+@@ -18,9 +18,9 @@ type ButtonProps =
  /**
   * A customizable button component with variant-based styling
   * @example
 - * <Button variant="primary">Générer l'épreuve</Button>
 + * <Button variant="primary">Generate the assessment</Button>
   * <Button variant="secondary" size="sm">Copier</Button>
-  * <Button variant="ghost" size="icon" aria-label="Fermer"><X /></Button>
+- * <Button variant="ghost" size="icon" aria-label="Fermer"><X /></Button>
++ * <Button variant="ghost" size="icon" aria-label="Close"><X /></Button>
   */
+ export function Button(
+   { tw, variant = 'primary', size = 'md', ...props }: ButtonProps,
 diff --git a/web/ui/code-view.tsx b/web/ui/code-view.tsx
 index a49321e..610fdba 100644
 --- a/web/ui/code-view.tsx
@@ -20604,7 +20651,7 @@ index d25266c..7fb69d5 100644
        </div>
      </main>
 diff --git a/web/ui/dialog.tsx b/web/ui/dialog.tsx
-index 72004a7..1deef58 100644
+index 72004a7..ce440e6 100644
 --- a/web/ui/dialog.tsx
 +++ b/web/ui/dialog.tsx
 @@ -1,6 +1,6 @@
@@ -20626,6 +20673,17 @@ index 72004a7..1deef58 100644
  export const Dialog = ({
    id,
    tw,
+@@ -68,8 +68,8 @@ export const CloseButton = (
+     variant='ghost'
+     size='icon'
+     params={closingParams(closeParams)}
+-    aria-label='Fermer'
+-    title='Fermer'
++    aria-label='Close'
++    title='Close'
+     data-test={dataTest}
+   >
+     <X tw='w-4 h-4' />
 diff --git a/web/ui/empty-state.tsx b/web/ui/empty-state.tsx
 index 8ec7898..fbb9c29 100644
 --- a/web/ui/empty-state.tsx
