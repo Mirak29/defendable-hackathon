@@ -11,6 +11,7 @@ import {
   type CodeProblem,
   findRefusedImport,
   inWorkspace,
+  nextSlot,
   type OwnTestsRun,
   PERMISSIONS,
   refused,
@@ -19,7 +20,6 @@ import {
   spawn,
   withImportCheck,
 } from '/api/sandbox.ts'
-import { makeQueue } from '/api/lib/make-queue.ts'
 import type {
   CandidateFiles,
   Language,
@@ -41,7 +41,6 @@ export const programCases = (tests: TestCase[]): ProgramCase[] =>
     expected: t.steps[0]?.response ?? '',
   }))
 
-const nextSlot = makeQueue(2)
 const SHOWN = 300
 
 /** what a person would compare: line ends and the spaces at the end of lines */

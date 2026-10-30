@@ -2,7 +2,9 @@
 // for real in the sandbox (so a failed hidden test and the type check are
 // facts, not an invention). A real interview builds the same facts from the
 // code a candidate submitted.
+import { APP_ENV, ENV } from '@01edu/api/env'
 import { checkTypes, runEvaluation } from '/api/sandbox.ts'
+import { candidateVoice } from '/api/interview.ts'
 import {
   checkProgram,
   programCases,
@@ -77,3 +79,25 @@ export const labFacts = () =>
       questions: voiceConfig.questions,
     }
   })()
+
+/**
+ * The lab is a tool of the team, not of the visitors: off in production unless
+ * VOICE_LAB=on, so the public demo account cannot open interviews on the
+ * project's model keys.
+ */
+export const labConfig = {
+  enabled: ENV('VOICE_LAB', APP_ENV === 'prod' ? 'off' : 'on') !== 'off',
+}
+
+/**
+ * Who /api/voice is for: a candidate whose interview is ready talks about
+ * their own code; otherwise the lab, when it is on (a member session is still
+ * required there). A leftover candidate cookie, from a link opened earlier in
+ * this browser, no longer locks the lab.
+ */
+export const voiceOptionsFor = async (req: Request) =>
+  await candidateVoice.authorize(req)
+    ? candidateVoice
+    : labConfig.enabled
+    ? { facts: labFacts }
+    : undefined

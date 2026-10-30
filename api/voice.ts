@@ -134,7 +134,6 @@ export const keywordsOf = (files: Record<string, string>) => {
     'type',
     'interface',
     'extends',
-    'string',
     'Promise',
     'Response',
     'Request',

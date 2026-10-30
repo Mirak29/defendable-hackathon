@@ -376,6 +376,7 @@ without any key.
 | `INTERVIEW_GRACE_MS` | after that, the longest wait for a turn before Oracle closes, default `45000`                             |
 | `TTS`                | `off` keeps the browser's voice for Oracle (default `on`)                                                 |
 | `TTS_MODEL`          | speech model of Oracle, default `Xenova/mms-tts-eng` (Meta MMS-TTS)                                       |
+| `VOICE_LAB`          | `on`: the voice lab (`/dev/voice`, demo code) for members; default `off` in production, `on` elsewhere    |
 | `DEMO_ACCESS`        | `1`: a demo account can be signed in without a password                                                   |
 | `DATABASE_PATH`      | SQLite file (`:memory:` in tests)                                                                         |
 | `RESEND_API_KEY`     | e-mail of the personal link of a candidate (Resend)                                                       |
