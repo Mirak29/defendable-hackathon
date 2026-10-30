@@ -25,6 +25,8 @@ type Synthesizer = (
 
 let loading: Promise<void> | undefined
 let engine: Synthesizer | undefined
+/** the weights were not on the disk: they were fetched from the network */
+let downloaded = false
 /** one sentence at a time: the model already uses every core */
 const nextSlot = makeQueue(1)
 
@@ -43,6 +45,7 @@ const load = async () => {
     const localFirst = <T>(from: (options: object) => Promise<T>) =>
       from({ ...options, local_files_only: true }).catch((err) => {
         log.info('tts-download', { reason: String(err) })
+        downloaded = true
         return from(options)
       })
     const tokenizer = await localFirst((o) =>
@@ -179,4 +182,9 @@ const synthesize = async (
 }
 
 /** an object so a test can stand in for the model */
-export const tts = { loaded: () => !!engine, warmUp, synthesize }
+export const tts = {
+  loaded: () => !!engine,
+  downloaded: () => downloaded,
+  warmUp,
+  synthesize,
+}

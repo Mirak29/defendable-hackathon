@@ -13,7 +13,8 @@ const fail = (message: string): never => {
   Deno.exit(1)
 }
 
-// the voice: the weights are downloaded, the model runs once
+// the voice: the model runs once, from the weights deploy/fetch.ts put in the
+// image
 tts.warmUp()
 const started = Date.now()
 while (!tts.loaded()) {
@@ -21,6 +22,9 @@ while (!tts.loaded()) {
   await new Promise((r) => setTimeout(r, 500))
 }
 console.log(`voice ready in ${Math.round((Date.now() - started) / 1000)} s`)
+// a voice that had to fetch its weights would not start on a machine without
+// Internet: the model named in deploy/fetch.ts is not the one of api/tts.ts
+if (tts.downloaded()) fail('the voice weights are not in the image')
 
 // the sandbox of TypeScript: offline, with the module of the tests cached
 const results = await runEvaluation(demoFiles, demoAssessment.tests)
