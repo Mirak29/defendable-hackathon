@@ -12699,12 +12699,26 @@ index a1f76fa..bacb112 100644
 +Object.assign(llmConfig, saved)
 +Deno.exit(rows.some((r) => !r.ok) ? 1 : 0)
 diff --git a/task-prod.ts b/task-prod.ts
-index ad9d7a5..5519abf 100644
+index ad9d7a5..3d89c96 100644
 --- a/task-prod.ts
 +++ b/task-prod.ts
-@@ -149,5 +149,13 @@ const html = Deno.readTextFileSync('web/index.html')
+@@ -143,11 +143,27 @@ const cssResult = await build({
+   write: false,
+ })
+ const css = new TextDecoder().decode(cssResult.outputFiles[0].contents)
++// a CDN keeps index.js for hours: the page asks for it by the fingerprint of
++// the build, so a new build is a new address (the page itself is not cached)
++const bundle = Deno.readFileSync(`${outdir}/index.js`)
++const fingerprint = Array.from(
++  new Uint8Array(await crypto.subtle.digest('SHA-256', bundle)).slice(0, 6),
++  (byte) => byte.toString(16).padStart(2, '0'),
++).join('')
+ const html = Deno.readTextFileSync('web/index.html')
+   .replace(
+     '<link rel="stylesheet" href="assets/styles/style.css" />',
      `<style>${css}</style>`,
    )
++  .replace('src="index.js"', `src="index.js?v=${fingerprint}"`)
  Deno.writeTextFileSync(`${outdir}/index.html`, html)
 +// the fonts stay files, the cache keeps them between visits
 +Deno.mkdirSync(`${outdir}/assets/fonts`, { recursive: true })
