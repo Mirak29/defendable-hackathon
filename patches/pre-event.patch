@@ -10797,7 +10797,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..6e4d9bb 100644
+index 5f704a5..d94e79b 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,27 @@
@@ -10837,12 +10837,13 @@ index 5f704a5..6e4d9bb 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +48,41 @@
+@@ -45,41 +48,42 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
 -    "@preact/signals": "npm:@preact/signals@^2.9.1",
-+    "@preact/signals": "npm:@preact/signals@2.11.3",
++    "@preact/signals": "npm:@preact/signals@2.11.4",
++    "@preact/signals-core": "npm:@preact/signals-core@1.14.5",
      "@twind/preact": "npm:@twind/preact@^1.0.5",
 -    "preact": "npm:preact@^10.29.2",
 +    "preact": "npm:preact@10.29.8",
@@ -10853,7 +10854,7 @@ index 5f704a5..6e4d9bb 100644
 +    "pyodide": "npm:pyodide@0.28.2",
 +    "unpdf": "npm:unpdf@^1.8.1",
 +    "preact/": "npm:/preact@10.29.8/",
-+    "npm:@preact/signals@^2.9.0": "npm:@preact/signals@2.11.3",
++    "npm:@preact/signals@^2.9.0": "npm:@preact/signals@2.11.4",
 +    "npm:preact@^10.29.1": "npm:preact@10.29.8",
 +    "npm:preact@^10.29.1/jsx-runtime": "npm:preact@10.29.8/jsx-runtime"
    },
