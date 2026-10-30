@@ -68,9 +68,11 @@ export type VoiceEvent =
   | {
     type: 'ready'
     voice: 'server' | 'browser'
+    /** samples per second of the sound of a `speech` event, when `voice` is `server` */
+    rate?: number
     history?: InterviewLine[]
   }
-  /** a sentence of the interviewer, with its sound (PCM 16-bit 24 kHz in base64) unless it could not be made: the browser reads it then */
+  /** a sentence of the interviewer, with its sound (PCM 16-bit mono at the `rate` of `ready`, in base64) unless it could not be made: the browser reads it then */
   | { type: 'speech'; text: string; pcm?: string }
   | { type: 'speech-start' }
   | { type: 'speech-end' }
@@ -370,6 +372,7 @@ export class VoiceInterview {
       this.#send({
         type: 'ready',
         voice: this.#serverVoice ? 'server' : 'browser',
+        rate: this.#serverVoice ? tts.rate() : undefined,
         history: this.#facts.previous,
       })
       // back after the time was over: it closes at once

@@ -24,7 +24,7 @@ export const voice = {
   error: signal(''),
   /** microphone level, 0 to 1 */
   level: signal(0),
-  /** how loud Cleanify's own voice is now, 0 to 1 (0: the voice cannot be read) */
+  /** how loud Oracle's own voice is now, 0 to 1 (0: the voice cannot be read) */
   amplitude: signal(0),
   /** the sentence being spoken and how far the voice is in it (lip sync) */
   speech: signal({ text: '', charIndex: 0, at: 0 }),
@@ -127,15 +127,15 @@ const voiceStarted = (text: string) => {
   }
 }
 
-/* the voice of the server: sentences of PCM 24 kHz, played one after another */
-const SPEECH_RATE = 24_000
+/* the voice of the server: sentences of PCM at the rate it announces in `ready`, played one after another */
+let speechRate = 0
 let playingFrom = 0
 const sounds = new Set<AudioBufferSourceNode>()
 let meter: ReturnType<typeof setInterval> | undefined
 /** runs when the last sentence has been played (the end of an interview) */
 let whenSilent: (() => void) | undefined
 
-/** how loud the voice is now: it moves the presence of Cleanify */
+/** how loud the voice is now: it moves the presence of Oracle */
 const measure = () => {
   const analyser = playback?.analyser
   if (!analyser) return
@@ -166,13 +166,13 @@ const stopSounds = () => {
 }
 
 const playPcm = (text: string, base64: string) => {
-  if (!playback) return
+  if (!playback || !speechRate) return
   const { context, gain } = playback
   const binary = atob(base64)
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < bytes.length; i++) bytes[i] = binary.charCodeAt(i)
   const pcm = new Int16Array(bytes.buffer, 0, bytes.length >> 1)
-  const buffer = context.createBuffer(1, pcm.length, SPEECH_RATE)
+  const buffer = context.createBuffer(1, pcm.length, speechRate)
   const channel = buffer.getChannelData(0)
   for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768
   const sound = context.createBufferSource()
@@ -255,6 +255,7 @@ const onEvent = (event: VoiceEvent) => {
   switch (event.type) {
     case 'ready':
       serverVoice = event.voice === 'server'
+      speechRate = event.rate ?? 0
       // back after a reload: what was said is shown again
       voice.lines.value = (event.history ?? []).map((l) => ({
         who: l.who === 'ai' ? 'ai' : 'you',

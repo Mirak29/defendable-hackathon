@@ -1,11 +1,11 @@
-// Can this machine keep up with Cleanify's voice? Loads the model the way the
+// Can this machine keep up with Oracle's voice? Loads the model the way the
 // server does, then makes a few sentences and prints, for each, how long it
 // took against how long it lasts: below 1 keeps up, below 0.5 is comfortable.
 // Run it on the host before choosing its size: `deno task tts:bench`.
 import { tts } from '/api/tts.ts'
 
 const SENTENCES = [
-  "Hi, I'm Cleanify, and this is just a calm chat about the code you wrote.",
+  "Hi, I'm Oracle, and this is just a calm chat about the code you wrote.",
   'What happens if the first line has a well-formed id but fails validation?',
   'Can you walk me through where in the loop that decision happens?',
   'Thanks for walking me through your code, a person will read our conversation.',
@@ -32,9 +32,9 @@ for (let round = 0; round < 2; round++) {
     const t = performance.now()
     const sound = await tts.synthesize(text, () => true)
     const made = performance.now() - t
-    // PCM 16-bit mono 24 kHz in base64: 2 bytes per sample
+    // PCM 16-bit mono in base64: 2 bytes per sample
     const bytes = sound ? atob(sound).length : 0
-    const length = (bytes / 2 / 24_000) * 1000
+    const length = (bytes / 2 / tts.rate()) * 1000
     if (!length) continue
     // the first round warms the machine up: only the second one counts
     if (round) factors.push(made / length)

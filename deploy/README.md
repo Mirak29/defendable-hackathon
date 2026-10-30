@@ -1,8 +1,8 @@
 # Deploying Defendable on one machine
 
 One container serves everything: the API, the voice interview (WebSocket), the
-web app, the voice of Cleanify and the sandboxes. The database is a SQLite file
-in a Docker volume. Sized for a machine with **4 fast cores or more and 8 GB of
+web app, the voice of Oracle and the sandboxes. The database is a SQLite file in
+a Docker volume. Sized for a machine with **4 fast cores or more and 8 GB of
 memory** (the voice wants the cores: run
 `docker compose exec app deno task tts:bench` and read the last line).
 

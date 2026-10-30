@@ -1,11 +1,11 @@
-// Cleanify's voice, made on the server: Meta's MMS-TTS (facebook/mms-tts-eng,
+// Oracle's voice, made on the server: Meta's MMS-TTS (facebook/mms-tts-eng,
 // VITS, 36 M parameters, CC-BY-NC 4.0) in full precision on the CPU, through
 // Transformers.js. The weights are the ONNX conversion of that Meta model
 // published by Hugging Face (Xenova/mms-tts-eng). The browser downloads
-// nothing: it receives each sentence as 16-bit PCM, 24 kHz, and plays it. The
-// model speaks at 16 kHz, so each sentence is resampled to the 24 kHz of the
-// whole voice interview here. When the model is not loaded (no weights yet,
-// TTS=off, an error) the interview falls back to the browser's voice.
+// nothing: it receives each sentence as 16-bit PCM at the rate of the model
+// (16 kHz, announced to it in the `ready` event) and plays it. When the model
+// is not loaded (no weights yet, TTS=off, an error) the interview falls back
+// to the browser's voice.
 import { ENV } from '@01edu/api/env'
 import { encodeBase64 } from 'jsr:@std/encoding/base64'
 import { log } from '/api/lib/log.ts'
@@ -16,15 +16,13 @@ const config = {
   model: ENV('TTS_MODEL', 'Xenova/mms-tts-eng'),
 }
 
-/** the rate of the interview: the microphone and the voice both use it */
-const OUT_RATE = 24_000
-
-type Synthesizer = (
-  text: string,
-) => Promise<{ audio: Float32Array; sampling_rate: number }>
+/** a sentence as samples (-1 to 1) at the rate of the model */
+type Synthesizer = (text: string) => Promise<Float32Array>
 
 let loading: Promise<void> | undefined
 let engine: Synthesizer | undefined
+/** samples per second of the sound the model makes */
+let rate = 0
 /** the weights were not on the disk: they were fetched from the network */
 let downloaded = false
 /** one sentence at a time: the model already uses every core */
@@ -54,14 +52,9 @@ const load = async () => {
     const vits = await localFirst((o) =>
       VitsModel.from_pretrained(config.model, o)
     )
-    const model: Synthesizer = async (text) => {
-      const { waveform } = await vits(tokenizer(text))
-      return {
-        audio: waveform.data as Float32Array,
-        sampling_rate: (vits.config as unknown as { sampling_rate: number })
-          .sampling_rate,
-      }
-    }
+    const model: Synthesizer = async (text) =>
+      (await vits(tokenizer(text))).waveform.data as Float32Array
+    rate = (vits.config as unknown as { sampling_rate: number }).sampling_rate
     // the first run is the slow one: it happens before anybody waits for it
     await model('Hello.')
     engine = model
@@ -125,31 +118,6 @@ export const speakable = (text: string) =>
     .replace(/\s+/g, ' ')
     .trim()
 
-/** windowed-sinc resampling (8 taps each side): the speech stays clean */
-export const resample = (input: Float32Array, from: number, to: number) => {
-  if (from === to) return input
-  const step = from / to
-  const taps = 8
-  // below the new Nyquist rate when going down; the whole band going up
-  const cutoff = Math.min(1, to / from)
-  const out = new Float32Array(Math.floor(input.length / step))
-  for (let i = 0; i < out.length; i++) {
-    const at = i * step
-    const center = Math.floor(at)
-    let sum = 0
-    for (let k = center - taps + 1; k <= center + taps; k++) {
-      if (k < 0 || k >= input.length) continue
-      const x = at - k
-      const sinc = x === 0
-        ? cutoff
-        : Math.sin(Math.PI * x * cutoff) / (Math.PI * x)
-      sum += input[k] * sinc * (0.5 + 0.5 * Math.cos(Math.PI * x / taps))
-    }
-    out[i] = sum
-  }
-  return out
-}
-
 /** float samples (-1 to 1) as little-endian 16-bit PCM, in base64 */
 const pcmBase64 = (samples: Float32Array) => {
   const pcm = new Int16Array(samples.length)
@@ -160,7 +128,7 @@ const pcmBase64 = (samples: Float32Array) => {
 }
 
 /**
- * The sound of a sentence (PCM 16-bit mono 24 kHz in base64), or undefined
+ * The sound of a sentence (PCM 16-bit mono at `rate()`, in base64), or undefined
  * when it cannot be made: the browser then reads it. `alive` is asked just
  * before the work starts, so a sentence nobody waits for any more costs nothing.
  */
@@ -173,8 +141,7 @@ const synthesize = async (
   await loading
   if (!engine) return undefined
   try {
-    const out = await engine(speakable(text))
-    return pcmBase64(resample(out.audio, out.sampling_rate, OUT_RATE))
+    return pcmBase64(await engine(speakable(text)))
   } catch (err) {
     log.warn('tts-failed', { message: String(err) })
     return undefined
@@ -184,6 +151,7 @@ const synthesize = async (
 /** an object so a test can stand in for the model */
 export const tts = {
   loaded: () => !!engine,
+  rate: () => rate,
   downloaded: () => downloaded,
   warmUp,
   synthesize,

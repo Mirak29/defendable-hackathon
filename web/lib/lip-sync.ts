@@ -1,4 +1,4 @@
-// The shape of Cleanify's mouth from the sentence being spoken
+// The shape of Oracle's mouth from the sentence being spoken
 // (voice-client.ts: `speech`). The mouth comes from the letters of the text,
 // timed by the voice's word events when the voice gives them, by the clock
 // otherwise. `open` goes from 0 (closed) to 1, `wide` from -1 (pursed) to 1.

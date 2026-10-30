@@ -10,7 +10,7 @@ import {
 import { startVoice, stopVoice, voice } from '/web/lib/voice-client.ts'
 import { noCopy, trackIntegrity } from '/web/lib/integrity.ts'
 import { Spinner } from '/web/ui/spinner.tsx'
-import { CleanifyOrb, STAGE_BACKGROUND } from '/web/ui/cleanify-orb.tsx'
+import { OracleOrb, STAGE_BACKGROUND } from '/web/ui/oracle-orb.tsx'
 import { Logo } from '/web/ui/topbar.tsx'
 import { CircleCheck, CircleX, Mic } from '/web/assets/icons.tsx'
 import type { ProgressState } from '/web/types.ts'
@@ -73,7 +73,7 @@ export const InterviewPage = () => {
   // the conditions of the interview, reported as facts
   useEffect(() => trackIntegrity('interview'), [])
 
-  // Cleanify starts by itself. The browser only lets a page speak after a click
+  // Oracle starts by itself. The browser only lets a page speak after a click
   // of the person: coming from the editor (Submit) it has one, after a reload
   // it has not and one button asks for it.
   const ready = view?.preparation?.steps.at(-1)?.state === 'done' &&
@@ -118,8 +118,8 @@ export const InterviewPage = () => {
           </h1>
           {!preparation?.error && (
             <p tw='m-0 text-[13px] text-content-secondary'>
-              Nothing to do here, it takes a few seconds. Then Cleanify will
-              talk with you about the code you wrote.
+              Nothing to do here, it takes a few seconds. Then Oracle will talk
+              with you about the code you wrote.
             </p>
           )}
           <ul tw='list-none m-0 p-0 flex flex-col gap-2.5'>
@@ -166,7 +166,7 @@ export const InterviewPage = () => {
     : live === 'live'
     ? 'Take your time'
     : 'Waiting for you'
-  // what Cleanify says now, in writing: a voice alone is easy to lose
+  // what Oracle says now, in writing: a voice alone is easy to lose
   const caption = voice.writing.value ||
     (voice.speaking.value ? lines.findLast((l) => l.who === 'ai')?.text : '') ||
     ''
@@ -182,11 +182,11 @@ export const InterviewPage = () => {
       </header>
       <div tw='flex-1 min-h-0 flex flex-col lg:flex-row'>
         <section
-          aria-label='Cleanify'
+          aria-label='Oracle'
           tw='relative flex-1 min-h-0 overflow-hidden'
           style={{ background: STAGE_BACKGROUND }}
         >
-          <CleanifyOrb />
+          <OracleOrb />
           <div tw='absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 px-6 pb-8 pt-16'>
             {!asking && (
               <p
@@ -218,7 +218,7 @@ export const InterviewPage = () => {
                 >
                   {live === 'error'
                     ? 'Check that your microphone is allowed, then try again.'
-                    : 'Cleanify has read your code and will talk it through with you, out loud. There are no trick questions, you can take your time, and a person reads the result afterwards.'}
+                    : 'Oracle has read your code and will talk it through with you, out loud. There are no trick questions, you can take your time, and a person reads the result afterwards.'}
                 </p>
                 <p tw='m-0 text-[12.5px]' style={{ opacity: 0.65 }}>
                   Headphones help. The browser will ask for your microphone.
@@ -230,10 +230,10 @@ export const InterviewPage = () => {
                 tw='font-display text-[16px] tracking-[0.04em]'
                 style={{ color: '#e8f0ff' }}
               >
-                Cleanify
+                Oracle
               </span>
               <span
-                data-test='cleanify-state'
+                data-test='oracle-state'
                 role='status'
                 tw='text-[13px]'
                 style={{ color: '#8fb0ee' }}
@@ -292,8 +292,8 @@ export const InterviewPage = () => {
           >
             {!lines.length && !voice.writing.value && (
               <p tw='m-0 text-content-tertiary text-[13px]'>
-                Cleanify will start in a moment. Everything said is written
-                here, so you can follow along.
+                Oracle will start in a moment. Everything said is written here,
+                so you can follow along.
               </p>
             )}
             {lines.map((line, i) => (
@@ -320,7 +320,7 @@ const Bubble = (
     tw={['flex flex-col gap-1', who === 'you' ? 'items-end' : 'items-start']}
   >
     <span tw='text-[11px] text-content-tertiary'>
-      {who === 'ai' ? 'Cleanify' : 'You'}
+      {who === 'ai' ? 'Oracle' : 'You'}
     </span>
     <p
       tw={[

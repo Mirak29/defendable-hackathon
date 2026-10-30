@@ -1,7 +1,7 @@
-// Cleanify's presence: a soft light of a pure blue, calm and deep.
+// Oracle's presence: a soft light of a pure blue, calm and deep.
 // It breathes slowly when nothing happens, gathers a little and brightens with
-// the microphone while the candidate talks, drifts slowly while Cleanify thinks,
-// and sends slow rings out with the voice while Cleanify speaks. Nothing snaps:
+// the microphone while the candidate talks, drifts slowly while Oracle thinks,
+// and sends slow rings out with the voice while Oracle speaks. Nothing snaps:
 // every state eases in and out. Canvas 2D, a few blurred translucent blobs.
 import { useEffect, useRef } from 'preact/hooks'
 import { voice } from '/web/lib/voice-client.ts'
@@ -80,7 +80,7 @@ const voiceNow = (now: number) => {
 }
 
 /** fills its parent, which must be positioned */
-export const CleanifyOrb = () => {
+export const OracleOrb = () => {
   const host = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
 
@@ -225,7 +225,7 @@ export const CleanifyOrb = () => {
           else ctx.moveTo(x, y)
         }
         ctx.closePath()
-        // the light sits toward the pointer, and drifts while Cleanify thinks
+        // the light sits toward the pointer, and drifts while Oracle thinks
         const drift = state.think * Math.sin(t * 0.8 + layer.seed) * 0.18
         const fx = cx - (pointer.x * 0.2 + drift) * radius
         const fy = cy - (pointer.y * 0.2 - drift * 0.6) * radius
