@@ -24,7 +24,7 @@ export const voice = {
   error: signal(''),
   /** microphone level, 0 to 1 */
   level: signal(0),
-  /** how loud Oracle's own voice is now, 0 to 1 (0: the voice cannot be read) */
+  /** how loud Cleanify's own voice is now, 0 to 1 (0: the voice cannot be read) */
   amplitude: signal(0),
   /** the sentence being spoken and how far the voice is in it (lip sync) */
   speech: signal({ text: '', charIndex: 0, at: 0 }),
@@ -135,7 +135,7 @@ let meter: ReturnType<typeof setInterval> | undefined
 /** runs when the last sentence has been played (the end of an interview) */
 let whenSilent: (() => void) | undefined
 
-/** how loud the voice is now: it moves the presence of Oracle */
+/** how loud the voice is now: it moves the presence of Cleanify */
 const measure = () => {
   const analyser = playback?.analyser
   if (!analyser) return

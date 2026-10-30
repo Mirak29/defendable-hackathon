@@ -1,8 +1,8 @@
-// A test page for Oracle's presence (not a screen of the product): each state,
+// A test page for Cleanify's presence (not a screen of the product): each state,
 // with a made-up voice, to look at it without a microphone.
 import { useEffect, useState } from 'preact/hooks'
 import { voice } from '/web/lib/voice-client.ts'
-import { OracleOrb, STAGE_BACKGROUND } from '/web/ui/oracle-orb.tsx'
+import { CleanifyOrb, STAGE_BACKGROUND } from '/web/ui/cleanify-orb.tsx'
 
 const MODES = [
   ['idle', 'At rest'],
@@ -47,7 +47,7 @@ export const OrbLabPage = () => {
   return (
     <main tw='h-screen flex flex-col'>
       <header tw='flex items-center gap-3 px-5 py-3 border-b border-border-primary'>
-        <h1 tw='m-0 text-[16px] font-medium'>Oracle, in each state</h1>
+        <h1 tw='m-0 text-[16px] font-medium'>Cleanify, in each state</h1>
         <div role='group' aria-label='State' tw='flex gap-1.5'>
           {MODES.map(([key, label]) => (
             <button
@@ -70,7 +70,7 @@ export const OrbLabPage = () => {
         tw='relative flex-1 min-h-0 overflow-hidden'
         style={{ background: STAGE_BACKGROUND }}
       >
-        <OracleOrb />
+        <CleanifyOrb />
       </section>
     </main>
   )

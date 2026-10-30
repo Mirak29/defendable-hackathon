@@ -74,10 +74,10 @@ index 9a23581..fcf427f 100644
 +# production secrets (see .env.production.example)
 +.env.production
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 395848d..fb37eb3 100644
+index 395848d..35c832a 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -5,153 +5,143 @@ code in this repository.
+@@ -5,153 +5,144 @@ code in this repository.
  
  ## What this is
  
@@ -139,7 +139,7 @@ index 395848d..fb37eb3 100644
 +deno task llm:generate --out=generated   # one real generation, with cost
 +deno task llm:bench   # same fictional inputs through several models and efforts
 +deno task llm:eval    # the report on fictional candidates whose reading is known
-+deno task llm:interview-eval   # Oracle against simulated candidates, rules checked per turn
++deno task llm:interview-eval   # Cleanify against simulated candidates, rules checked per turn
 +deno task llm:extraction-eval  # prefill and CV against known answers, per model and effort
 +deno task llm:generate --kind=program   # a program assessment (input to output)
  ```
@@ -191,12 +191,13 @@ index 395848d..fb37eb3 100644
 +  link, cookie session, editor (save, run, type check), submission, preparation
 +  of the interview (hidden tests, type check). `/api/voice` is a WebSocket the
 +  browser opens with the candidate cookie: microphone to Meta's transcription,
-+  Oracle's answer streamed from the interviewer model, spoken by a voice made on
-+  the server (`tts.ts`: Kokoro fp32 on the CPU, pieces sent as `speech` events
-+  with PCM in base64, dropped when the candidate speaks over; `ready` says
-+  `server` or `browser`, the browser's voice being the fallback). The presence
-+  of Oracle (`web/ui/oracle-orb.tsx`, test page `/dev/orb`) follows the loudness
-+  of that voice. The transcript is stored when the interview ends.
++  Cleanify's answer streamed from the interviewer model, spoken by a voice made
++  on the server (`tts.ts`: Meta's MMS-TTS fp32 on the CPU, resampled to 24 kHz,
++  digits spelled out, pieces sent as `speech` events with PCM in base64, dropped
++  when the candidate speaks over; `ready` says `server` or `browser`, the
++  browser's voice being the fallback). The presence of Cleanify
++  (`web/ui/cleanify-orb.tsx`, test page `/dev/orb`) follows the loudness of that
++  voice. The transcript is stored when the interview ends.
 +- **Report** (`api/report.ts`): the facts are measured by the server (tests,
 +  type check, durations, tools, what was said). The model reads the transcript
 +  and the code; every quote, line range and test it cites is checked against
@@ -272,8 +273,8 @@ index 395848d..fb37eb3 100644
 +  `@01edu/signal-router`. `app.tsx` maps paths to pages; every URL lives in
 +  `web/paths.ts`, never hard-code a path. Server state lives in module-level
 +  stores (`web/lib/*-store.ts`) refetched on the server events
-+  (`web/lib/events.ts`). The interview page shows Oracle as an orb
-+  (`web/ui/oracle-orb.tsx`) beside a message panel, and starts by itself.
++  (`web/lib/events.ts`). The interview page shows Cleanify as an orb
++  (`web/ui/cleanify-orb.tsx`) beside a message panel, and starts by itself.
  - **Shared code**: `web/types.ts` and `web/lib/assessment-checks.ts` are used by
    the API too; the web only imports _types_ from `api/`.
 -- **Demo data**: `fixtures/demo.ts` (assessment, tests, results, AI traces),
@@ -345,7 +346,7 @@ index 395848d..fb37eb3 100644
 +- Icons are inline Lucide SVGs in `web/assets/icons.tsx`; add new ones there,
 +  keep the list sorted.
 diff --git a/Dockerfile b/Dockerfile
-index e207b60..33331f0 100644
+index e207b60..362e39d 100644
 --- a/Dockerfile
 +++ b/Dockerfile
 @@ -1,44 +1,67 @@
@@ -425,8 +426,8 @@ index e207b60..33331f0 100644
 +
 +# what is big and does not change with the code, fetched before it is copied:
 +# editing the code then rebuilds (and uploads) none of it. The native SQLite
-+# library, the voice weights (326 MB), and the one module the tests of the
-+# candidates import (the sandbox is offline).
++# library, the voice weights (MMS-TTS, about 110 MB), and the one module the
++# tests of the candidates import (the sandbox is offline).
 +COPY --chown=deno:deno deploy/fetch.ts deploy/fetch.ts
 +RUN deno cache jsr:@std/assert@1 \
 +  && deno run -A --unstable-ffi deploy/fetch.ts
@@ -6719,7 +6720,7 @@ index 58b4786..777e643 100644
    log.info('reference-check', {
      passed: results.filter((r) => r.passed).length,
 diff --git a/api/report.test.js b/api/report.test.js
-index f8db3f1..49df1c0 100644
+index f8db3f1..84c375d 100644
 --- a/api/report.test.js
 +++ b/api/report.test.js
 @@ -1,161 +1,631 @@
@@ -6762,7 +6763,7 @@ index f8db3f1..49df1c0 100644
 +import { buildReport } from '/api/report.ts'
 +
 +const TRANSCRIPT = [
-+  { who: 'ai', text: 'Hello, I am Oracle. How did you approach the task?' },
++  { who: 'ai', text: 'Hello, I am Cleanify. How did you approach the task?' },
 +  {
 +    who: 'candidate',
 +    text:
@@ -7295,7 +7296,7 @@ index f8db3f1..49df1c0 100644
 +  const { member, assessment, candidateId, cookies } = await setup('Starts')
 +  const names = skillNames(assessment)
 +
-+  await step('Oracle closes the interview: the report follows', async () => {
++  await step('Cleanify closes the interview: the report follows', async () => {
 +    await withModel(answer(names), async () => {
 +      const req = new Request('http://localhost/api/voice', {
 +        headers: { cookie: `dfd_candidate=${cookies.dfd_candidate}` },
@@ -7484,7 +7485,7 @@ index f8db3f1..49df1c0 100644
 +  )
  })
 diff --git a/api/report.ts b/api/report.ts
-index 75d54dc..8639371 100644
+index 75d54dc..342f136 100644
 --- a/api/report.ts
 +++ b/api/report.ts
 @@ -1,1032 +1,681 @@
@@ -8167,7 +8168,7 @@ index 75d54dc..8639371 100644
 -  const demoReport = demoOf(contentLang()).report
 +  const limits = [...raw.limits]
 +  if (!facts.interviewCompleted) {
-+    limits.unshift('The candidate left before Oracle closed the interview.')
++    limits.unshift('The candidate left before Cleanify closed the interview.')
 +  }
 +  if (facts.candidateTurns < 3) {
 +    limits.unshift('The conversation is short: there are few answers to read.')
@@ -10401,7 +10402,7 @@ index 263037b..9d0890e 100644
      memberPassword: demoHash!,
      memberCreatedAt: Date.now(),
 diff --git a/api/server.ts b/api/server.ts
-index a751410..f6f5b81 100644
+index a751410..ae51c7c 100644
 --- a/api/server.ts
 +++ b/api/server.ts
 @@ -2,43 +2,34 @@ import { log } from '/api/lib/log.ts'
@@ -10459,7 +10460,7 @@ index a751410..f6f5b81 100644
  }
  
  recoverInterruptedJobs()
-+// Oracle's voice loads while the server idles, not when somebody waits for it
++// Cleanify's voice loads while the server idles, not when somebody waits for it
 +tts.warmUp()
  log.info('server-start')
 diff --git a/api/signup.test.js b/api/signup.test.js
@@ -10799,7 +10800,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..a5cdf76 100644
+index 5f704a5..1600af9 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,26 @@
@@ -10852,7 +10853,7 @@ index 5f704a5..a5cdf76 100644
      "@01edu/signal-router": "jsr:@01edu/signal-router@^0.2.3",
      "fflate": "npm:fflate@^0.8.3",
 -    "unpdf": "npm:unpdf@^1.8.1"
-+    "kokoro-js": "npm:kokoro-js@1.2.1",
++    "@huggingface/transformers": "npm:@huggingface/transformers@3.8.1",
 +    "pyodide": "npm:pyodide@0.28.2",
 +    "unpdf": "npm:unpdf@^1.8.1",
 +    "preact/": "npm:/preact@10.29.8/",
@@ -11772,7 +11773,7 @@ index 8d76471..b38b13a 100644
 +
 +export default server
 diff --git a/task-llm-bench.ts b/task-llm-bench.ts
-index 24e2259..35ca197 100644
+index 24e2259..0d34543 100644
 --- a/task-llm-bench.ts
 +++ b/task-llm-bench.ts
 @@ -1,564 +1,235 @@
@@ -11949,7 +11950,7 @@ index 24e2259..35ca197 100644
 +Referee: marie.petit@acme-example.com`
 +
 +const TRANSCRIPT: InterviewLine[] = [
-+  { who: 'ai', text: 'Hello, I am Oracle. How did you approach the task?' },
++  { who: 'ai', text: 'Hello, I am Cleanify. How did you approach the task?' },
 +  {
 +    who: 'candidate',
 +    text:
@@ -12731,7 +12732,7 @@ index ad9d7a5..3d89c96 100644
  
  console.log('\nduration:', `${yellow(String((Date.now() - start) / 1000))}s`)
 diff --git a/web/app.tsx b/web/app.tsx
-index da0b0a9..220d620 100644
+index da0b0a9..6dc8ed6 100644
 --- a/web/app.tsx
 +++ b/web/app.tsx
 @@ -1,6 +1,6 @@
@@ -12743,7 +12744,7 @@ index da0b0a9..220d620 100644
  import { buildPreflightTokens, customClasses, semanticColors } from './theme.ts'
  import { url } from '/web/lib/router-signal.ts'
  import { tailwindColors } from '/web/tailwind-colors.ts'
-@@ -13,23 +13,23 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
+@@ -13,23 +13,22 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
  import { makePlaceholder } from '/web/pages/placeholder-page.tsx'
  import { screens } from '/web/screens.ts'
  import { Notifications } from '/web/ui/notifications.tsx'
@@ -12754,7 +12755,6 @@ index da0b0a9..220d620 100644
  import { landingPaths } from '/web/lib/section-scroll.ts'
  import { LoginPage, SignupPage } from '/web/pages/auth/auth-pages.tsx'
 +import { VoiceLabPage } from '/web/pages/voice/voice-lab.tsx'
-+import { TtsLabPage } from '/web/pages/voice/tts-lab.tsx'
 +import { OrbLabPage } from '/web/pages/voice/orb-lab.tsx'
  import { memberStatus } from '/web/lib/member-store.ts'
 +import { ConsentPage } from '/web/pages/candidate/consent-page.tsx'
@@ -12775,7 +12775,7 @@ index da0b0a9..220d620 100644
  import '/web/ui/themetoggle.tsx'
  
  Object.assign(globalThis, { h, Fragment })
-@@ -37,8 +37,6 @@ setup({
+@@ -37,8 +36,6 @@ setup({
    darkMode: 'class',
    preflight: (preflight) => ({
      ...preflight,
@@ -12784,7 +12784,7 @@ index da0b0a9..220d620 100644
      ...customClasses,
      // `@apply placeholder:…` gives an invalid `:placeholder` selector
      '.input::placeholder': { color: 'var(--color-content-tertiary)' },
-@@ -54,7 +52,7 @@ setup({
+@@ -54,7 +51,7 @@ setup({
          'wide-narrow': 'minmax(0,1.3fr) minmax(0,1fr)',
          'split': 'minmax(0,1.4fr) minmax(0,1fr)',
          'nav-main': '168px minmax(0,1fr)',
@@ -12793,7 +12793,7 @@ index da0b0a9..220d620 100644
          'report': '168px minmax(0,880px) 280px',
          'report-md': 'minmax(0,1fr) 264px',
          'cards': 'repeat(auto-fill, minmax(min(340px, 100%), 1fr))',
-@@ -75,23 +73,28 @@ setup({
+@@ -75,23 +72,27 @@ setup({
    },
  })
  
@@ -12807,7 +12807,6 @@ index da0b0a9..220d620 100644
    [paths.login]: LoginPage,
    [paths.signup]: SignupPage,
 +  [paths.voiceLab]: VoiceLabPage,
-+  [paths.ttsLab]: TtsLabPage,
 +  [paths.orbLab]: OrbLabPage,
 +  [paths.candidate]: ConsentPage,
 +  [paths.workspace]: () => (
@@ -12828,7 +12827,7 @@ index da0b0a9..220d620 100644
    [paths.done]: DonePage,
  }
  
-@@ -111,14 +114,7 @@ const App = () => {
+@@ -111,14 +112,7 @@ const App = () => {
          : screen?.space === 'candidate'
          ? <CandidateTopBar />
          : <PublicHeader />)}
@@ -14095,7 +14094,7 @@ index 71c7b4d..e3beb2c 100644
        </p>
      </Card>
 diff --git a/web/pages/candidate/consent-page.tsx b/web/pages/candidate/consent-page.tsx
-index a8ac71c..dc55afa 100644
+index a8ac71c..eb9703f 100644
 --- a/web/pages/candidate/consent-page.tsx
 +++ b/web/pages/candidate/consent-page.tsx
 @@ -2,63 +2,60 @@ import { paths } from '/web/paths.ts'
@@ -14334,7 +14333,7 @@ index a8ac71c..dc55afa 100644
 -                  '10 timed questions on your own code, 6 multiple-choice and 4 open answers. Copy-paste disabled, page leaves recorded. A documentation assistant is available for open answers.',
 -                )}
 +                title='Interview (about 10 min)'
-+                text='Oracle, an AI interviewer, talks with you about your own code, out loud. There are no trick questions and nothing to prepare: take your time. Use headphones and a quiet place.'
++                text='Cleanify, an AI interviewer, talks with you about your own code, out loud. There are no trick questions and nothing to prepare: take your time. Use headphones and a quiet place.'
                />
              </ol>
            </section>
@@ -17582,7 +17581,7 @@ index a38b80c..17958d8 100644
              )}
            </AnchorLink>
 diff --git a/web/pages/report/report-page.tsx b/web/pages/report/report-page.tsx
-index 6370463..179037c 100644
+index 6370463..c627be0 100644
 --- a/web/pages/report/report-page.tsx
 +++ b/web/pages/report/report-page.tsx
 @@ -1,222 +1,624 @@
@@ -18073,7 +18072,7 @@ index 6370463..179037c 100644
 +          ? 'The interview is being read. This takes a few seconds.'
 +          : v.facts.interviewCompleted
 +          ? 'The report starts in a moment.'
-+          : 'The interview is not over: the reading starts when Oracle closes it.'}
++          : 'The interview is not over: the reading starts when Cleanify closes it.'}
        </span>
 +      {v.status === 'waiting' && v.transcript.length > 0 && (
 +        <button
@@ -18163,7 +18162,7 @@ index 6370463..179037c 100644
 +          <strong
 +            tw={['font-semibold', l.who === 'ai' ? 'text-ai' : '']}
 +          >
-+            {l.who === 'ai' ? 'Oracle' : 'Candidate'}
++            {l.who === 'ai' ? 'Cleanify' : 'Candidate'}
 +            {l.interrupted ? ' (interrupted)' : ''}:{' '}
 +          </strong>
 +          {l.text}
@@ -19665,10 +19664,10 @@ index a8ecf4b..bb55e66 100644
 -  bottomTab.value = 'out'
 -})
 diff --git a/web/paths.ts b/web/paths.ts
-index 0c5de49..144c876 100644
+index 0c5de49..64309ac 100644
 --- a/web/paths.ts
 +++ b/web/paths.ts
-@@ -1,26 +1,27 @@
+@@ -1,26 +1,26 @@
  // Every route of the app, in one place: pages never hard-code a URL.
  // Two symmetric spaces, /recruiter/… and /candidate/…; ids stay in the
 -// query string (?id=, ?q=) like tournament's signal-router routes.
@@ -19709,8 +19708,7 @@ index 0c5de49..144c876 100644
 +  interview: '/candidate/interview', // the voice interview
 +  done: '/candidate/done', // end of the assessment
 +  voiceLab: '/dev/voice', // test page of the voice interview
-+  ttsLab: '/dev/tts', // test page of Oracle's voice
-+  orbLab: '/dev/orb', // the presence of Oracle in each of its states
++  orbLab: '/dev/orb', // the presence of Cleanify in each of its states
  } as const
  
  export const isCandidatePath = (path: string) =>
@@ -19882,7 +19880,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..1695375 100644
+index 83f3535..a04a70f 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,13 @@
@@ -20334,7 +20332,7 @@ index 83f3535..1695375 100644
 +  interviewMinutes?: number
 +  declaredTools: string[]
 +  autoSubmitted: boolean
-+  /** Oracle closed the interview (otherwise the candidate left it) */
++  /** Cleanify closed the interview (otherwise the candidate left it) */
 +  interviewCompleted: boolean
 +  candidateTurns: number
 +  candidateWords: number

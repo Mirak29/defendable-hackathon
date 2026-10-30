@@ -3,13 +3,16 @@
 // their layer stays in the cache (and out of every upload) when the code is
 // edited. deploy/warm.ts then checks that everything works.
 import { Database } from '@db/sqlite'
-import { KokoroTTS } from 'kokoro-js'
+import { AutoTokenizer, VitsModel } from '@huggingface/transformers'
 
 // the native SQLite library is fetched the first time a database is opened
 new Database(':memory:').close()
 
-// the voice weights (326 MB); the same model as api/tts.ts
-await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
+// the voice weights (MMS-TTS, about 110 MB); the same model and the same
+// loading as api/tts.ts, which then reads them from the disk only
+const MODEL = 'Xenova/mms-tts-eng'
+await AutoTokenizer.from_pretrained(MODEL)
+await VitsModel.from_pretrained(MODEL, {
   dtype: 'fp32',
   device: 'cpu',
 })

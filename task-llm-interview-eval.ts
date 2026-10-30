@@ -1,4 +1,4 @@
-// `deno task llm:interview-eval`: Oracle against six kinds of candidates, each
+// `deno task llm:interview-eval`: Cleanify against six kinds of candidates, each
 // played by a second model, with the rules of its prompt checked on every turn:
 // one question, short, no markdown, no verdict, no praise, no leak of what the
 // tests found, no repeated question, an end that comes. Prints what each
@@ -96,7 +96,7 @@ const PRAISE =
 const REFUSAL =
   /(i can'?t (share|say|tell|give)|i cannot (share|say|tell|give)|i'?m not able|i won'?t|^sorry)/i
 const MARKDOWN = /(```|`|\*\*|^#|^\s*[-*] |\bline \d+\b)/m
-/** what the tests found: Oracle must not say it before the candidate does */
+/** what the tests found: Cleanify must not say it before the candidate does */
 // a program: asking about a name with a capital letter is the question itself;
 // reading the title of the failed test back is the leak
 const LEAKS = args.program ? ['is not a product'] : ['javascript']
@@ -130,7 +130,7 @@ const judgeTurn = (
       out.push(`turn ${turn}: leaks "${leak}"`)
     }
   }
-  if (turn === 1 && !/oracle/i.test(spoken)) {
+  if (turn === 1 && !/cleanify/i.test(spoken)) {
     out.push('turn 1: does not say its name')
   }
   // the first turn puts the candidate at ease: no pressure, time, no trick
@@ -146,7 +146,7 @@ const judgeTurn = (
 
 type Result = {
   problems: string[]
-  turns: { who: 'Oracle' | 'Candidate'; text: string }[]
+  turns: { who: 'Cleanify' | 'Candidate'; text: string }[]
   model: string
 }
 
@@ -191,7 +191,7 @@ const converseOnce = async (
       }
     }
     asked.push(spoken)
-    turns.push({ who: 'Oracle', text: spoken })
+    turns.push({ who: 'Cleanify', text: spoken })
     history.push({ role: 'assistant', content: spoken })
     if (last) {
       ended = true
@@ -219,7 +219,7 @@ const converseOnce = async (
   }
   if (!ended) problems.push('never ends')
   // a person does not start every sentence the same way
-  const openings = turns.filter((t) => t.who === 'Oracle').map((t) =>
+  const openings = turns.filter((t) => t.who === 'Cleanify').map((t) =>
     t.text.split(/\s+/).slice(0, 2).join(' ').toLowerCase().replace(
       /[^a-z ]/g,
       '',
@@ -269,7 +269,7 @@ for (const model of models) {
       if (!d.problems.length) kept++
       console.log(
         `${d.problems.length ? '✗' : '✓'} ${d.persona.padEnd(9)} ${
-          d.turns.filter((t) => t.who === 'Oracle').length
+          d.turns.filter((t) => t.who === 'Cleanify').length
         } turns`,
       )
       for (const p of d.problems) console.log(`    - ${p}`)

@@ -588,7 +588,7 @@ test('voice interview: the server reads each sentence aloud, in order', async (s
   await withServerVoice(30, () =>
     withInterview({
       replies: [
-        'Hi there, I am Oracle. Take your time with this. How did you start?',
+        'Hi there, I am Cleanify. Take your time with this. How did you start?',
       ],
       recognise: () => {},
     }, async ({ port }) => {
@@ -606,11 +606,11 @@ test('voice interview: the server reads each sentence aloud, in order', async (s
         () => {
           const spoken = b.events.filter((e) => e.type === 'speech')
           eq(spoken.map((e) => e.text), [
-            'Hi there, I am Oracle.',
+            'Hi there, I am Cleanify.',
             'Take your time with this.',
             'How did you start?',
           ])
-          eq(atob(spoken[0].pcm), 'sound of: Hi there, I am Oracle.')
+          eq(atob(spoken[0].pcm), 'sound of: Hi there, I am Cleanify.')
         },
       )
       b.ws.close()
@@ -619,7 +619,7 @@ test('voice interview: the server reads each sentence aloud, in order', async (s
 
 test('voice interview: the browser reads when the server cannot', async (step) => {
   await withInterview({
-    replies: ['Hi there, I am Oracle. How did you start?'],
+    replies: ['Hi there, I am Cleanify. How did you start?'],
     recognise: () => {},
   }, async ({ port }) => {
     const b = await browser(port)
@@ -634,7 +634,7 @@ test('voice interview: the browser reads when the server cannot', async (step) =
   })
 })
 
-test('voice interview: speaking over Oracle drops the sentences in the making', async (step) => {
+test('voice interview: speaking over Cleanify drops the sentences in the making', async (step) => {
   await withServerVoice(500, () =>
     withInterview({
       replies: [
@@ -689,12 +689,12 @@ test('voice interview: how speech is cut into pieces', async (step) => {
     ])
   })
   await step('the first piece may end at a comma, the others may not', () => {
-    const text = "Hi, I'm Oracle, and this is a calm chat. Then more."
+    const text = "Hi, I'm Cleanify, and this is a calm chat. Then more."
     eq(nextPiece(text, true), [
-      "Hi, I'm Oracle,",
+      "Hi, I'm Cleanify,",
       'and this is a calm chat. Then more.',
     ])
-    eq(nextPiece(text)?.[0], "Hi, I'm Oracle, and this is a calm chat.")
+    eq(nextPiece(text)?.[0], "Hi, I'm Cleanify, and this is a calm chat.")
   })
   await step('a sentence still being written is not cut', () => {
     eq(nextPiece('Hi Sam. How are you'), undefined)
@@ -704,7 +704,7 @@ test('voice interview: how speech is cut into pieces', async (step) => {
 
 test('voice interview: a candidate who reloads the page goes on, not again', async (step) => {
   const previous = [
-    { who: 'ai', text: 'Hello, I am Oracle. How did you start?' },
+    { who: 'ai', text: 'Hello, I am Cleanify. How did you start?' },
     { who: 'candidate', text: 'I began with the repository.' },
     { who: 'ai', text: 'Thanks. Why that order?' },
     { who: 'candidate', text: 'It felt simplest.' },
@@ -732,7 +732,7 @@ test('voice interview: a candidate who reloads the page goes on, not again', asy
         'assistant',
         'user',
       ])
-      eq(messages[1].content, 'Hello, I am Oracle. How did you start?')
+      eq(messages[1].content, 'Hello, I am Cleanify. How did you start?')
       // the words that were not answered yet are carried in the note
       eq(messages.at(-1).content.includes('It felt simplest.'), true)
       eq(messages.at(-1).content.includes('reloaded'), true)
@@ -751,7 +751,10 @@ test('voice interview: the time is counted from the first opening, a reload does
     // the interview opened eleven minutes ago: it closes at once
     interviewFacts: {
       ...facts,
-      previous: [{ who: 'ai', text: 'Hello, I am Oracle. How did you start?' }],
+      previous: [{
+        who: 'ai',
+        text: 'Hello, I am Cleanify. How did you start?',
+      }],
       interviewStartedAt: Date.now() - 11 * 60_000,
     },
     // the model forgets the end marker: the interview ends anyway
@@ -777,7 +780,7 @@ test('voice interview: the time is counted from the first opening, a reload does
 test('voice interview: the interview closes when the time is over, even in silence', async (step) => {
   await withInterview({
     replies: [
-      'Hello, I am Oracle. How did you start?',
+      'Hello, I am Cleanify. How did you start?',
       'Thank you, a person will read our conversation. [END]',
     ],
     recognise: () => {},
@@ -805,7 +808,7 @@ test('voice interview: the interview closes when the time is over, even in silen
 test('voice interview: a candidate who is speaking when the time is over is heard out', async (step) => {
   await withInterview({
     replies: [
-      'Hello, I am Oracle. How did you start?',
+      'Hello, I am Cleanify. How did you start?',
       'Thank you, a person will read our conversation. [END]',
     ],
     recognise: async (send) => {

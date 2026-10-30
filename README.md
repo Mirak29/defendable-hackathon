@@ -28,7 +28,7 @@ Built for the Meta Global AI Developer Hackathon, with Meta's models.
 | Recruiter pages (list, new assessment, review, approval, invitation)   | done  |
 | Candidate journey (link, consent, editor, submission)                  | done  |
 | Voice interview: server, interviewer prompt, test page (`/dev/voice`)  | done  |
-| Voice interview inside the candidate journey (Oracle)                  | done  |
+| Voice interview inside the candidate journey (Cleanify)                | done  |
 | Report (facts, checked interpretations) and human decision             | done  |
 | E-mail of the personal link, CV import                                 | done  |
 | Program assessments (input to output), in TypeScript or Python         | done  |
@@ -87,8 +87,8 @@ another device. The recruiter picks which languages are offered.
   stopped after 2 s and the next case gets a fresh worker. The tests of the
   candidate run with `unittest`; syntax errors are shown in the editor with
   their line.
-- **Oracle and the report** are told what the candidate wrote (language, kind of
-  task) and read the Python files like the TypeScript ones.
+- **Cleanify and the report** are told what the candidate wrote (language, kind
+  of task) and read the Python files like the TypeScript ones.
 
 A program has one limit: Python's memory is capped by the 2 s time limit only.
 Go and Rust are not offered: they need a compiler in an isolated sandbox (Judge0
@@ -101,9 +101,9 @@ or Modal Sandboxes), which is a decision for the hosting.
 | Generation (need, scenario, tests), reference solution | `muse-spark-open-1026`, **open weights, served by Baseten** |
 | Prefill of the form, reading of a CV                   | `muse-spark-open-1026`                                      |
 | The report (interpretations, checked evidence)         | `muse-spark-1.3` at `high` (fallback `muse-spark-1.2`)      |
-| The interviewer Oracle (spoken, streamed)              | `muse-wonder-1.0` (fallback Muse Spark)                     |
+| The interviewer Cleanify (spoken, streamed)            | `muse-wonder-1.0` (fallback Muse Spark)                     |
 | Listening to the candidate                             | `muse-voice-transcribe-1.0`                                 |
-| Oracle's voice (Meta has no speech synthesis)          | Kokoro-82M, Apache-2.0, **on our server**                   |
+| Cleanify's voice (not in the Meta Model API)           | `facebook/mms-tts-eng` (Meta MMS-TTS), **on our server**    |
 | Development and benchmarks with fictional data         | `muse-spark-1.3-contributor`                                |
 
 **Built with Muse Spark Open** (the Muse Model License asks for this line in the
@@ -117,38 +117,45 @@ model answered, where, and how long it took.
 Candidate code and answers are never sent to a Contributor-mode model (Meta may
 train on its content).
 
-### Oracle's voice
+### Cleanify's voice
 
-Meta's models write and listen but do not speak, so the voice is
-[Kokoro-82M](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX)
-(Apache-2.0) in full precision on the server's CPU ([`api/tts.ts`](api/tts.ts)).
-**The candidate's browser downloads nothing**: the server cuts what Oracle
-writes into pieces (a sentence, the first piece may stop at a comma), makes each
-one while the previous one plays, and sends it as PCM 24 kHz over the
+The Meta Model API has no speech synthesis, so the voice is Meta's own open
+text-to-speech model, [MMS-TTS](https://huggingface.co/facebook/mms-tts-eng)
+(`facebook/mms-tts-eng`, VITS, 36 M parameters, English), run on the server's
+CPU in full precision with Transformers.js ([`api/tts.ts`](api/tts.ts)). The
+weights are the ONNX conversion of that Meta model published by Hugging Face
+([`Xenova/mms-tts-eng`](https://huggingface.co/Xenova/mms-tts-eng), about 110
+MB, in the image). MMS-TTS is released by Meta under
+[CC-BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): it is used here
+for a non-commercial hackathon prototype. It has a single voice. **The
+candidate's browser downloads nothing**: the server cuts what Cleanify writes
+into pieces (a sentence, the first piece may stop at a comma), spells the digits
+out (the model has none in its alphabet), makes each piece while the previous
+one plays, resamples it from 16 kHz to 24 kHz, and sends it as PCM over the
 interview's WebSocket. The browser plays it and measures its loudness, which
-moves Oracle's presence (the blue light). When the candidate speaks over Oracle,
-the pieces still in the making are dropped. If the model is not loaded
-(`TTS=off`, no weights, an error) the interview falls back to the browser's own
-voice.
+moves Cleanify's presence (the blue light). When the candidate speaks over
+Cleanify, the pieces still in the making are dropped.
+
+What is a Meta model call and what is not, in the interview:
+
+| Part                           | What it is                                            |
+| ------------------------------ | ----------------------------------------------------- |
+| Listening to the candidate     | Meta model: `muse-voice-transcribe-1.0`               |
+| What Cleanify says             | Meta model: `muse-wonder-1.0` (fallback Muse Spark)   |
+| Cleanify's voice               | Meta model: MMS-TTS, on our server                    |
+| Voice when the model is absent | the browser's built-in speech synthesis (not a model) |
+| Microphone, audio playback     | browser features (Web Audio), no model                |
+
+If the model is not loaded (`TTS=off`, no weights, an error) the interview falls
+back to the browser's own voice.
 
 Measured on an 8-core laptop CPU (i7-11800H), factor = time to make the sound /
-length of the sound (below 1 keeps up):
-
-| Setup                                        | Factor            |
-| -------------------------------------------- | ----------------- |
-| In the browser, WASM, q8 (92 MB)             | about 2.3         |
-| On the server, native ONNX Runtime, **q8**   | 0.9               |
-| On the server, native ONNX Runtime, **fp32** | **0.3**           |
-| In the browser, WebGPU, fp32 (326 MB) / fp16 | 0.4 to 0.7 / 0.15 |
-
-The quantized model is slower on this CPU, not faster: fp32 is used. On a real
-interview (Muse Wonder + this voice) the first sound arrives about 0.7 s after
-the first word of the model: 2.8 to 4.4 s after the interview opens (4 runs).
-The delay after a turn of the candidate was not re-measured with this voice.
-Hosting: 4 or more fast cores and about 1 GB of memory for the model; the
-sentences of an interview are made one after the other, and the load of several
-interviews at once has **not been measured**. The weights (326 MB) are
-downloaded once by the server, on its first start.
+length of the sound (below 1 keeps up): **0.17** (four sentences, second round,
+fp32), 0.19 inside the Docker image. Loading takes about a second, and the image
+starts its voice with the network cut (the weights are in it). The load of
+several interviews at once, and the delay in a real interview with this voice,
+have **not been measured**. The sentences of an interview are made one after the
+other.
 
 ### A second look at the evidence
 
@@ -188,10 +195,10 @@ prompt, without the rule on absences, doubted 31 % of the right readings
 
 - **One clock, kept by the server.** The interview lasts 10 minutes from the
   first time it opened (`INTERVIEW_MS`); reloading the page does not restart it.
-  When time is over, Oracle hears out a candidate who is speaking, answers them
-  in a few words, thanks them and closes. A page reloaded mid-interview resumes
-  from the saved conversation instead of starting over, so the questions cannot
-  be seen twice.
+  When time is over, Cleanify hears out a candidate who is speaking, answers
+  them in a few words, thanks them and closes. A page reloaded mid-interview
+  resumes from the saved conversation instead of starting over, so the questions
+  cannot be seen twice.
 - **Facts about the session, never a verdict.** The report shows how many times
   the page was left and for how long (building and interview), whether a second
   display was seen (Chromium only, otherwise "unknown"), reloads, and copy
@@ -315,7 +322,7 @@ test or ask two questions at once.
 ## Deploying
 
 One Docker image and a `docker-compose.yml` run the whole app on one machine
-(API, voice interview, Oracle's voice, sandboxes, SQLite in a volume), with
+(API, voice interview, Cleanify's voice, sandboxes, SQLite in a volume), with
 backups and an optional Caddy for HTTPS. The build loads everything the server
 needs offline and checks it works. Step by step:
 [`deploy/README.md`](deploy/README.md).
@@ -342,12 +349,12 @@ without any key.
 | `deno task llm:bench`                    | the same fictional inputs through several models and efforts: latency |
 | `deno task llm:eval`                     | the report on six fictional candidates whose right reading is known   |
 | `deno task llm:extraction-eval`          | prefill and CV against known answers, each model at each effort       |
-| `deno task llm:interview-eval`           | Oracle against six kinds of simulated candidates, its rules checked   |
+| `deno task llm:interview-eval`           | Cleanify against six kinds of simulated candidates, its rules checked |
 | `deno task all`                          | type-check, lint and tests                                            |
 
 `llm:generate` takes `--file=fixtures/offers/roomly.txt` (or `stockly.txt`),
 `--level`, `--duration`, `--skills`, `--model`, `--runs` and `--kind=program`.
-`llm:interview-eval --program` runs Oracle against a Python program.
+`llm:interview-eval --program` runs Cleanify against a Python program.
 
 ## Environment
 
@@ -363,11 +370,11 @@ without any key.
 | `MODEL_OPEN`         | open-weights model, default `meta-models/muse-spark-open-1026`                                            |
 | `MODEL_OPEN_TASKS`   | steps run on it (comma list, empty for none)                                                              |
 | `MODEL_EFFORTS`      | effort per step, e.g. `report=xhigh,scenario=low`                                                         |
-| `VOICE_HOLD_MS`      | interview: pause before Oracle speaks, default `900`                                                      |
+| `VOICE_HOLD_MS`      | interview: pause before Cleanify speaks, default `900`                                                    |
 | `INTERVIEW_MS`       | duration of the interview from its first opening, default `600000` (10 min); a reload does not restart it |
-| `INTERVIEW_GRACE_MS` | after that, the longest wait for a turn before Oracle closes, default `45000`                             |
-| `TTS`                | `off` keeps the browser's voice for Oracle (default `on`)                                                 |
-| `TTS_VOICE`          | Kokoro voice of Oracle, default `af_heart`                                                                |
+| `INTERVIEW_GRACE_MS` | after that, the longest wait for a turn before Cleanify closes, default `45000`                           |
+| `TTS`                | `off` keeps the browser's voice for Cleanify (default `on`)                                               |
+| `TTS_MODEL`          | speech model of Cleanify, default `Xenova/mms-tts-eng` (Meta MMS-TTS)                                     |
 | `DEMO_ACCESS`        | `1`: a demo account can be signed in without a password                                                   |
 | `DATABASE_PATH`      | SQLite file (`:memory:` in tests)                                                                         |
 | `RESEND_API_KEY`     | e-mail of the personal link of a candidate (Resend)                                                       |

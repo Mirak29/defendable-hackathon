@@ -1,11 +1,11 @@
-// Can this machine keep up with Oracle's voice? Loads the model the way the
+// Can this machine keep up with Cleanify's voice? Loads the model the way the
 // server does, then makes a few sentences and prints, for each, how long it
 // took against how long it lasts: below 1 keeps up, below 0.5 is comfortable.
 // Run it on the host before choosing its size: `deno task tts:bench`.
 import { tts } from '/api/tts.ts'
 
 const SENTENCES = [
-  "Hi, I'm Oracle, and this is just a calm chat about the code you wrote.",
+  "Hi, I'm Cleanify, and this is just a calm chat about the code you wrote.",
   'What happens if the first line has a well-formed id but fails validation?',
   'Can you walk me through where in the loop that decision happens?',
   'Thanks for walking me through your code, a person will read our conversation.',
