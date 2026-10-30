@@ -22,13 +22,16 @@ import type {
 const candidateOf = (req: Request) =>
   findCandidate(req.headers.get('cookie')?.match(/dfd_candidate=([^;]+)/)?.[1])
 
-/** undefined while the preparation of the interview is not over */
-export const factsOf = (c: CandidateRow): InterviewFacts | undefined => {
-  const results = json<StoredResults>(c.candidateResults)
-  if (!results) return
-  const spec = json<AssessmentSpec>(
-    Assessment.require(c.assessmentId).assessmentSpec,
-  )!
+/**
+ * What the interviewer is told about code that was run: the same for a
+ * candidate and for the voice lab, so the lab tries the prompt of production.
+ */
+export const buildFacts = (
+  spec: AssessmentSpec,
+  language: InterviewFacts['language'],
+  files: CandidateFiles,
+  results: StoredResults,
+): InterviewFacts => {
   const failedTests = results.tests.filter((r) => !r.passed).map((r) => {
     const test = spec.tests.find((t) => t.id === r.id)
     return `${r.id} (${test?.visibility ?? '?'}) ${
@@ -44,9 +47,9 @@ export const factsOf = (c: CandidateRow): InterviewFacts | undefined => {
   const { passed, failed } = results.own
   return {
     kind: spec.kind === 'program' ? 'program' : 'api',
-    language: c.candidateLanguage === 'python' ? 'python' : 'typescript',
+    language,
     brief: candidateBriefText(spec),
-    files: json<CandidateFiles>(c.candidateFiles) ?? {},
+    files,
     failedTests,
     passedCount: results.tests.filter((r) => r.passed).length,
     totalCount: results.tests.length,
@@ -55,6 +58,23 @@ export const factsOf = (c: CandidateRow): InterviewFacts | undefined => {
       ? `${passed} pass, ${failed} fail`
       : 'none written',
     questions: voiceConfig.questions,
+  }
+}
+
+/** undefined while the preparation of the interview is not over */
+export const factsOf = (c: CandidateRow): InterviewFacts | undefined => {
+  const results = json<StoredResults>(c.candidateResults)
+  if (!results) return
+  const spec = json<AssessmentSpec>(
+    Assessment.require(c.assessmentId).assessmentSpec,
+  )!
+  return {
+    ...buildFacts(
+      spec,
+      c.candidateLanguage === 'python' ? 'python' : 'typescript',
+      json<CandidateFiles>(c.candidateFiles) ?? {},
+      results,
+    ),
     previous: json<InterviewLine[]>(c.candidateInterview) ?? undefined,
     interviewStartedAt: c.candidateInterviewStartedAt ?? undefined,
   }

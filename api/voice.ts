@@ -616,6 +616,15 @@ export class VoiceInterview {
   }
 }
 
+/** the host of an Origin header; a malformed one ("null") matches no host */
+const hostOf = (origin: string) => {
+  try {
+    return new URL(origin).host
+  } catch {
+    return undefined
+  }
+}
+
 /** the upgrade of a request: who may talk, and what the interviewer knows */
 export const handleVoice = async (
   req: Request,
@@ -637,7 +646,7 @@ export const handleVoice = async (
   }
   // same host only: a page of another site cannot open the interview
   const origin = req.headers.get('origin')
-  if (origin && new URL(origin).host !== new URL(req.url).host) {
+  if (origin && hostOf(origin) !== new URL(req.url).host) {
     return new Response('Origin not allowed.', { status: 403 })
   }
   const authorize = options.authorize ?? (async (r: Request) => {

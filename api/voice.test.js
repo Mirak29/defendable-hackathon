@@ -859,3 +859,13 @@ test('voice interview: a candidate who is speaking when the time is over is hear
     b.ws.close()
   })
 })
+
+test('voice interview: a malformed Origin is refused, not a crash', async () => {
+  const res = await handleVoice(
+    new Request('http://localhost/api/voice', {
+      headers: { upgrade: 'websocket', origin: 'null' },
+    }),
+    { facts: () => Promise.reject(Error('never asked')) },
+  )
+  eq(res.status, 403)
+})

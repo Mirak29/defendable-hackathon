@@ -459,10 +459,10 @@ index e207b60..362e39d 100644
 +
 +CMD ["run", "-A", "--unstable-ffi", "prod-server.ts"]
 diff --git a/api/assessment.ts b/api/assessment.ts
-index 46b79c9..d6a767d 100644
+index 46b79c9..4e786cf 100644
 --- a/api/assessment.ts
 +++ b/api/assessment.ts
-@@ -1,17 +1,15 @@
+@@ -1,38 +1,61 @@
 -import { contentLang, tc, withContentLang } from '/api/lib/content-lang.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import { companyOfAssessment } from '/api/schema.ts'
@@ -484,9 +484,10 @@ index 46b79c9..d6a767d 100644
    demoCompanyId,
    demoMemberId,
    Entry,
-@@ -19,20 +17,44 @@ import {
+ } from '/api/schema.ts'
  import { AiError, aiErrorText, ask, type AskOptions } from '/api/llm.ts'
  import { log } from '/api/lib/log.ts'
++import { invitationLink } from '/api/lib/invitation-link.ts'
  import { runEvaluation } from '/api/sandbox.ts'
 +import { checkTraps } from '/api/traps.ts'
 +import { programCases, runProgramCases } from '/api/program-sandbox.ts'
@@ -530,7 +531,7 @@ index 46b79c9..d6a767d 100644
    Level,
    Method,
    Progress,
-@@ -41,6 +63,7 @@ import type {
+@@ -41,6 +64,7 @@ import type {
    Skill,
    TestCase,
  } from '/web/types.ts'
@@ -538,7 +539,7 @@ index 46b79c9..d6a767d 100644
  
  export const json = <T>(value: unknown): T | undefined =>
    value == null
-@@ -53,21 +76,21 @@ const iso = (ms?: number | null) => ms ? new Date(ms).toISOString() : undefined
+@@ -53,21 +77,21 @@ const iso = (ms?: number | null) => ms ? new Date(ms).toISOString() : undefined
  
  /* ---------- read ---------- */
  
@@ -568,7 +569,7 @@ index 46b79c9..d6a767d 100644
  
  const minutes = (from?: number | null, to?: number | null) =>
    from && to ? Math.max(1, Math.round((to - from) / 60_000)) : undefined
-@@ -82,14 +105,13 @@ export const toCandidateSummary = (c: CandidateRow): CandidateSummary => ({
+@@ -82,14 +106,16 @@ export const toCandidateSummary = (c: CandidateRow): CandidateSummary => ({
        email: c.candidateEmail,
        profileUrl: c.candidateProfileUrl ?? undefined,
        note: c.candidateNote ?? undefined,
@@ -576,6 +577,9 @@ index 46b79c9..d6a767d 100644
      }
      : undefined,
    invitation: c.candidateInvitation ?? undefined,
++  link: c.candidateInvitation
++    ? invitationLink(c.candidateInvitation)
++    : undefined,
    status: candidateStatus(c),
    buildMinutes: minutes(c.candidateStartedAt, c.candidateSubmittedAt),
 -  questionsMinutes: minutes(
@@ -585,16 +589,39 @@ index 46b79c9..d6a767d 100644
      c.candidateFinishedAt,
    ),
    date: iso(
-@@ -118,7 +140,7 @@ const EMPTY_TRACE: AiTrace = {
+@@ -117,13 +143,28 @@ const EMPTY_TRACE: AiTrace = {
+ }
  
  export const toState = (row: AssessmentRow): AssessmentState => {
++  // not generated yet (or the generation failed): what the recruiter asked
++  // for, nothing of the demo
++  const program = row.assessmentKind === 'program'
    const spec = json<AssessmentSpec>(row.assessmentSpec) ?? {
 -    ...demoOf(row.assessmentLanguage).assessment,
-+    ...demoAssessment,
      title: row.assessmentTitle,
-     tests: [],
-     requirements: [],
-@@ -135,7 +157,8 @@ export const toState = (row: AssessmentRow): AssessmentState => {
+-    tests: [],
+-    requirements: [],
++    company: '',
++    format: program ? PROGRAM_FORMAT : 'HTTP API in TypeScript (Deno)',
++    durationMin: row.assessmentDuration,
++    level: row.assessmentLevel as Level,
++    jobDescription: row.assessmentJobDescription,
++    context: '',
++    mission: '',
++    candidateBrief: { context: '', mission: '' },
++    constraints: [],
+     routes: [],
++    requirements: [],
+     skills: [],
++    tests: [],
++    ...(program && {
++      kind: 'program' as const,
++      languages: json<Language[]>(row.assessmentLanguages) ?? [...LANGUAGES],
++    }),
+   }
+   return {
+     id: row.assessmentId,
+@@ -135,7 +176,8 @@ export const toState = (row: AssessmentRow): AssessmentState => {
        durationMin: row.assessmentDuration,
        skills: json<string[]>(row.assessmentSkills) ?? [],
        domain: row.assessmentDomain ?? undefined,
@@ -604,7 +631,7 @@ index 46b79c9..d6a767d 100644
      },
      createdAt: iso(row.assessmentCreatedAt) ?? new Date().toISOString(),
      approvedAt: iso(row.assessmentApprovedAt),
-@@ -151,12 +174,6 @@ export const toState = (row: AssessmentRow): AssessmentState => {
+@@ -151,12 +193,6 @@ export const toState = (row: AssessmentRow): AssessmentState => {
    }
  }
  
@@ -617,7 +644,7 @@ index 46b79c9..d6a767d 100644
  const companyAssessments = Assessment.sql<keyof AssessmentRow, number>`
    SELECT * FROM assessment WHERE companyId = ? ORDER BY assessmentId DESC
  `.all
-@@ -165,16 +182,22 @@ export const listCompanyAssessments = (companyId: number) =>
+@@ -165,16 +201,22 @@ export const listCompanyAssessments = (companyId: number) =>
  
  export const getAssessment = (id: number) => toState(Assessment.require(id))
  
@@ -643,7 +670,7 @@ index 46b79c9..d6a767d 100644
      })
    }
    return row
-@@ -183,8 +206,8 @@ const requireDraft = (id: number) => {
+@@ -183,8 +225,8 @@ const requireDraft = (id: number) => {
  /* ---------- model answers ---------- */
  
  const LEVELS = ['junior', 'intermediate', 'senior'] as const
@@ -654,7 +681,7 @@ index 46b79c9..d6a767d 100644
  const HTTP = ['GET', 'POST', 'DELETE'] as const
  
  const parseSkill = (v: unknown, p: string): Skill => {
-@@ -207,14 +230,14 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
+@@ -207,14 +249,14 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
    // "/rooms/{id}" → "/rooms/:id", without query string
    const path = str(o.path, `${p}.path`, 80).split('?')[0]
      .replace(/\{(\w+)\}/g, ':$1')
@@ -671,7 +698,7 @@ index 46b79c9..d6a767d 100644
        return code
      }, { min: 1, max: 6 }),
    }
-@@ -223,7 +246,7 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
+@@ -223,7 +265,7 @@ const parseRoute = (v: unknown, p: string): ApiRoute => {
  const parseRequirement = (v: unknown, p: string): Requirement => {
    const o = obj(v, p)
    const id = str(o.id, `${p}.id`, 5)
@@ -680,7 +707,7 @@ index 46b79c9..d6a767d 100644
    return {
      id,
      title: str(o.title, `${p}.title`, 100),
-@@ -236,7 +259,7 @@ const parseRequirement = (v: unknown, p: string): Requirement => {
+@@ -236,7 +278,7 @@ const parseRequirement = (v: unknown, p: string): Requirement => {
  const parseTest = (v: unknown, p: string): TestCase => {
    const o = obj(v, p)
    const id = str(o.id, `${p}.id`, 5)
@@ -689,7 +716,7 @@ index 46b79c9..d6a767d 100644
    const steps = arr(o.steps, `${p}.steps`, (s, sp) => {
      const step = obj(s, sp)
      const parsed = {
-@@ -246,7 +269,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
+@@ -246,7 +288,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
      try {
        parseStep(parsed)
      } catch (err) {
@@ -698,7 +725,7 @@ index 46b79c9..d6a767d 100644
      }
      return parsed
    }, { min: 1, max: 6 })
-@@ -258,7 +281,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
+@@ -258,7 +300,7 @@ const parseTest = (v: unknown, p: string): TestCase => {
      expected: str(o.expected, `${p}.expected`, 60),
      visibility: oneOf(
        o.visibility,
@@ -707,7 +734,7 @@ index 46b79c9..d6a767d 100644
        `${p}.visibility`,
      ),
      requirementIds: arr(o.requirementIds, `${p}.requirementIds`, strItem, {
-@@ -272,11 +295,20 @@ const parseTest = (v: unknown, p: string): TestCase => {
+@@ -272,11 +314,20 @@ const parseTest = (v: unknown, p: string): TestCase => {
  
  type NeedAnalysis = { level: Level; skills: Skill[]; domain?: string }
  
@@ -731,7 +758,7 @@ index 46b79c9..d6a767d 100644
      domain: optStr(o.domain, 'domain', 60),
    }
  }
-@@ -293,9 +325,29 @@ type Scenario = Pick<
+@@ -293,9 +344,29 @@ type Scenario = Pick<
    | 'requirements'
  >
  
@@ -763,7 +790,7 @@ index 46b79c9..d6a767d 100644
    return {
      title: str(o.title, 'title', 80),
      company: str(o.company, 'company', 40),
-@@ -319,101 +371,226 @@ const parseScenario = (v: unknown): Scenario => {
+@@ -319,101 +390,226 @@ const parseScenario = (v: unknown): Scenario => {
    }
  }
  
@@ -942,7 +969,19 @@ index 46b79c9..d6a767d 100644
 +    )
 +    if (uncovered.length) throw Error(`no test covers ${uncovered.join(', ')}`)
 +    return tests
-+  }
+   }
+-${instruction ? `Consigne du recruteur : ${instruction}\n` : ''}
+-Écris 8 à 12 tests d’évaluation HTTP. Chaque exigence est couverte par au moins un test ; 2 ou 3 tests sont cachés ("caché") et portent sur des exigences visibles. Chaque test part d’un état vide (seules les données de référence des contraintes existent).
+-Le candidat ne lit que les exigences, les routes et les contraintes : un test n’attend que ce qu’elles disent explicitement (code de statut écrit dans l’exigence, format écrit dans les contraintes). Pas de cas limite ambigu (ex. une date sans fuseau, que le format ISO 8601 accepte). Les requêtes d’un test s’enchaînent en quelques millisecondes : aucun test ne dépend du temps qui passe (expiration, délai) ni de requêtes simultanées ; ces règles relèvent de l’analyse du code et des questions.
+-Règles d’équité : chemins et identifiants en ASCII, sans accents ni espaces (ex. "salle-a"). Ne fige jamais une valeur choisie par le code du candidat. Un identifiant renvoyé s’écrit "$id" dans la réponse (il est capturé) et se réutilise dans les requêtes suivantes (ex. "DELETE /reservations/$id"). Ne vérifie pas le texte exact d’un message d’erreur : le code de statut suffit, ou "error : chaîne non vide".
+-Format strict des étapes :
+-- request : "MÉTHODE /chemin" suivi éventuellement d’un corps JSON sur une ligne, et de " (×2)" pour répéter. Ex. : "POST /links {\\"url\\":\\"https://a.com\\"}"
+-- response : le code attendu, suivi éventuellement de " · " et d’un sous-ensemble JSON du corps (objet, ou tableau dont chaque élément doit être présent), d’un en-tête "Nom: valeur", ou de "champ : chaîne non vide". Ex. : "200 · {\\"clicks\\":2}", "302 · Location: https://a.com".
+-"condition" décrit le cas en quelques mots lisibles, sans JSON (ex. « deux fois le même alias ») ; "expected" résume l’attendu en quelques caractères (ex. « 409 », « 200 + liste vide »).
+-JSON attendu :
+-{"tests":[{"id":"T1","title":"titre court","route":"POST /links","condition":"avec une URL valide","expected":"201 + id","visibility":"public","requirementIds":["R1"],"steps":[{"request":"…","response":"…"}]}]}`
+-
+-/* ---------- starter code (C2) ---------- */
 +
 +/* ---------- starter code ---------- */
 +
@@ -1012,19 +1051,7 @@ index 46b79c9..d6a767d 100644
 +  },
 +  "imports": {
 +    "@std/assert": "jsr:@std/assert@1"
-   }
--${instruction ? `Consigne du recruteur : ${instruction}\n` : ''}
--Écris 8 à 12 tests d’évaluation HTTP. Chaque exigence est couverte par au moins un test ; 2 ou 3 tests sont cachés ("caché") et portent sur des exigences visibles. Chaque test part d’un état vide (seules les données de référence des contraintes existent).
--Le candidat ne lit que les exigences, les routes et les contraintes : un test n’attend que ce qu’elles disent explicitement (code de statut écrit dans l’exigence, format écrit dans les contraintes). Pas de cas limite ambigu (ex. une date sans fuseau, que le format ISO 8601 accepte). Les requêtes d’un test s’enchaînent en quelques millisecondes : aucun test ne dépend du temps qui passe (expiration, délai) ni de requêtes simultanées ; ces règles relèvent de l’analyse du code et des questions.
--Règles d’équité : chemins et identifiants en ASCII, sans accents ni espaces (ex. "salle-a"). Ne fige jamais une valeur choisie par le code du candidat. Un identifiant renvoyé s’écrit "$id" dans la réponse (il est capturé) et se réutilise dans les requêtes suivantes (ex. "DELETE /reservations/$id"). Ne vérifie pas le texte exact d’un message d’erreur : le code de statut suffit, ou "error : chaîne non vide".
--Format strict des étapes :
--- request : "MÉTHODE /chemin" suivi éventuellement d’un corps JSON sur une ligne, et de " (×2)" pour répéter. Ex. : "POST /links {\\"url\\":\\"https://a.com\\"}"
--- response : le code attendu, suivi éventuellement de " · " et d’un sous-ensemble JSON du corps (objet, ou tableau dont chaque élément doit être présent), d’un en-tête "Nom: valeur", ou de "champ : chaîne non vide". Ex. : "200 · {\\"clicks\\":2}", "302 · Location: https://a.com".
--"condition" décrit le cas en quelques mots lisibles, sans JSON (ex. « deux fois le même alias ») ; "expected" résume l’attendu en quelques caractères (ex. « 409 », « 200 + liste vide »).
--JSON attendu :
--{"tests":[{"id":"T1","title":"titre court","route":"POST /links","condition":"avec une URL valide","expected":"201 + id","visibility":"public","requirementIds":["R1"],"steps":[{"request":"…","response":"…"}]}]}`
--
--/* ---------- starter code (C2) ---------- */
++  }
 +}
 +`,
 +  }
@@ -1058,7 +1085,7 @@ index 46b79c9..d6a767d 100644
      { status: 501 },
    );
  }
-@@ -421,7 +598,7 @@ export async function handler(req: Request): Promise<Response> {
+@@ -421,7 +617,7 @@ export async function handler(req: Request): Promise<Response> {
      'src/app_test.ts': `import { assertEquals } from "@std/assert";
  import { handler } from "./app.ts";
  
@@ -1067,7 +1094,7 @@ index 46b79c9..d6a767d 100644
    const res = await handler(new Request("http://localhost/"));
    assertEquals(typeof res.status, "number");
  });
-@@ -429,7 +606,7 @@ Deno.test("exemple : l’API répond", async () => {
+@@ -429,7 +625,7 @@ Deno.test("exemple : l’API répond", async () => {
      'playground.ts': `import { handler } from "./src/app.ts";
  
  const res = await handler(new Request("http://localhost${
@@ -1076,7 +1103,7 @@ index 46b79c9..d6a767d 100644
      }", {
    method: "${first?.method ?? 'GET'}",
  }));
-@@ -449,7 +626,7 @@ console.log(res.status, await res.text());
+@@ -449,7 +645,7 @@ console.log(res.status, await res.text());
  ## Tests
  deno task test
  
@@ -1085,7 +1112,7 @@ index 46b79c9..d6a767d 100644
  - `,
    }
  }
-@@ -467,31 +644,20 @@ const saveProgress = (id: number, progress: Progress) => {
+@@ -467,31 +663,20 @@ const saveProgress = (id: number, progress: Progress) => {
    })
  }
  
@@ -1118,7 +1145,7 @@ index 46b79c9..d6a767d 100644
    const result = await ask({
      ...options,
      onFallback: (reason) => {
-@@ -531,46 +697,55 @@ const problemsOf = (d: Draft) => {
+@@ -531,46 +716,55 @@ const problemsOf = (d: Draft) => {
          !r.passed && !reference.excluded.some((e) => e.id === r.id)
        ).length
      : 0
@@ -1189,7 +1216,7 @@ index 46b79c9..d6a767d 100644
  ) => {
    const progress: Progress = {
      kind: instruction ? 'regeneration' : 'generation',
-@@ -578,64 +753,106 @@ const runGeneration = async (
+@@ -578,64 +772,106 @@ const runGeneration = async (
      steps: Array.from({ length: GENERATION_STEPS }, () => ({ state: 'wait' })),
    }
    const previous = json<AssessmentSpec>(Assessment.require(id).assessmentSpec)
@@ -1337,7 +1364,7 @@ index 46b79c9..d6a767d 100644
          durationMin: input.durationMin,
          level: analysis.data.level,
          jobDescription: input.jobDescription,
-@@ -643,13 +860,27 @@ const runGeneration = async (
+@@ -643,13 +879,27 @@ const runGeneration = async (
          tests: tests.data,
        }
        const starter = starterFiles(spec)
@@ -1366,7 +1393,7 @@ index 46b79c9..d6a767d 100644
        return { spec, trace: scenario.trace, starter, starterFails, reference }
      }
      let best = await draft(instruction)
-@@ -665,7 +896,6 @@ const runGeneration = async (
+@@ -665,7 +915,6 @@ const runGeneration = async (
        if (repaired && problemsOf(repaired) < problemsOf(best)) best = repaired
      }
      const { spec, starter, starterFails, reference } = best
@@ -1374,7 +1401,7 @@ index 46b79c9..d6a767d 100644
      progress.steps[3] = {
        state: 'done',
        ...(reference && { trace: reference.traces.at(-1) }),
-@@ -676,7 +906,7 @@ const runGeneration = async (
+@@ -676,7 +925,7 @@ const runGeneration = async (
        assessmentTitle: spec.title,
        assessmentLevel: spec.level,
        assessmentSpec: spec,
@@ -1383,7 +1410,7 @@ index 46b79c9..d6a767d 100644
        assessmentChecks: { starterFails, reference },
        assessmentStarterFiles: starter,
        assessmentDeletedTests: reference?.excluded.map((e) => e.id) ?? [],
-@@ -697,65 +927,62 @@ const runGeneration = async (
+@@ -697,65 +946,62 @@ const runGeneration = async (
    }
  }
  
@@ -1465,7 +1492,7 @@ index 46b79c9..d6a767d 100644
        return {
          level: oneOf(o.level, LEVELS, 'level'),
          skills: arr(o.skills, 'skills', (s, p) => str(s, p, 60), {
-@@ -764,18 +991,18 @@ export const prefillFromDescription = async (jobDescription: string) => {
+@@ -764,18 +1010,18 @@ export const prefillFromDescription = async (jobDescription: string) => {
          }),
        }
      },
@@ -1487,7 +1514,7 @@ index 46b79c9..d6a767d 100644
  export const updateAssessment = (
    id: number,
    { title, context, mission }: {
-@@ -784,7 +1011,7 @@ export const updateAssessment = (
+@@ -784,7 +1030,7 @@ export const updateAssessment = (
      mission?: string | null
    },
  ) => {
@@ -1496,7 +1523,7 @@ index 46b79c9..d6a767d 100644
    const spec = json<AssessmentSpec>(row.assessmentSpec)!
    const next: AssessmentSpec = {
      ...spec,
-@@ -807,7 +1034,7 @@ export const updateAssessment = (
+@@ -807,7 +1053,7 @@ export const updateAssessment = (
  }
  
  export const setDeletedTests = (id: number, testIds: string[]) => {
@@ -1505,7 +1532,7 @@ index 46b79c9..d6a767d 100644
    const known = new Set(
      json<AssessmentSpec>(row.assessmentSpec)!.tests.map((t) => t.id),
    )
-@@ -825,9 +1052,9 @@ export const randomToken = (length: number) =>
+@@ -825,9 +1071,9 @@ export const randomToken = (length: number) =>
      (n) => INVITATION_CHARS[n % INVITATION_CHARS.length],
    ).join('')
  
@@ -1517,7 +1544,7 @@ index 46b79c9..d6a767d 100644
    const state = toState(row)
    const deleted = new Set(state.deletedTests)
    const { blocked } = computeChecks(
-@@ -838,7 +1065,7 @@ export const approveAssessment = (id: number) => {
+@@ -838,7 +1084,7 @@ export const approveAssessment = (id: number) => {
    )
    if (blocked) {
      throw new respond.BadRequestError({
@@ -1964,10 +1991,10 @@ index 2d5d576..aad29ec 100644
    })
  })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..c39d6bd 100644
+index 9a19ccb..b692192 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
-@@ -1,63 +1,71 @@
+@@ -1,63 +1,70 @@
 -import { companyOfAssessment } from '/api/schema.ts'
 -// Candidate journey (C1 → C7). The candidate is identified by a token in an
 -// httpOnly cookie, set when they start (no account, brief §6). The server is
@@ -1980,7 +2007,7 @@ index 9a19ccb..c39d6bd 100644
 +// frozen and the server runs every test (the hidden ones too), the type check
 +// and the candidate's own tests: these facts are what the interviewer knows.
  import { respond } from '@01edu/api/response'
-+import { BASE_URL, ORIGIN } from '/api/lib/env.ts'
++import { invitationLink } from '/api/lib/invitation-link.ts'
 +import { log } from '/api/lib/log.ts'
  import {
    Assessment,
@@ -2018,7 +2045,6 @@ index 9a19ccb..c39d6bd 100644
 -import { demoTraces } from '/fixtures/demo.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import type { Question } from '/fixtures/questions.ts'
-+import { paths } from '/web/paths.ts'
 +import { isTestFile } from '/web/lib/test-file.ts'
  import type {
 -  AiTrace,
@@ -2073,7 +2099,7 @@ index 9a19ccb..c39d6bd 100644
  
  const byInvitation = Candidate.sql`
    SELECT * FROM candidate WHERE candidateInvitation = :invitation
-@@ -90,13 +98,26 @@ const findInvitation = (invitation?: string) => {
+@@ -90,13 +97,26 @@ const findInvitation = (invitation?: string) => {
    const c = invitation ? byInvitation({ invitation }) : undefined
    const a = c && Assessment.get(c.assessmentId)
    if (!c || !a || a.assessmentStatus !== 'approved') {
@@ -2101,7 +2127,7 @@ index 9a19ccb..c39d6bd 100644
  export const getInvitation = (invitation?: string): Invitation => {
    const { c, a } = findInvitation(invitation)
    const spec = specOf(a)
-@@ -108,12 +129,15 @@ export const getInvitation = (invitation?: string): Invitation => {
+@@ -108,12 +128,15 @@ export const getInvitation = (invitation?: string): Invitation => {
      durationMin: a.assessmentDuration,
      firstName: c.candidateFirstName ?? undefined,
      state: invitationState(c),
@@ -2120,7 +2146,7 @@ index 9a19ccb..c39d6bd 100644
      Array.from(crypto.getRandomValues(new Uint8Array(2)), (n) =>
        n.toString(16).padStart(2, '0')).join('').toUpperCase()
    }`
-@@ -125,15 +149,19 @@ const field = (
+@@ -125,15 +148,15 @@ const field = (
  ) => {
    const clean = (value ?? '').trim()
    if (clean.length > max) {
@@ -2136,16 +2162,12 @@ index 9a19ccb..c39d6bd 100644
 - * R5 « Inviter un candidat » (U4): the recruiter enters the identity, the
 - * candidate gets a personal link. Nothing is sent: the recruiter shares it.
 - */
-+/** the address a candidate opens: the app's own URL, then the page */
-+export const invitationLink = (invitation: string) =>
-+  `${ORIGIN}${
-+    BASE_URL === '/' ? '' : BASE_URL.replace(/\/$/, '')
-+  }${paths.candidate}?invitation=${invitation}`
++export { invitationLink }
 +
  export const inviteCandidate = (
    assessmentId: number,
    memberId: number,
-@@ -143,44 +171,44 @@ export const inviteCandidate = (
+@@ -143,44 +166,44 @@ export const inviteCandidate = (
      email: string
      profileUrl?: string | null
      note?: string | null
@@ -2200,7 +2222,7 @@ index 9a19ccb..c39d6bd 100644
      assessmentId,
      candidateCreatedAt: now,
      candidateInvitation: invitation,
-@@ -191,62 +219,60 @@ export const inviteCandidate = (
+@@ -191,62 +214,60 @@ export const inviteCandidate = (
      candidateEmail: email,
      candidateProfileUrl: profileUrl || undefined,
      candidateNote: note || undefined,
@@ -2284,7 +2306,7 @@ index 9a19ccb..c39d6bd 100644
    })
    Entry.insert.CANDIDATE_BUILD_STARTED({
      companyId: companyOfAssessment(a.assessmentId),
-@@ -261,7 +287,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
+@@ -261,7 +282,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
  export const findCandidate = (token?: string) => {
    const row = token ? byToken({ token }) : undefined
    if (!row) {
@@ -2295,7 +2317,7 @@ index 9a19ccb..c39d6bd 100644
    }
    return row
  }
-@@ -272,27 +300,24 @@ const deadline = (c: CandidateRow) =>
+@@ -272,27 +295,24 @@ const deadline = (c: CandidateRow) =>
    (c.candidateStartedAt ?? Date.now()) +
    assessmentOf(c).assessmentDuration * 60_000
  
@@ -2326,7 +2348,7 @@ index 9a19ccb..c39d6bd 100644
      assessment: {
        title: spec.title,
        company: spec.company,
-@@ -308,6 +333,7 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -308,6 +328,7 @@ export const toView = (c: CandidateRow): CandidateView => {
        constraints: spec.constraints,
        publicTests: spec.tests.filter((t) => t.visibility === 'public'),
        hiddenCount: spec.tests.filter((t) => t.visibility !== 'public').length,
@@ -2334,7 +2356,7 @@ index 9a19ccb..c39d6bd 100644
      },
      startedAt: c.candidateStartedAt ?? undefined,
      submittedAt: c.candidateSubmittedAt ?? undefined,
-@@ -316,18 +342,17 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -316,18 +337,17 @@ export const toView = (c: CandidateRow): CandidateView => {
      files: json<CandidateFiles>(c.candidateFiles) ?? {},
      savedAt: c.candidateSavedAt ?? undefined,
      preparation: json(c.candidatePreparation),
@@ -2356,7 +2378,7 @@ index 9a19ccb..c39d6bd 100644
      })
    }
  }
-@@ -343,30 +368,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
+@@ -343,30 +363,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
    return { savedAt }
  }
  
@@ -2427,7 +2449,7 @@ index 9a19ccb..c39d6bd 100644
  
  export const submitCode = (
    c: CandidateRow,
-@@ -376,261 +434,215 @@ export const submitCode = (
+@@ -376,261 +429,215 @@ export const submitCode = (
      auto?: boolean
    },
  ) => {
@@ -4188,10 +4210,10 @@ index 6493f68..ab3bad2 100644
    },
  )
 diff --git a/api/llm.test.js b/api/llm.test.js
-index 03637a4..bab04ef 100644
+index 03637a4..2a31101 100644
 --- a/api/llm.test.js
 +++ b/api/llm.test.js
-@@ -1,269 +1,459 @@
+@@ -1,269 +1,489 @@
 -import { eq, rejects, test } from '/api/lib/test.ts'
 -import { mockLlm } from '/api/lib/llm-mock.ts'
 +// The AI client against a local mock of the Meta Model API: JSON, retries,
@@ -4201,6 +4223,7 @@ index 03637a4..bab04ef 100644
    AiError,
 -  aiErrorText,
    ask,
++  converse,
    extractJson,
 +  hasAiKey,
 +  isOpenModel,
@@ -4219,9 +4242,10 @@ index 03637a4..bab04ef 100644
 -  return v
 +  if (!v || typeof v.n !== 'number') throw Error('n must be a number')
 +  return v.n
-+}
+ }
 +const base = { task: 'test', system: 'system', prompt: 'prompt', parse }
-+
+ 
+-const mock = mockLlm
 +/** a mock endpoint: `script` gives, per call, a status and a body */
 +const withMock = async (script, fn) => {
 +  const calls = []
@@ -4258,9 +4282,8 @@ index 03637a4..bab04ef 100644
 +    Object.assign(llmConfig, saved)
 +    await server.shutdown()
 +  }
- }
- 
--const mock = mockLlm
++}
++
 +const reply = (
 +  content,
 +  usage = { prompt_tokens: 10, completion_tokens: 5 },
@@ -4817,10 +4840,6 @@ index 03637a4..bab04ef 100644
 -        }),
 -        [MODELS['flash-lite'].label, MODELS['lite-3.1'].label],
 -      )
--    })
--  } finally {
--    llmConfig.keys = saved
--  }
 +  await step('an empty answer cut by the budget is explained', async () => {
 +    await withMock(
 +      [[200, {
@@ -4860,9 +4879,41 @@ index 03637a4..bab04ef 100644
 +      }
 +    },
 +  )
++})
++
++test('conversation: a passing failure is tried again', async (step) => {
++  const said = [200, {
++    sse: [{ choices: [{ delta: { content: 'Hello there.' } }] }],
++  }]
++  const ask = { task: 'interview', system: 's', messages: [] }
++
++  await step('503 once: the same model answers on its second try', async () => {
++    await withMock([[503, 'busy'], said], async (calls) => {
++      const out = await converse(ask)
++      eq(out.text, 'Hello there.')
++      eq(calls.map((c) => c.body.model), ['muse-spark-1.3', 'muse-spark-1.3'])
++      eq(out.trace.failures?.length, 1)
+     })
+-  } finally {
+-    llmConfig.keys = saved
+-  }
++  })
++
++  await step('no retries configured: straight to the next model', async () => {
++    const saved = llmConfig.retries
++    llmConfig.retries = 0
++    try {
++      await withMock([[503, 'busy'], said], async (calls) => {
++        await converse(ask)
++        eq(calls.map((c) => c.body.model), ['muse-spark-1.3', 'muse-spark-1.2'])
++      })
++    } finally {
++      llmConfig.retries = saved
++    }
++  })
  })
 diff --git a/api/llm.ts b/api/llm.ts
-index 76404e9..bf3ec45 100644
+index 76404e9..5707168 100644
 --- a/api/llm.ts
 +++ b/api/llm.ts
 @@ -1,189 +1,99 @@
@@ -5666,7 +5717,7 @@ index 76404e9..bf3ec45 100644
    const messages: Message[] = [
      { role: 'system', content: o.system },
      { role: 'user', content: o.prompt },
-@@ -595,148 +371,314 @@ const attempt = async <T>(
+@@ -595,148 +371,334 @@ const attempt = async <T>(
    const started = performance.now()
    let tokensIn = 0
    let tokensOut = 0
@@ -5870,7 +5921,7 @@ index 76404e9..bf3ec45 100644
 +  // not a model failure (sandbox, data…): said as it is
 +  if (!(err instanceof AiError) && !/\b(429|5\d\d)\b|timeout/i.test(message)) {
 +    return `Processing error: ${message.slice(0, 160)}`
-   }
++  }
 +  if (
 +    /\b(429|502|503|504)\b|overloaded|rate limit|unavailable/i.test(message)
 +  ) {
@@ -5878,15 +5929,27 @@ index 76404e9..bf3ec45 100644
 +  }
 +  if (/timeout|timed out|aborted|in time/i.test(message)) {
 +    return 'The model did not answer in time. Try again in a few minutes.'
-+  }
+   }
 +  if (/MODEL_API_KEY/.test(message)) return message
 +  // the attempts are listed under "Why?": no need to repeat them
 +  if (err instanceof AiError && err.failures.length) {
 +    return 'The model did not give a usable answer.'
 +  }
 +  return message.slice(0, 200)
-+}
-+
+ }
+ 
+-export const ask = async <T>(asked: AskOptions<T>): Promise<AiResult<T>> => {
+-  // an English assessment: every step writes in English
+-  const o = { ...asked, system: inContentLang(asked.system) }
+-  const key = await cacheKey(o as AskOptions<unknown>)
+-  const chain = llmConfig.chain(o as AskOptions<unknown>)
+-    .filter((e) => llmConfig.keys[e.provider])
+-    // a document is read by Gemini only
+-    .filter((e) => !o.document || e.provider === 'gemini')
+-  // no key, or the demo company (api/lib/ai-context.ts): replay only
+-  if (!chain.length || replayOnly()) {
+-    const result = o.personal ? undefined : await replay(key, o, true)
+-    if (result) return result
 +/* ---------- conversation: the answer is spoken as it is written ---------- */
 +
 +export type ConverseOptions = {
@@ -5910,25 +5973,16 @@ index 76404e9..bf3ec45 100644
 +  trace: AiTrace
 +  /** time to the first piece of text, the latency a listener feels */
 +  firstDeltaMs: number
- }
- 
--export const ask = async <T>(asked: AskOptions<T>): Promise<AiResult<T>> => {
--  // an English assessment: every step writes in English
--  const o = { ...asked, system: inContentLang(asked.system) }
--  const key = await cacheKey(o as AskOptions<unknown>)
--  const chain = llmConfig.chain(o as AskOptions<unknown>)
--    .filter((e) => llmConfig.keys[e.provider])
--    // a document is read by Gemini only
--    .filter((e) => !o.document || e.provider === 'gemini')
--  // no key, or the demo company (api/lib/ai-context.ts): replay only
--  if (!chain.length || replayOnly()) {
--    const result = o.personal ? undefined : await replay(key, o, true)
--    if (result) return result
++}
++
 +/**
 + * One turn of a conversation, streamed. The main model first, the fallback
 + * model if it fails before writing anything; an abort (the signal) is not a
 + * failure and returns what was written so far.
 + */
++/** the longest wait before the interviewer model is asked again */
++const CONVERSE_RETRY_MAX_MS = 2_000
++
 +export const converse = async (o: ConverseOptions): Promise<ConverseResult> => {
 +  if (!hasAiKey()) {
      throw new AiError(
@@ -5972,119 +6026,140 @@ index 76404e9..bf3ec45 100644
 -    const since = performance.now()
 -    const usage = { tokensIn: 0, tokensOut: 0 }
 -    const stat = (ok: boolean, reason?: string) =>
-+  for (const model of models) {
-+    const started = performance.now()
-+    let text = ''
-+    let firstDeltaMs = 0
-+    try {
-+      const host = endpointOf(model)
-+      const res = await fetch(`${host.baseUrl}/chat/completions`, {
-+        method: 'POST',
-+        signal: AbortSignal.any([
-+          ...(o.signal ? [o.signal] : []),
-+          AbortSignal.timeout(o.timeoutMs ?? llmConfig.timeoutMs),
-+        ]),
-+        headers: {
-+          'Content-Type': 'application/json',
-+          Authorization: `Bearer ${host.key}`,
-+        },
-+        body: JSON.stringify({
-+          model,
-+          messages: [{ role: 'system', content: o.system }, ...o.messages],
-+          max_completion_tokens: o.maxTokens ?? 2_000,
-+          reasoning_effort: llmConfig.efforts[o.task] ?? o.effort ?? 'minimal',
-+          stream: true,
-+        }),
-+      })
-+      if (!res.ok) {
-+        const wait = Number(res.headers.get('retry-after')) * 1000
-+        throw new HttpError(
-+          res.status,
-+          (await res.text()).slice(0, 200),
-+          Number.isFinite(wait) ? wait : 0,
-+        )
-+      }
-+      const out = await readStream(res, (delta) => {
-+        if (!text) firstDeltaMs = Math.round(performance.now() - started)
-+        text += delta
-+        o.onDelta?.(delta)
-+      })
-+      const ms = Math.round(performance.now() - started)
-       llmConfig.onCall?.({
-         task: o.task,
+-      llmConfig.onCall?.({
+-        task: o.task,
 -        model: e.label,
 -        ok,
 -        ms: Math.round(performance.now() - since),
 -        ...usage,
 -        ...(reason && { reason }),
-+        model,
-+        ok: true,
-+        ms,
-+        tokensIn: out.usage?.prompt_tokens ?? 0,
-+        tokensOut: out.usage?.completion_tokens ?? 0,
-       })
+-      })
 -    try {
 -      const result = await attempt(e, o, note, usage)
 -      stat(true)
 -      if (llmConfig.record && !o.personal) await writeCache(key, result)
 -      return withFailures(result)
-+      return {
-+        text: out.content,
-+        firstDeltaMs,
-+        trace: {
-+          model: modelLabel(model),
-+          where: whereOf(model),
-+          latencyMs: ms,
-+          tokensIn: out.usage?.prompt_tokens ?? 0,
-+          tokensOut: out.usage?.completion_tokens ?? 0,
-+          at: new Date().toISOString(),
-+          ...(failures.length && { failures }),
-+        },
-+      }
-     } catch (err) {
+-    } catch (err) {
 -      note(e, err, since)
 -      const last = failures.at(-1)!
 -      stat(false, last.reason)
 -      if (i === 0) o.onFallback?.(`${last.model} : ${last.reason}`)
-+      // cancelled by the caller: what was written is the answer
-+      if (o.signal?.aborted) {
++  for (const model of models) {
++    // a passing failure (overloaded, timeout) is tried once more on the same
++    // model after a short wait, before the next model
++    for (let attempt = 0;; attempt++) {
++      const started = performance.now()
++      let text = ''
++      let firstDeltaMs = 0
++      try {
++        const host = endpointOf(model)
++        const res = await fetch(`${host.baseUrl}/chat/completions`, {
++          method: 'POST',
++          signal: AbortSignal.any([
++            ...(o.signal ? [o.signal] : []),
++            AbortSignal.timeout(o.timeoutMs ?? llmConfig.timeoutMs),
++          ]),
++          headers: {
++            'Content-Type': 'application/json',
++            Authorization: `Bearer ${host.key}`,
++          },
++          body: JSON.stringify({
++            model,
++            messages: [{ role: 'system', content: o.system }, ...o.messages],
++            max_completion_tokens: o.maxTokens ?? 2_000,
++            reasoning_effort: llmConfig.efforts[o.task] ?? o.effort ??
++              'minimal',
++            stream: true,
++          }),
++        })
++        if (!res.ok) {
++          const wait = Number(res.headers.get('retry-after')) * 1000
++          throw new HttpError(
++            res.status,
++            (await res.text()).slice(0, 200),
++            Number.isFinite(wait) ? wait : 0,
++          )
++        }
++        const out = await readStream(res, (delta) => {
++          if (!text) firstDeltaMs = Math.round(performance.now() - started)
++          text += delta
++          o.onDelta?.(delta)
++        })
 +        const ms = Math.round(performance.now() - started)
++        llmConfig.onCall?.({
++          task: o.task,
++          model,
++          ok: true,
++          ms,
++          tokensIn: out.usage?.prompt_tokens ?? 0,
++          tokensOut: out.usage?.completion_tokens ?? 0,
++        })
 +        return {
-+          text,
++          text: out.content,
 +          firstDeltaMs,
 +          trace: {
 +            model: modelLabel(model),
 +            where: whereOf(model),
 +            latencyMs: ms,
-+            tokensIn: 0,
-+            tokensOut: 0,
++            tokensIn: out.usage?.prompt_tokens ?? 0,
++            tokensOut: out.usage?.completion_tokens ?? 0,
 +            at: new Date().toISOString(),
++            ...(failures.length && { failures }),
 +          },
 +        }
-+      }
-+      const { reason } = explain(err)
-+      failures.push({
-+        model: modelLabel(model),
-+        reason,
-+        detail: err instanceof Error ? err.message : undefined,
-+        ms: Math.round(performance.now() - started),
-+      })
-+      log.warn('converse-failed', { model, reason })
-+      // words already spoken cannot be taken back: no fallback after them
-+      if (text) {
-+        return {
-+          text,
-+          firstDeltaMs,
-+          trace: {
-+            model: modelLabel(model),
-+            where: whereOf(model),
-+            latencyMs: Math.round(performance.now() - started),
-+            tokensIn: 0,
-+            tokensOut: 0,
-+            at: new Date().toISOString(),
-+            failures,
-+          },
++      } catch (err) {
++        // cancelled by the caller: what was written is the answer
++        if (o.signal?.aborted) {
++          const ms = Math.round(performance.now() - started)
++          return {
++            text,
++            firstDeltaMs,
++            trace: {
++              model: modelLabel(model),
++              where: whereOf(model),
++              latencyMs: ms,
++              tokensIn: 0,
++              tokensOut: 0,
++              at: new Date().toISOString(),
++            },
++          }
 +        }
++        const { reason, transient } = explain(err)
++        failures.push({
++          model: modelLabel(model),
++          reason,
++          detail: err instanceof Error ? err.message : undefined,
++          ms: Math.round(performance.now() - started),
++        })
++        log.warn('converse-failed', { model, reason })
++        // words already spoken cannot be taken back: no fallback after them
++        if (text) {
++          return {
++            text,
++            firstDeltaMs,
++            trace: {
++              model: modelLabel(model),
++              where: whereOf(model),
++              latencyMs: Math.round(performance.now() - started),
++              tokensIn: 0,
++              tokensOut: 0,
++              at: new Date().toISOString(),
++              failures,
++            },
++          }
++        }
++        if (transient && attempt < Math.min(1, llmConfig.retries)) {
++          const asked = err instanceof HttpError ? err.retryAfterMs : 0
++          // the candidate is waiting: never longer than CONVERSE_RETRY_MAX_MS
++          await sleep(
++            Math.min(
++              Math.max(llmConfig.retryDelayMs, asked),
++              CONVERSE_RETRY_MAX_MS,
++            ),
++          )
++          continue
++        }
++        break
 +      }
      }
    }
@@ -13574,7 +13649,7 @@ index 44aa9d1..c46a737 100644
    return { cover, uncovered, checks, blocked: checks.some((c) => !c.ok) }
  }
 diff --git a/web/lib/assessment-store.ts b/web/lib/assessment-store.ts
-index afdabfc..a1a7235 100644
+index afdabfc..c7add8b 100644
 --- a/web/lib/assessment-store.ts
 +++ b/web/lib/assessment-store.ts
 @@ -50,7 +50,8 @@ onEvent([
@@ -13635,7 +13710,7 @@ index afdabfc..a1a7235 100644
  export const updateBrief = (
    id: number,
    field: 'context' | 'mission',
-@@ -151,24 +145,23 @@ export const updateBrief = (
+@@ -151,24 +145,19 @@ export const updateBrief = (
      }),
    )
  
@@ -13655,16 +13730,30 @@ index afdabfc..a1a7235 100644
  
 -/** R5: the link a candidate opens (C1) */
 -/** the personal link of a candidate (U4): the only way into the test */
-+/** the personal link of a candidate: the only way into the assessment */
- export const invitationLink = (invitation: string) =>
-   `${location.origin}${paths.candidate}?invitation=${invitation}`
- 
+-export const invitationLink = (invitation: string) =>
+-  `${location.origin}${paths.candidate}?invitation=${invitation}`
+-
 -/** R5 « Inviter un candidat »: the personal link, and its e-mail if asked */
 +/** Invite a candidate: their personal link, and its e-mail if asked */
  export const inviteCandidate = async (
    assessment: number,
    identity: {
-@@ -198,7 +191,7 @@ export const inviteCandidate = async (
+@@ -180,7 +169,7 @@ export const inviteCandidate = async (
+   },
+   options: { sendEmail?: boolean; fromCv?: boolean } = {},
+ ) => {
+-  const { candidateId, invitation, email } = await api[
++  const { candidateId, link, email } = await api[
+     'POST/api/candidate/invite'
+   ].fetch({
+     assessment,
+@@ -193,12 +182,12 @@ export const inviteCandidate = async (
+   refreshAssessment()
+   return {
+     candidateId,
+-    link: invitationLink(invitation),
++    link,
+     email: email ?? undefined,
    }
  }
  
@@ -13673,7 +13762,7 @@ index afdabfc..a1a7235 100644
  export const sendCandidateLink = async (candidate: number) => {
    const result = await api['POST/api/candidate/send-link'].fetch({ candidate })
    refreshAssessment()
-@@ -214,7 +207,7 @@ const base64 = (file: File) =>
+@@ -214,7 +203,7 @@ const base64 = (file: File) =>
      reader.readAsDataURL(file)
    })
  
@@ -13886,7 +13975,7 @@ index 3d62e9e..641bea5 100644
    ref: HTMLElement,
    cursor: string,
 diff --git a/web/lib/events.ts b/web/lib/events.ts
-index df75f2e..1deb7cc 100644
+index df75f2e..14f0dec 100644
 --- a/web/lib/events.ts
 +++ b/web/lib/events.ts
 @@ -1,5 +1,4 @@
@@ -13896,6 +13985,39 @@ index df75f2e..1deb7cc 100644
  // show. The followed assessment or candidate depends on the current page.
  import { computed, effect, signal } from '@preact/signals'
  import { url } from '/web/lib/router-signal.ts'
+@@ -46,6 +45,8 @@ const follow = computed((): Record<string, string> => {
+ })
+ 
+ let source: EventSource | undefined
++/** no ack for 20 s: the open stream is lost */
++let ackTimer: ReturnType<typeof setTimeout> | undefined
+ const setDisconnected = () =>
+   sourceDisconnectedAt.peek() || (sourceDisconnectedAt.value = Date.now())
+ 
+@@ -56,6 +57,8 @@ effect(() => {
+     if (source.url.endsWith(sourceUrl)) return
+     source.close()
+     source = undefined
++    // the closed stream's timer must not mark the next one as lost
++    clearTimeout(ackTimer)
+   }
+   if (!Object.keys(params).length) return
+   setDisconnected()
+@@ -72,11 +75,11 @@ effect(() => {
+     }
+   })
+ 
+-  let timeout = setTimeout(setDisconnected, 20_000)
++  ackTimer = setTimeout(setDisconnected, 20_000)
+   source.addEventListener('ack', () => {
+     sourceDisconnectedAt.peek() && (sourceDisconnectedAt.value = 0)
+-    clearTimeout(timeout)
+-    timeout = setTimeout(setDisconnected, 20_000)
++    clearTimeout(ackTimer)
++    ackTimer = setTimeout(setDisconnected, 20_000)
+   })
+   source.addEventListener('open', () => {
+     sourceDisconnectedAt.value = 0
 diff --git a/web/lib/format.test.js b/web/lib/format.test.js
 index bc90fc2..6f2b007 100644
 --- a/web/lib/format.test.js
@@ -15838,7 +15960,7 @@ index 54daae0..4649e89 100644
    </main>
  )
 diff --git a/web/pages/recruiter/assessment-page.tsx b/web/pages/recruiter/assessment-page.tsx
-index d5b6cab..4a841ee 100644
+index d5b6cab..402b7bc 100644
 --- a/web/pages/recruiter/assessment-page.tsx
 +++ b/web/pages/recruiter/assessment-page.tsx
 @@ -1,5 +1,5 @@
@@ -15848,7 +15970,15 @@ index d5b6cab..4a841ee 100644
  import { A, navigate, url } from '/web/lib/router-signal.ts'
  import {
    type AssessmentState,
-@@ -52,52 +52,50 @@ import {
+@@ -7,7 +7,6 @@ import {
+   type CandidateStatus,
+   type CandidateSummary,
+   getAssessment,
+-  invitationLink,
+   inviteCandidate,
+   readCv,
+   revokeCandidate,
+@@ -52,52 +51,50 @@ import {
    TimerOff,
    UserPlus,
  } from '/web/assets/icons.tsx'
@@ -15914,7 +16044,7 @@ index d5b6cab..4a841ee 100644
      text: string
      small?: boolean
      label?: string
-@@ -123,56 +121,32 @@ const CopyButton = (
+@@ -123,56 +120,32 @@ const CopyButton = (
        {copied
          ? <Check tw='w-[15px] h-[15px]' />
          : <Copy tw='w-[15px] h-[15px]' />}
@@ -15979,7 +16109,7 @@ index d5b6cab..4a841ee 100644
  /** what the reading of the CV did, said once above the form */
  const CvBanner = (
    { reading, fileName }: { reading: CvReading; fileName: string },
-@@ -184,54 +158,27 @@ const CvBanner = (
+@@ -184,54 +157,27 @@ const CvBanner = (
    >
      <Sparkles tw='w-4 h-4 flex-none mt-px text-ai' />
      <span>
@@ -16045,7 +16175,7 @@ index d5b6cab..4a841ee 100644
  const CvImport = (
    { assessment, onRead }: {
      assessment: number
-@@ -252,9 +199,7 @@ const CvImport = (
+@@ -252,9 +198,7 @@ const CvImport = (
            {reading
              ? <LoaderCircle tw='w-3.5 h-3.5 animate-spin' />
              : <FileUp tw='w-3.5 h-3.5' />}
@@ -16056,7 +16186,7 @@ index d5b6cab..4a841ee 100644
            <input
              type='file'
              data-test='cv-input'
-@@ -267,9 +212,7 @@ const CvImport = (
+@@ -267,9 +211,7 @@ const CvImport = (
                input.value = '' // the same file can be chosen again
                if (!file) return
                if (file.size > 5 * 1024 * 1024) {
@@ -16067,7 +16197,7 @@ index d5b6cab..4a841ee 100644
                  return
                }
                setReading(true)
-@@ -285,14 +228,12 @@ const CvImport = (
+@@ -285,14 +227,12 @@ const CvImport = (
            />
          </label>
          <span tw='text-[12.5px] text-content-tertiary'>
@@ -16085,7 +16215,7 @@ index d5b6cab..4a841ee 100644
        </p>
        {error && (
          <p role='alert' tw='m-0 flex items-start gap-2 text-[13px] text-err'>
-@@ -321,7 +262,7 @@ const MailStatus = (
+@@ -321,7 +261,7 @@ const MailStatus = (
          tw='m-0 flex items-center gap-2 text-[13px] text-ok'
        >
          <MailCheck tw='w-4 h-4 flex-none' />
@@ -16094,7 +16224,7 @@ index d5b6cab..4a841ee 100644
        </p>
      )
      : (
-@@ -331,12 +272,8 @@ const MailStatus = (
+@@ -331,12 +271,8 @@ const MailStatus = (
        >
          <MailX tw='w-4 h-4 flex-none mt-px text-warn' />
          <span tw='flex-1'>
@@ -16109,7 +16239,7 @@ index d5b6cab..4a841ee 100644
          </span>
          <button
            type='button'
-@@ -345,7 +282,7 @@ const MailStatus = (
+@@ -345,7 +281,7 @@ const MailStatus = (
            onClick={onRetry}
          >
            <RefreshCw tw='w-3.5 h-3.5' />
@@ -16118,7 +16248,7 @@ index d5b6cab..4a841ee 100644
          </button>
        </div>
      )
-@@ -358,7 +295,7 @@ type Sent = {
+@@ -358,7 +294,7 @@ type Sent = {
    mail?: LinkSent
  }
  
@@ -16127,7 +16257,7 @@ index d5b6cab..4a841ee 100644
  const InvitePanel = ({ a }: { a: AssessmentState }) => {
    const canEmail = member.value?.canEmail === true
    const [sent, setSent] = useState<Sent | null>(null)
-@@ -369,6 +306,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -369,6 +305,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
    const [cv, setCv] = useState<{ reading: CvReading; fileName: string }>()
    const form = useRef<HTMLFormElement>(null)
    const fromCv = (name: CvField) => cv?.reading.fields[name] !== undefined
@@ -16135,7 +16265,7 @@ index d5b6cab..4a841ee 100644
  
    /** what the last CV put in each field: a new CV replaces it, never an edit */
    const filled = useRef<Record<string, string>>({})
-@@ -381,7 +319,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -381,7 +318,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
        email: reading.fields.email ?? '',
        profileUrl: reading.fields.profileUrl ?? '',
        note: reading.fields.headline
@@ -16144,7 +16274,7 @@ index d5b6cab..4a841ee 100644
          : '',
      }
      for (const [name, value] of Object.entries(values)) {
-@@ -397,17 +335,11 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -397,17 +334,11 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
  
    if (sent) {
      return (
@@ -16166,7 +16296,7 @@ index d5b6cab..4a841ee 100644
          </p>
          <MailStatus
            mail={sent.mail}
-@@ -441,22 +373,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -441,22 +372,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
            <CopyButton text={sent.link} />
          </div>
          <div tw='flex items-center gap-2 flex-wrap'>
@@ -16190,7 +16320,7 @@ index d5b6cab..4a841ee 100644
            </a>
            <button
              type='button'
-@@ -468,14 +391,14 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -468,14 +390,14 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
              }}
            >
              <UserPlus tw='w-3.5 h-3.5' />
@@ -16207,7 +16337,7 @@ index d5b6cab..4a841ee 100644
        <CvImport assessment={a.id} onRead={fill} />
        {cv && <CvBanner {...cv} />}
        <form
-@@ -492,7 +415,6 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -492,7 +414,6 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
              profileUrl: field(data, 'profileUrl') || undefined,
              note: field(data, 'note') || undefined,
            }
@@ -16215,7 +16345,7 @@ index d5b6cab..4a841ee 100644
            setPending(true)
            setError('')
            try {
-@@ -518,8 +440,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -518,8 +439,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
          <div tw='grid grid-cols-1 sm:grid-cols-2 gap-3'>
            <div tw='flex flex-col gap-1.5'>
              <Label for='firstName' required>
@@ -16225,7 +16355,7 @@ index d5b6cab..4a841ee 100644
              </Label>
              <Input
                name='firstName'
-@@ -530,8 +451,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -530,8 +450,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
            </div>
            <div tw='flex flex-col gap-1.5'>
              <Label for='lastName' required>
@@ -16235,7 +16365,7 @@ index d5b6cab..4a841ee 100644
              </Label>
              <Input
                name='lastName'
-@@ -555,10 +475,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -555,10 +474,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
          </div>
          <div tw='flex flex-col gap-1.5'>
            <Label for='profileUrl'>
@@ -16247,7 +16377,7 @@ index d5b6cab..4a841ee 100644
              {fromCv('profileUrl') && <ReadInCv />}
            </Label>
            <Input
-@@ -571,17 +488,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -571,17 +487,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
          </div>
          <div tw='flex flex-col gap-1.5'>
            <Label for='note'>
@@ -16267,7 +16397,7 @@ index d5b6cab..4a841ee 100644
            />
          </div>
          {canEmail && (
-@@ -594,10 +507,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -594,10 +506,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
                tw='w-[17px] h-[17px] m-0 flex-none'
                style={{ accentColor: 'var(--color-accent)' }}
              />
@@ -16279,7 +16409,7 @@ index d5b6cab..4a841ee 100644
            </label>
          )}
          {error && (
-@@ -606,7 +516,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -606,7 +515,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
              tw='m-0 flex items-start gap-2 text-[13px] text-err'
            >
              <CircleX tw='w-4 h-4 flex-none mt-px' />
@@ -16288,7 +16418,7 @@ index d5b6cab..4a841ee 100644
            </p>
          )}
          <div tw='flex items-center gap-3 flex-wrap'>
-@@ -616,22 +526,17 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -616,22 +525,17 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
              tw='btn btn-primary h-9 px-4'
              disabled={pending}
            >
@@ -16317,7 +16447,7 @@ index d5b6cab..4a841ee 100644
            </span>
          </div>
        </form>
-@@ -642,7 +547,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -642,7 +546,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
  /** the personal link still opens the test (not finished, revoked, expired) */
  const linkUsable = (c: CandidateSummary) =>
    !!c.invitation &&
@@ -16326,7 +16456,7 @@ index d5b6cab..4a841ee 100644
  
  const revoke = (c: CandidateSummary) => {
    const who = c.identity
-@@ -650,10 +555,7 @@ const revoke = (c: CandidateSummary) => {
+@@ -650,10 +554,7 @@ const revoke = (c: CandidateSummary) => {
      : c.pseudonym
    if (
      !confirm(
@@ -16338,7 +16468,7 @@ index d5b6cab..4a841ee 100644
      )
    ) {
      return
-@@ -663,28 +565,28 @@ const revoke = (c: CandidateSummary) => {
+@@ -663,28 +564,28 @@ const revoke = (c: CandidateSummary) => {
    )
  }
  
@@ -16372,7 +16502,7 @@ index d5b6cab..4a841ee 100644
  const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
    const [pending, setPending] = useState(false)
    return (
-@@ -698,12 +600,7 @@ const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
+@@ -698,12 +599,7 @@ const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
          try {
            const result = await sendCandidateLink(c.id)
            if (!result.sent) {
@@ -16386,7 +16516,7 @@ index d5b6cab..4a841ee 100644
            }
          } catch (err) {
            alert(err instanceof Error ? err.message : String(err))
-@@ -715,12 +612,12 @@ const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
+@@ -715,12 +611,12 @@ const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
        {pending
          ? <LoaderCircle tw='w-3.5 h-3.5 animate-spin' />
          : <Send tw='w-3.5 h-3.5' />}
@@ -16401,7 +16531,7 @@ index d5b6cab..4a841ee 100644
  export const AssessmentPage = () => {
    const canEmail = member.value?.canEmail === true
    const a = getAssessment(url.params.id)
-@@ -738,11 +635,44 @@ export const AssessmentPage = () => {
+@@ -738,11 +634,44 @@ export const AssessmentPage = () => {
      return null
    }
    const { spec } = a
@@ -16448,7 +16578,7 @@ index d5b6cab..4a841ee 100644
        </BackLink>
        <div
          role='status'
-@@ -750,10 +680,10 @@ export const AssessmentPage = () => {
+@@ -750,10 +679,10 @@ export const AssessmentPage = () => {
        >
          <CircleCheck tw='w-[17px] h-[17px] flex-none text-ok' />
          <strong tw='font-semibold'>
@@ -16461,7 +16591,7 @@ index d5b6cab..4a841ee 100644
          </span>
        </div>
        <div tw='flex flex-col gap-2'>
-@@ -761,54 +691,27 @@ export const AssessmentPage = () => {
+@@ -761,54 +690,27 @@ export const AssessmentPage = () => {
          <div tw='flex gap-1.5 flex-wrap'>
            <MetaTag>{levelLabels[spec.level]}</MetaTag>
            <MetaTag icon={Clock}>{spec.durationMin} min</MetaTag>
@@ -16525,7 +16655,7 @@ index d5b6cab..4a841ee 100644
              </th>
            </THead>
            <tbody>
-@@ -818,15 +721,12 @@ export const AssessmentPage = () => {
+@@ -818,15 +720,12 @@ export const AssessmentPage = () => {
                    colSpan={6}
                    tw={[td, 'pl-4 text-content-tertiary text-[13px]']}
                  >
@@ -16543,7 +16673,7 @@ index d5b6cab..4a841ee 100644
                return (
                  <tr key={c.id} tw='border-t border-border-primary'>
                    <td tw={[td, 'pl-4']}>
-@@ -844,7 +744,7 @@ export const AssessmentPage = () => {
+@@ -844,7 +743,7 @@ export const AssessmentPage = () => {
                        )
                        : (
                          <span tw='text-[13px] text-content-tertiary'>
@@ -16552,7 +16682,7 @@ index d5b6cab..4a841ee 100644
                          </span>
                        )}
                    </td>
-@@ -853,7 +753,7 @@ export const AssessmentPage = () => {
+@@ -853,7 +752,7 @@ export const AssessmentPage = () => {
                    <td tw={[td, 'text-content-secondary']}>
                      {c.buildMinutes
                        ? `${formatMinutes(c.buildMinutes)}${
@@ -16561,7 +16691,7 @@ index d5b6cab..4a841ee 100644
                        }`
                        : '—'}
                    </td>
-@@ -862,17 +762,17 @@ export const AssessmentPage = () => {
+@@ -862,17 +761,17 @@ export const AssessmentPage = () => {
                    </td>
                    <td tw={[td, 'pr-4 text-right']}>
                      <span tw='inline-flex items-center gap-2 justify-end flex-wrap'>
@@ -16573,8 +16703,9 @@ index d5b6cab..4a841ee 100644
                          <CopyButton
                            small
 -                          label={t('Lien', 'Link')}
+-                          text={invitationLink(c.invitation!)}
 +                          label='Link'
-                           text={invitationLink(c.invitation!)}
++                          text={c.link!}
                          />
                        )}
 -                      {c.status !== 'Terminé' && c.status !== 'Révoqué' && (
@@ -16582,7 +16713,7 @@ index d5b6cab..4a841ee 100644
                          <button
                            type='button'
                            data-test='revoke-btn'
-@@ -880,7 +780,7 @@ export const AssessmentPage = () => {
+@@ -880,7 +779,7 @@ export const AssessmentPage = () => {
                            onClick={() => revoke(c)}
                          >
                            <Ban tw='w-3.5 h-3.5' />
@@ -16591,7 +16722,7 @@ index d5b6cab..4a841ee 100644
                          </button>
                        )}
                        {done
-@@ -892,21 +792,18 @@ export const AssessmentPage = () => {
+@@ -892,21 +791,18 @@ export const AssessmentPage = () => {
                              tw='btn btn-secondary h-8 px-3 text-[13px]'
                            >
                              <FileText tw='w-3.5 h-3.5' />
@@ -16616,7 +16747,7 @@ index d5b6cab..4a841ee 100644
                            </button>
                          )}
                      </span>
-@@ -917,12 +814,10 @@ export const AssessmentPage = () => {
+@@ -917,12 +813,10 @@ export const AssessmentPage = () => {
            </tbody>
          </TableWrap>
          <p tw='m-0 text-[12.5px] text-content-tertiary'>
@@ -16632,7 +16763,7 @@ index d5b6cab..4a841ee 100644
    )
  }
 diff --git a/web/pages/recruiter/assessments-page.tsx b/web/pages/recruiter/assessments-page.tsx
-index 5b10304..d2a1ce6 100644
+index 5b10304..9680f16 100644
 --- a/web/pages/recruiter/assessments-page.tsx
 +++ b/web/pages/recruiter/assessments-page.tsx
 @@ -1,6 +1,6 @@
@@ -16758,6 +16889,17 @@ index 5b10304..d2a1ce6 100644
            </THead>
            <tbody>
              {list.map((a) => {
+@@ -135,7 +124,9 @@ export const AssessmentsPage = () => {
+                       {a.spec.title}
+                     </A>
+                     <div tw='text-[12px] text-content-tertiary mt-px'>
+-                      {a.spec.format} · {a.spec.company}
++                      {[a.spec.format, a.spec.company].filter(Boolean).join(
++                        ' · ',
++                      )}
+                     </div>
+                   </td>
+                   <td tw={td}>{levelLabels[a.spec.level]}</td>
 diff --git a/web/pages/recruiter/new-assessment-page.tsx b/web/pages/recruiter/new-assessment-page.tsx
 index 7d8a2d5..f34ec17 100644
 --- a/web/pages/recruiter/new-assessment-page.tsx
@@ -20066,7 +20208,7 @@ index 17f075a..ff28e52 100644
      <div tw='h-screen flex flex-col overflow-hidden bg-surface-page text-content-primary'>
        <WorkspaceBar elapsed={elapsed} title={view.assessment.title} />
 diff --git a/web/pages/workspace/workspace-state.ts b/web/pages/workspace/workspace-state.ts
-index a8ecf4b..33c681c 100644
+index a8ecf4b..dc2030b 100644
 --- a/web/pages/workspace/workspace-state.ts
 +++ b/web/pages/workspace/workspace-state.ts
 @@ -1,27 +1,22 @@
@@ -20192,7 +20334,22 @@ index a8ecf4b..33c681c 100644
    } catch { /* keep the previous problems */ }
  }
  
-@@ -136,39 +161,21 @@ export const updateFile = (path: string, code: string) => {
+@@ -116,9 +141,12 @@ const scheduleCheck = (delay = 1200) => {
+   checkTimer = setTimeout(check, delay)
+ }
+ 
+-// first check once the files are loaded
++// first check once the files are loaded: a new session, so what was checked
++// for another candidate in this tab does not count
+ effect(() => {
+-  loadedFor.value && scheduleCheck(0)
++  if (!loadedFor.value) return
++  checkedKey = ''
++  scheduleCheck(0)
+ })
+ 
+ export const problemsOf = (file: string | null) =>
+@@ -136,39 +164,21 @@ export const updateFile = (path: string, code: string) => {
  export const savedAgo = computed(() => {
    const sec = Math.max(0, Math.round((eachSec.value - savedAt.value) / 1000))
    return sec < 60
@@ -20239,7 +20396,7 @@ index a8ecf4b..33c681c 100644
    openFile(path)
    return true
  }
-@@ -192,19 +199,17 @@ export const ownTests = signal<
+@@ -192,19 +202,17 @@ export const ownTests = signal<
  
  export const lastEvalAgo = computed(() => {
    const min = Math.floor((eachSec.value - lastEvalAt.value) / 60_000)
@@ -20262,7 +20419,7 @@ index a8ecf4b..33c681c 100644
  export const toRunOutput = (run: SandboxRun): RunOutput => {
    const lines: OutputLine[] = []
    for (const chunk of run.chunks) {
-@@ -224,88 +229,68 @@ export const toRunOutput = (run: SandboxRun): RunOutput => {
+@@ -224,88 +232,68 @@ export const toRunOutput = (run: SandboxRun): RunOutput => {
      ? {
        tone: 'warn',
        icon: 'package-x',
@@ -20368,7 +20525,7 @@ index a8ecf4b..33c681c 100644
    running.value = kind
    try {
      const result = await api['POST/api/candidate/run'].fetch({
-@@ -360,7 +345,7 @@ export const setPanelResizer = (ref: HTMLElement | null) => {
+@@ -360,7 +348,7 @@ export const setPanelResizer = (ref: HTMLElement | null) => {
    })
  }
  
@@ -20377,7 +20534,7 @@ index a8ecf4b..33c681c 100644
  
  // about a third of the window by default (≈ 630 px on a 1920 px screen)
  const MIN_RIGHT = 280
-@@ -384,11 +369,3 @@ export const setSideResizer = (ref: HTMLElement | null) => {
+@@ -384,11 +372,3 @@ export const setSideResizer = (ref: HTMLElement | null) => {
      )
    })
  }
@@ -20606,7 +20763,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..1695375 100644
+index 83f3535..f04b8a2 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,13 @@
@@ -20748,7 +20905,7 @@ index 83f3535..1695375 100644
  }
  
  export type GenerationInput = {
-@@ -130,68 +136,90 @@ export type GenerationInput = {
+@@ -130,68 +136,92 @@ export type GenerationInput = {
    durationMin: number
    skills: string[]
    domain?: string
@@ -20795,6 +20952,8 @@ index 83f3535..1695375 100644
    identity?: CandidateIdentity
    /** token of the personal link */
    invitation?: string
++  /** the personal link, built by the server (the same as the e-mail's) */
++  link?: string
    status: CandidateStatus
    buildMinutes?: number
 -  questionsMinutes?: number
@@ -20869,7 +21028,7 @@ index 83f3535..1695375 100644
  /** what the personal link allows: start, resume, or nothing any more */
  export type InvitationState =
    | 'invited'
-@@ -200,6 +228,7 @@ export type InvitationState =
+@@ -200,6 +230,7 @@ export type InvitationState =
    | 'expired'
    | 'revoked'
  
@@ -20877,7 +21036,7 @@ index 83f3535..1695375 100644
  export type Invitation = {
    invitation: string
    title: string
-@@ -208,15 +237,44 @@ export type Invitation = {
+@@ -208,15 +239,44 @@ export type Invitation = {
    durationMin: number
    firstName?: string
    state: InvitationState
@@ -20924,7 +21083,7 @@ index 83f3535..1695375 100644
    assessment: {
      title: string
      company: string
-@@ -228,162 +286,111 @@ export type CandidateView = {
+@@ -228,162 +288,111 @@ export type CandidateView = {
      constraints: string[]
      publicTests: TestCase[]
      hiddenCount: number

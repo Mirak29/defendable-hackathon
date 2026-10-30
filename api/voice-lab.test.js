@@ -3,7 +3,12 @@
 // interviews on the project's model keys).
 import { eq, test } from '/api/lib/test.ts'
 import { candidateVoice } from '/api/interview.ts'
-import { labConfig, labFacts, voiceOptionsFor } from '/api/voice-lab.ts'
+import {
+  labConfig,
+  labFacts,
+  labProgramFacts,
+  voiceOptionsFor,
+} from '/api/voice-lab.ts'
 import {
   approvedAssessment,
   signup,
@@ -61,6 +66,29 @@ test('voice: who the interview is for', async (step) => {
         )
         eq(options, candidateVoice)
       })
+    },
+  )
+})
+
+test('voice lab: the facts of a real interview', async (step) => {
+  await step('an API: kind, language and own tests, like factsOf', async () => {
+    const facts = await labFacts()
+    eq([facts.kind, facts.language, facts.ownTests], [
+      'api',
+      'typescript',
+      'none written',
+    ])
+  })
+
+  await step(
+    'a program: the failed test written as in production',
+    async () => {
+      const facts = await labProgramFacts()
+      eq([facts.kind, facts.language], ['program', 'python'])
+      // expected and received as they are, the input quoted (factsOf)
+      const line = facts.failedTests[0]
+      eq(typeof line, 'string')
+      eq(line.includes('expected "'), false)
     },
   )
 })
