@@ -50,12 +50,17 @@ export const InterviewPage = () => {
   const view = me.value
   const status = meStatus.value
   const live = voice.status.value
+  // An interview that Oracle closes live is marked finished at once: the page
+  // then waits for its last words (below) instead of leaving here.
+  const closingLive = live === 'live' || live === 'ended'
   useEffect(() => {
     if (status === 'none') navigate({ href: paths.candidate, replace: true })
     else if (view && !view.submittedAt) {
       navigate({ href: paths.workspace, replace: true })
-    } else if (view?.finishedAt) navigate({ href: paths.done, replace: true })
-  }, [status, view?.submittedAt, view?.finishedAt])
+    } else if (view?.finishedAt && !closingLive) {
+      navigate({ href: paths.done, replace: true })
+    }
+  }, [status, view?.submittedAt, view?.finishedAt, closingLive])
 
   // The interviewer closed the interview: the server marks it finished. The
   // page stays until its last words are said, then a moment more.
@@ -77,7 +82,7 @@ export const InterviewPage = () => {
   // of the person: coming from the editor (Submit) it has one, after a reload
   // it has not and one button asks for it.
   const ready = view?.preparation?.steps.at(-1)?.state === 'done' &&
-    !view.finishedAt
+    (!view.finishedAt || closingLive)
   const started = useRef(false)
   const [needsGesture, setNeedsGesture] = useState(false)
   useEffect(() => {
