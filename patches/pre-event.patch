@@ -1991,7 +1991,7 @@ index 2d5d576..aad29ec 100644
    })
  })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..b692192 100644
+index 9a19ccb..4bda4a1 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
 @@ -1,63 +1,70 @@
@@ -2172,7 +2172,7 @@ index 9a19ccb..b692192 100644
      profileUrl?: string | null
      note?: string | null
 -    /** 'cv': prefilled from a CV (U5), each field validated by the recruiter */
-+    /** how the identity was filled: by hand or from a CV */
++    /** how the identity was filled: by hand or from a resume */
      source?: 'manual' | 'cv'
    },
  ) => {
@@ -3185,7 +3185,7 @@ index c03201e..8c651db 100644
 +  )
 +})
 diff --git a/api/cv.ts b/api/cv.ts
-index 490ed67..8484cfa 100644
+index 490ed67..e444e82 100644
 --- a/api/cv.ts
 +++ b/api/cv.ts
 @@ -1,18 +1,15 @@
@@ -3320,7 +3320,7 @@ index 490ed67..8484cfa 100644
  
  const FIELDS = [
    'firstName',
-@@ -261,72 +256,58 @@ const FIELDS = [
+@@ -261,72 +256,60 @@ const FIELDS = [
    'headline',
  ] as const
  
@@ -3372,7 +3372,9 @@ index 490ed67..8484cfa 100644
    }
    if (bytes.length > CV_MAX_BYTES) {
 -    throw new respond.BadRequestError({ message: 'CV trop lourd (5 Mo max).' })
-+    throw new respond.BadRequestError({ message: 'CV too large (5 MB max).' })
++    throw new respond.BadRequestError({
++      message: 'Resume too large (5 MB max).',
++    })
    }
 -  const { kind, text } = await cvText(bytes)
 -  const scanned = text.length < MIN_TEXT
@@ -3382,7 +3384,7 @@ index 490ed67..8484cfa 100644
      throw new respond.BadRequestError({
 -      message: 'Ce document Word ne contient pas de texte lisible.',
 +      message:
-+        'This CV has no text (a scan?). It cannot be read: fill the form by hand.',
++        'This resume has no text (a scan?). It cannot be read: fill the form by hand.',
      })
    }
    const local = readLocally(text)
@@ -3420,7 +3422,7 @@ index 490ed67..8484cfa 100644
      const fields: CvFields = {}
      const discarded: (keyof CvFields)[] = []
      for (const f of FIELDS) {
-@@ -342,17 +323,11 @@ export const readCv = async (bytes: Uint8Array): Promise<CvReading> => {
+@@ -342,17 +325,11 @@ export const readCv = async (bytes: Uint8Array): Promise<CvReading> => {
    } catch (err) {
      if (!(err instanceof AiError)) throw err
      log.warn('cv-extract-failed', { reason: err.message })
@@ -9292,7 +9294,7 @@ index 75d54dc..8639371 100644
 -
 -export type { Question }
 diff --git a/api/routes.ts b/api/routes.ts
-index 20228a8..ab37fcf 100644
+index 20228a8..f315fe7 100644
 --- a/api/routes.ts
 +++ b/api/routes.ts
 @@ -3,25 +3,17 @@ import type { RequestContext } from '@01edu/api/context'
@@ -9662,7 +9664,16 @@ index 20228a8..ab37fcf 100644
  
    'POST/api/candidate/invite': route({
      authorize: withMember,
-@@ -424,9 +408,10 @@ const defs = {
+@@ -418,15 +402,18 @@ const defs = {
+       email: STR('Email'),
+       profileUrl: optional(STR('LinkedIn, GitHub or portfolio (https://)')),
+       note: optional(STR('Internal note, never shown to the candidate')),
+-      fromCv: optional(BOOL('Prefilled from a CV, validated by the recruiter')),
++      fromCv: optional(
++        BOOL('Prefilled from a resume, validated by the recruiter'),
++      ),
+       sendEmail: optional(BOOL('E-mail the personal link (Resend)')),
+     }),
      output: OBJ({
        candidateId: NUM('Invited candidate'),
        invitation: STR('Token of the personal link'),
@@ -9674,7 +9685,7 @@ index 20228a8..ab37fcf 100644
    }),
  
    'POST/api/candidate/send-link': route({
-@@ -435,7 +420,7 @@ const defs = {
+@@ -435,7 +422,7 @@ const defs = {
        sendCandidateLink(Candidate.require(ownedCandidate(ctx, candidate))),
      input: OBJ({ candidate: NUM('Candidate id') }),
      output: JSON_OF<LinkSent>('Sent, or the reason of the failure'),
@@ -9683,12 +9694,12 @@ index 20228a8..ab37fcf 100644
    }),
  
    'POST/api/candidate/cv': route({
-@@ -445,14 +430,14 @@ const defs = {
+@@ -445,75 +432,50 @@ const defs = {
        // base64 of 5 MB at most: the file never leaves this request
        if (data.length > Math.ceil(CV_MAX_BYTES / 3) * 4 + 4) {
          throw new respond.BadRequestError({
 -          message: 'CV trop lourd (5 Mo max).',
-+          message: 'CV too large (5 MB max).',
++          message: 'Resume too large (5 MB max).',
          })
        }
        let bytes: Uint8Array
@@ -9700,14 +9711,15 @@ index 20228a8..ab37fcf 100644
        }
        return readCv(bytes)
      },
-@@ -460,60 +445,35 @@ const defs = {
+     input: OBJ({
        assessment: NUM('Assessment id the candidate will be invited to'),
-       data: STR('The CV file (PDF or DOCX), base64'),
+-      data: STR('The CV file (PDF or DOCX), base64'),
++      data: STR('The resume file (PDF or DOCX), base64'),
      }),
 -    output: JSON_OF<CvReading>('Fields read in the CV, to validate'),
 -    description: 'R5 « Importer un CV »: prefills the invitation form',
 +    output: JSON_OF<CvReading>('The fields read, nothing is stored'),
-+    description: 'Read a CV to prefill the invitation form',
++    description: 'Read a resume to prefill the invitation form',
    }),
  
    'POST/api/candidate/revoke': route({
@@ -9776,7 +9788,7 @@ index 20228a8..ab37fcf 100644
        const response = respond.OK(toView(findCandidate(token)))
        setCookie(response.headers, {
          name: CANDIDATE_COOKIE,
-@@ -528,10 +488,12 @@ const defs = {
+@@ -528,10 +490,12 @@ const defs = {
      },
      input: OBJ({
        invitation: STR('Token of the candidate link'),
@@ -9791,7 +9803,7 @@ index 20228a8..ab37fcf 100644
    }),
  
    'GET/api/candidate/me': route({
-@@ -545,18 +507,36 @@ const defs = {
+@@ -545,18 +509,36 @@ const defs = {
      authorize: withCandidate,
      fn: (ctx, { files }) => saveFiles(candidateOf(ctx), files),
      input: OBJ({ files: FILES }),
@@ -9834,7 +9846,7 @@ index 20228a8..ab37fcf 100644
        files: FILES,
      }),
      output: JSON_OF<{
-@@ -565,15 +545,15 @@ const defs = {
+@@ -565,15 +547,15 @@ const defs = {
        own?: OwnTestsRun
        results?: TestResult[]
      }>('Output of the sandbox'),
@@ -9853,7 +9865,7 @@ index 20228a8..ab37fcf 100644
    }),
  
    'POST/api/candidate/submit': route({
-@@ -582,7 +562,7 @@ const defs = {
+@@ -582,7 +564,7 @@ const defs = {
        const c = candidateOf(ctx)
        if (!tools.length) {
          throw new respond.BadRequestError({
@@ -9862,7 +9874,7 @@ index 20228a8..ab37fcf 100644
          })
        }
        if (files && !c.candidateSubmittedAt) saveFiles(c, files)
-@@ -594,76 +574,54 @@ const defs = {
+@@ -594,76 +576,54 @@ const defs = {
      },
      input: OBJ({
        tools: ARR(STR('AI tool'), 'Declared AI tools'),
@@ -9970,7 +9982,7 @@ index 20228a8..ab37fcf 100644
    }),
  
    /* ---------- events ---------- */
-@@ -675,27 +633,22 @@ const defs = {
+@@ -675,27 +635,22 @@ const defs = {
            message: 'Must accept event-stream',
          })
        }
@@ -10005,7 +10017,7 @@ index 20228a8..ab37fcf 100644
          }
        }
        let listener: EntryListener
-@@ -705,9 +658,9 @@ const defs = {
+@@ -705,9 +660,9 @@ const defs = {
            controller.enqueue(ACK_PAYLOAD)
            ackInterval = setInterval(async () => {
              try {
@@ -10017,7 +10029,7 @@ index 20228a8..ab37fcf 100644
                ) {
                  clearInterval(ackInterval)
                  entryInsertListeners.delete(listener)
-@@ -737,7 +690,6 @@ const defs = {
+@@ -737,7 +692,6 @@ const defs = {
            entryInsertListeners.delete(listener)
          },
        })
@@ -10025,7 +10037,7 @@ index 20228a8..ab37fcf 100644
        return new Response(body, {
          headers: {
            'Content-Type': 'text/event-stream',
-@@ -748,11 +700,38 @@ const defs = {
+@@ -748,11 +702,38 @@ const defs = {
      },
      input: OBJ({
        assessment: optional(STR('Followed assessment')),
@@ -13649,7 +13661,7 @@ index 44aa9d1..c46a737 100644
    return { cover, uncovered, checks, blocked: checks.some((c) => !c.ok) }
  }
 diff --git a/web/lib/assessment-store.ts b/web/lib/assessment-store.ts
-index afdabfc..c7add8b 100644
+index afdabfc..30921b2 100644
 --- a/web/lib/assessment-store.ts
 +++ b/web/lib/assessment-store.ts
 @@ -50,7 +50,8 @@ onEvent([
@@ -13767,7 +13779,7 @@ index afdabfc..c7add8b 100644
    })
  
 -/** R5 « Importer un CV » (U5): the fields read, nothing stored */
-+/** "Import a CV": the fields read, nothing stored */
++/** "Import a resume": the fields read, nothing stored */
  export const readCv = async (assessment: number, file: File) =>
    api['POST/api/candidate/cv'].fetch({ assessment, data: await base64(file) })
  
@@ -15960,7 +15972,7 @@ index 54daae0..4649e89 100644
    </main>
  )
 diff --git a/web/pages/recruiter/assessment-page.tsx b/web/pages/recruiter/assessment-page.tsx
-index d5b6cab..402b7bc 100644
+index d5b6cab..ab96343 100644
 --- a/web/pages/recruiter/assessment-page.tsx
 +++ b/web/pages/recruiter/assessment-page.tsx
 @@ -1,5 +1,5 @@
@@ -16044,7 +16056,7 @@ index d5b6cab..402b7bc 100644
      text: string
      small?: boolean
      label?: string
-@@ -123,56 +120,32 @@ const CopyButton = (
+@@ -123,57 +120,33 @@ const CopyButton = (
        {copied
          ? <Check tw='w-[15px] h-[15px]' />
          : <Copy tw='w-[15px] h-[15px]' />}
@@ -16100,15 +16112,17 @@ index d5b6cab..402b7bc 100644
    <span tw='inline-flex items-center gap-1 ml-2 text-[11.5px] font-normal text-ai'>
      <Sparkles tw='w-3 h-3' />
 -    {t('Lu dans le CV', 'Read in the CV')}
-+    Read in the CV
++    Read in the resume
    </span>
  )
  
 -const list = (fields: CvField[]) => fields.map((f) => CV_LABELS()[f]).join(', ')
 -
- /** what the reading of the CV did, said once above the form */
+-/** what the reading of the CV did, said once above the form */
++/** what the reading of the resume did, said once above the form */
  const CvBanner = (
    { reading, fileName }: { reading: CvReading; fileName: string },
+ ) => (
 @@ -184,54 +157,27 @@ const CvBanner = (
    >
      <Sparkles tw='w-4 h-4 flex-none mt-px text-ai' />
@@ -16146,7 +16160,7 @@ index d5b6cab..402b7bc 100644
 -        )}
 +        ? `Read by ${
 +          reading.trace?.model ?? 'an AI model'
-+        }. Every value was found in the CV; check them before creating the link.`
++        }. Every value was found in the resume; check them before creating the link.`
 +        : `${
 +          reading.note ?? 'Local reading, without AI.'
 +        } Approximate reading: check every field before creating the link.`}
@@ -16163,7 +16177,7 @@ index d5b6cab..402b7bc 100644
 -          )}
 +          Discarded:{' '}
 +          {reading.discarded.map((f) => CV_LABELS[f]).join(', ')}, not found in
-+          the CV.
++          the resume.
          </>
        )}
      </span>
@@ -16171,7 +16185,7 @@ index d5b6cab..402b7bc 100644
  )
  
 -/** « Importer un CV » (U5): the file is read by the server, never stored */
-+/** "Import a CV": the file is read by the server, never stored */
++/** "Import a resume": the file is read by the server, never stored */
  const CvImport = (
    { assessment, onRead }: {
      assessment: number
@@ -16182,7 +16196,7 @@ index d5b6cab..402b7bc 100644
 -          {reading
 -            ? t('Lecture du CV…', 'Reading the CV…')
 -            : t('Importer un CV', 'Import a CV')}
-+          {reading ? 'Reading the CV…' : 'Import a CV'}
++          {reading ? 'Reading the resume…' : 'Import a resume'}
            <input
              type='file'
              data-test='cv-input'
@@ -16193,7 +16207,7 @@ index d5b6cab..402b7bc 100644
 -                setError(
 -                  t('CV trop lourd (5 Mo max).', 'CV too large (5 MB max).'),
 -                )
-+                setError('CV too large (5 MB max).')
++                setError('Resume too large (5 MB max).')
                  return
                }
                setReading(true)
@@ -16253,19 +16267,22 @@ index d5b6cab..402b7bc 100644
  }
  
 -/** R5 « Inviter un candidat » (U4, U5): by hand or from a CV, link e-mailed */
-+/** Invite a candidate: by hand or from a CV, the link e-mailed if asked */
++/** Invite a candidate: by hand or from a resume, the link e-mailed if asked */
  const InvitePanel = ({ a }: { a: AssessmentState }) => {
    const canEmail = member.value?.canEmail === true
    const [sent, setSent] = useState<Sent | null>(null)
-@@ -369,6 +305,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -369,8 +305,9 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
    const [cv, setCv] = useState<{ reading: CvReading; fileName: string }>()
    const form = useRef<HTMLFormElement>(null)
    const fromCv = (name: CvField) => cv?.reading.fields[name] !== undefined
 +  const emailIt = canEmail && sendEmail
  
-   /** what the last CV put in each field: a new CV replaces it, never an edit */
+-  /** what the last CV put in each field: a new CV replaces it, never an edit */
++  /** what the last resume put in each field: a new resume replaces it, never an edit */
    const filled = useRef<Record<string, string>>({})
-@@ -381,7 +318,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+   const fill = (reading: CvReading, fileName: string) => {
+     const el = form.current
+@@ -381,13 +318,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
        email: reading.fields.email ?? '',
        profileUrl: reading.fields.profileUrl ?? '',
        note: reading.fields.headline
@@ -16274,6 +16291,13 @@ index d5b6cab..402b7bc 100644
          : '',
      }
      for (const [name, value] of Object.entries(values)) {
+       const input = el.elements.namedItem(name) as HTMLInputElement | null
+       if (!input) continue
+-      // empty, or still what the previous CV wrote: the new reading wins
++      // empty, or still what the previous resume wrote: the new reading wins
+       const untouched = !input.value || input.value === filled.current[name]
+       if (untouched) input.value = value
+     }
 @@ -397,17 +334,11 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
  
    if (sent) {

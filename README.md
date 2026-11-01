@@ -16,6 +16,67 @@ Built for the Meta Global AI Developer Hackathon, with Meta's models.
   the hackathon, in a separate private repository. Everything in this repository
   after the first commit is hackathon work (see `git log`).
 
+## Run it
+
+Three ways, from the quickest to the most hackable. Each one opens
+<http://localhost:8000>: on the sign-in page, **Try with the demo account**
+enters a company space with no password. Start with **New assessment** and paste
+a job offer (examples in [`fixtures/offers/`](fixtures/offers/)).
+
+The Meta model keys make the app call the models live: `MODEL_API_KEY` (Meta
+Model API: reports, Oracle, listening) and `BASETEN_API_KEY` (Muse Spark Open:
+generation, resume reading, prefill). Without them the app still runs: a step
+that has a recorded answer replays it (grey badge), the others say why they
+cannot run.
+
+### 1. Pull the published image (nothing to build)
+
+Docker only. The image is built and published by GitHub at every push to
+`master`.
+
+```bash
+cat > defendable.env <<'ENV'
+REDIRECT_URI=http://localhost:8000
+DEMO_ACCESS=1
+MODEL_API_KEY=
+BASETEN_API_KEY=
+ENV
+docker run -d --name defendable -p 8000:8000 -v defendable-data:/data   --env-file defendable.env ghcr.io/mirak29/defendable:latest
+docker logs -f defendable   # ready at "server-start"
+```
+
+Stop with `docker stop defendable`; the database stays in the `defendable-data`
+volume.
+
+### 2. Clone the repository and run it with Docker
+
+The same image, built on your machine from the code.
+
+```bash
+git clone https://github.com/Mirak29/defendable.git
+cd defendable
+cp .env.production.example .env.production
+# in .env.production: REDIRECT_URI=http://localhost:8000, the keys, DEMO_ACCESS=1
+docker compose up -d --build
+docker compose logs -f app   # ready at "server-start"
+```
+
+For a server with HTTPS, backups and updates:
+[`deploy/README.md`](deploy/README.md).
+
+### 3. Clone the repository and run it with Deno (development)
+
+Deno 2 only (no Node), hot reload, a local SQLite file.
+
+```bash
+git clone https://github.com/Mirak29/defendable.git
+cd defendable
+deno install
+echo 'MODEL_API_KEY=LLM_…' > .env   # git-ignored; add BASETEN_API_KEY= too
+deno task dev    # http://localhost:8000
+deno task test   # all tests, in-memory SQLite, no network
+```
+
 ## Status
 
 | Part                                                                   | State |
@@ -30,7 +91,7 @@ Built for the Meta Global AI Developer Hackathon, with Meta's models.
 | Voice interview: server, interviewer prompt, test page (`/dev/voice`)  | done  |
 | Voice interview inside the candidate journey (Oracle)                  | done  |
 | Report (facts, checked interpretations) and human decision             | done  |
-| E-mail of the personal link, CV import                                 | done  |
+| E-mail of the personal link, resume import                             | done  |
 | Program assessments (input to output), in TypeScript or Python         | done  |
 
 ## How an assessment is generated
@@ -99,7 +160,7 @@ or Modal Sandboxes), which is a decision for the hosting.
 | Use                                                    | Model                                                       |
 | ------------------------------------------------------ | ----------------------------------------------------------- |
 | Generation (need, scenario, tests), reference solution | `muse-spark-open-1026`, **open weights, served by Baseten** |
-| Prefill of the form, reading of a CV                   | `muse-spark-open-1026`                                      |
+| Prefill of the form, reading of a resume               | `muse-spark-open-1026`                                      |
 | The report (interpretations, checked evidence)         | `muse-spark-1.3` at `high` (fallback `muse-spark-1.2`)      |
 | The interviewer Oracle (spoken, streamed)              | `muse-wonder-1.0` (fallback Muse Spark)                     |
 | Listening to the candidate                             | `muse-voice-transcribe-1.0`                                 |
@@ -286,18 +347,18 @@ Both models give a usable assessment every time, with no test excluded by the
 fairness check; Muse Spark Open takes about half the time. The step stays on
 Muse Spark Open, like the API assessment.
 
-**Prefill and CV**: 5 job offers and 6 CVs with known answers (a referee's
-e-mail that must not be taken, a compound name with accents, a name written
-surname first, an instruction hidden in the CV), 3 runs each.
+**Prefill and resume**: 5 job offers and 6 resumes with known answers (a
+referee's e-mail that must not be taken, a compound name with accents, a name
+written surname first, an instruction hidden in the resume), 3 runs each.
 
 | Step, model              | `minimal`     | `low`             | `medium`       |
 | ------------------------ | ------------- | ----------------- | -------------- |
 | Prefill, Muse Spark 1.3  | 15/15 · 1.8 s | 15/15 · 3.0 s     | 14/15 · 6.1 s  |
 | Prefill, Muse Spark Open | 15/15 · 2.3 s | **15/15 · 2.0 s** | 15/15 · 3.7 s  |
 | Prefill, Muse Spark 1.2  | 15/15 · 2.7 s | 15/15 · 5.1 s     | 14/15 · 10.1 s |
-| CV, Muse Spark 1.3       | 18/18 · 1.2 s | 18/18 · 1.8 s     | 18/18 · 2.7 s  |
-| CV, Muse Spark Open      | 18/18 · 1.5 s | **18/18 · 1.6 s** | 18/18 · 2.1 s  |
-| CV, Muse Spark 1.2       | 18/18 · 2.3 s | 17/18 · 3.0 s     | 17/18 · 4.1 s  |
+| Resume, Muse Spark 1.3   | 18/18 · 1.2 s | 18/18 · 1.8 s     | 18/18 · 2.7 s  |
+| Resume, Muse Spark Open  | 18/18 · 1.5 s | **18/18 · 1.6 s** | 18/18 · 2.1 s  |
+| Resume, Muse Spark 1.2   | 18/18 · 2.3 s | 17/18 · 3.0 s     | 17/18 · 4.1 s  |
 
 These two steps are solved: any model at the lowest effort is right and takes 2
 s, and more reasoning only costs time. They run on Muse Spark Open.
@@ -328,20 +389,9 @@ backups and an optional Caddy for HTTPS. The build loads everything the server
 needs offline and checks it works. Step by step:
 [`deploy/README.md`](deploy/README.md).
 
-## Getting started
+## Development commands
 
-Deno 2 only (no Node).
-
-```bash
-deno install
-echo 'MODEL_API_KEY=LLM_…' > .env   # your Meta Model API key (git-ignored)
-deno task dev           # http://localhost:8000, hot reload
-deno task test          # all tests, in-memory SQLite, no network
-```
-
-Without `MODEL_API_KEY`, a step that has a recorded answer replays it (grey
-badge) and the others fail with a readable error: the app and the tests run
-without any key.
+With Deno (method 3 above):
 
 | Command                                  | What it does                                                          |
 | ---------------------------------------- | --------------------------------------------------------------------- |
@@ -349,7 +399,7 @@ without any key.
 | `deno task llm:generate --out=generated` | one real generation, step by step, with cost; writes a readable `.md` |
 | `deno task llm:bench`                    | the same fictional inputs through several models and efforts: latency |
 | `deno task llm:eval`                     | the report on six fictional candidates whose right reading is known   |
-| `deno task llm:extraction-eval`          | prefill and CV against known answers, each model at each effort       |
+| `deno task llm:extraction-eval`          | prefill and resume against known answers, each model at each effort   |
 | `deno task llm:interview-eval`           | Oracle against six kinds of simulated candidates, its rules checked   |
 | `deno task all`                          | type-check, lint and tests                                            |
 
