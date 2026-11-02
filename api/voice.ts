@@ -19,6 +19,7 @@ import type { InterviewLine } from '/web/types.ts'
 import { decodeSession } from '/api/member.ts'
 import {
   END_MARKER,
+  INTERVIEW_NO_RESPONSE,
   INTERVIEW_NUDGE,
   INTERVIEW_RESUME,
   INTERVIEW_SKIP,
@@ -276,6 +277,10 @@ export class VoiceInterview {
   #lastWordAt = 0
   /** words of the candidate since the last question: no silence to watch */
   #heardSince = false
+  /** consecutive questions left unanswered; a spoken answer resets the count */
+  #unansweredQuestions = 0
+  /** end of the original question, so a nudge does not restart its deadline */
+  #questionEndAt = 0
   /** the silence after a question is watched */
   #watch?: ReturnType<typeof setTimeout>
 
@@ -311,6 +316,7 @@ export class VoiceInterview {
     this.#history.push({ role: 'user', content: INTERVIEW_START })
     for (const line of lines) {
       if (line.who === 'candidate') {
+        if (line.text.trim()) this.#unansweredQuestions = 0
         this.#history.push({ role: 'user', content: line.text })
         continue
       }
@@ -320,8 +326,12 @@ export class VoiceInterview {
           ? `${line.text} [the candidate interrupted here]`
           : line.text,
       })
+      if (line.silence === 'skip' && !line.interrupted) {
+        this.#unansweredQuestions++
+      }
       if (!line.interrupted && line.silence !== 'nudge') this.#asked++
     }
+    if (unanswered.trim()) this.#unansweredQuestions = 0
     return INTERVIEW_RESUME(unanswered)
   }
 
@@ -554,6 +564,7 @@ export class VoiceInterview {
    */
   #wordsHeard() {
     this.#heardSince = true
+    this.#unansweredQuestions = 0
     clearTimeout(this.#watch)
     if (this.#turnAt) return
     const now = Date.now()
@@ -569,9 +580,9 @@ export class VoiceInterview {
    */
   #watchSilence(voiceEndAt: number, nudged: boolean) {
     clearTimeout(this.#watch)
-    this.#heardSince = false
+    if (!nudged) this.#questionEndAt = voiceEndAt
     const { nudgeMs, skipMs } = voiceConfig
-    const wait = nudged ? skipMs - nudgeMs : nudgeMs
+    const dueAt = this.#questionEndAt + (nudged ? skipMs : nudgeMs)
     const check = () => {
       if (this.#closed || this.#heardSince || this.#busy) return
       if (Date.now() >= this.#deadline) return
@@ -580,8 +591,19 @@ export class VoiceInterview {
         this.#watch = setTimeout(check, 1_000)
         return
       }
-      this.#running = this.#running.then(() =>
-        this.#closed || this.#heardSince ? undefined : this.#answer(
+      this.#running = this.#running.then(() => {
+        if (this.#closed || this.#heardSince) return
+        if (nudged && ++this.#unansweredQuestions >= 3) {
+          return this.#answer(
+            INTERVIEW_NO_RESPONSE,
+            undefined,
+            '',
+            true,
+            undefined,
+            INTERVIEW_NO_RESPONSE,
+          )
+        }
+        return this.#answer(
           nudged
             ? INTERVIEW_SKIP(Math.round(skipMs / 1000))
             : INTERVIEW_NUDGE(Math.round(nudgeMs / 1000)),
@@ -590,9 +612,9 @@ export class VoiceInterview {
           false,
           nudged ? 'skip' : 'nudge',
         )
-      )
+      })
     }
-    this.#watch = setTimeout(check, Math.max(0, voiceEndAt - Date.now()) + wait)
+    this.#watch = setTimeout(check, Math.max(0, dueAt - Date.now()))
   }
 
   #deliver(text: string) {
@@ -658,6 +680,9 @@ export class VoiceInterview {
     prepared?: string,
   ) {
     clearTimeout(this.#watch)
+    // The previous answer must not suppress the watch for this new question.
+    // Words heard while this question is being spoken will set it again.
+    this.#heardSince = false
     this.#history.push({ role: 'user', content: userText })
     this.#dropSpeech()
     const controller = new AbortController()

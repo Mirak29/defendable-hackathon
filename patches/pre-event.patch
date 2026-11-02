@@ -16286,7 +16286,7 @@ index 54daae0..4649e89 100644
    </main>
  )
 diff --git a/web/pages/recruiter/assessment-page.tsx b/web/pages/recruiter/assessment-page.tsx
-index d5b6cab..ab96343 100644
+index d5b6cab..2d34471 100644
 --- a/web/pages/recruiter/assessment-page.tsx
 +++ b/web/pages/recruiter/assessment-page.tsx
 @@ -1,5 +1,5 @@
@@ -16576,7 +16576,7 @@ index d5b6cab..ab96343 100644
          </button>
        </div>
      )
-@@ -358,7 +294,7 @@ type Sent = {
+@@ -358,9 +294,10 @@ type Sent = {
    mail?: LinkSent
  }
  
@@ -16584,8 +16584,11 @@ index d5b6cab..ab96343 100644
 +/** Invite a candidate: by hand or from a resume, the link e-mailed if asked */
  const InvitePanel = ({ a }: { a: AssessmentState }) => {
    const canEmail = member.value?.canEmail === true
++  const demo = member.value?.demo === true
    const [sent, setSent] = useState<Sent | null>(null)
-@@ -369,8 +305,9 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+   const [error, setError] = useState('')
+   const [pending, setPending] = useState(false)
+@@ -369,8 +306,9 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
    const [cv, setCv] = useState<{ reading: CvReading; fileName: string }>()
    const form = useRef<HTMLFormElement>(null)
    const fromCv = (name: CvField) => cv?.reading.fields[name] !== undefined
@@ -16596,7 +16599,7 @@ index d5b6cab..ab96343 100644
    const filled = useRef<Record<string, string>>({})
    const fill = (reading: CvReading, fileName: string) => {
      const el = form.current
-@@ -381,13 +318,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -381,13 +319,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
        email: reading.fields.email ?? '',
        profileUrl: reading.fields.profileUrl ?? '',
        note: reading.fields.headline
@@ -16612,7 +16615,7 @@ index d5b6cab..ab96343 100644
        const untouched = !input.value || input.value === filled.current[name]
        if (untouched) input.value = value
      }
-@@ -397,17 +334,11 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -397,17 +335,11 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
  
    if (sent) {
      return (
@@ -16634,7 +16637,7 @@ index d5b6cab..ab96343 100644
          </p>
          <MailStatus
            mail={sent.mail}
-@@ -441,22 +372,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -441,22 +373,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
            <CopyButton text={sent.link} />
          </div>
          <div tw='flex items-center gap-2 flex-wrap'>
@@ -16658,7 +16661,7 @@ index d5b6cab..ab96343 100644
            </a>
            <button
              type='button'
-@@ -468,14 +390,14 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -468,14 +391,14 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
              }}
            >
              <UserPlus tw='w-3.5 h-3.5' />
@@ -16675,7 +16678,7 @@ index d5b6cab..ab96343 100644
        <CvImport assessment={a.id} onRead={fill} />
        {cv && <CvBanner {...cv} />}
        <form
-@@ -492,7 +414,6 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -492,7 +415,6 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
              profileUrl: field(data, 'profileUrl') || undefined,
              note: field(data, 'note') || undefined,
            }
@@ -16683,7 +16686,47 @@ index d5b6cab..ab96343 100644
            setPending(true)
            setError('')
            try {
-@@ -518,8 +439,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -515,11 +437,47 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+           }
+         }}
+       >
++        {demo && (
++          <div tw='flex items-center gap-3 flex-wrap'>
++            <button
++              type='button'
++              tw='btn btn-secondary h-[34px] px-3 text-[13px]'
++              disabled={pending}
++              onClick={() => {
++                const el = form.current
++                if (!el) return
++                const values = {
++                  firstName: 'Alex',
++                  lastName: 'Demo',
++                  email: `alex.demo+${crypto.randomUUID().slice(0, 8)}@example.com`,
++                  profileUrl: '',
++                  note: 'Fictional candidate for the demo.',
++                }
++                for (const [name, value] of Object.entries(values)) {
++                  const input = el.elements.namedItem(name) as
++                    | HTMLInputElement
++                    | HTMLTextAreaElement
++                    | null
++                  if (input) input.value = value
++                }
++                filled.current = {}
++                setCv(undefined)
++                setError('')
++                setSendEmail(false)
++              }}
++            >
++              <UserPlus tw='w-3.5 h-3.5' />
++              Fill in a demo candidate
++            </button>
++            <span tw='text-[12.5px] text-content-tertiary'>
++              Fictional details. No e-mail is sent automatically.
++            </span>
++          </div>
++        )}
          <div tw='grid grid-cols-1 sm:grid-cols-2 gap-3'>
            <div tw='flex flex-col gap-1.5'>
              <Label for='firstName' required>
@@ -16693,7 +16736,7 @@ index d5b6cab..ab96343 100644
              </Label>
              <Input
                name='firstName'
-@@ -530,8 +450,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -530,8 +488,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
            </div>
            <div tw='flex flex-col gap-1.5'>
              <Label for='lastName' required>
@@ -16703,7 +16746,7 @@ index d5b6cab..ab96343 100644
              </Label>
              <Input
                name='lastName'
-@@ -555,10 +474,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -555,10 +512,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
          </div>
          <div tw='flex flex-col gap-1.5'>
            <Label for='profileUrl'>
@@ -16715,7 +16758,7 @@ index d5b6cab..ab96343 100644
              {fromCv('profileUrl') && <ReadInCv />}
            </Label>
            <Input
-@@ -571,17 +487,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -571,17 +525,13 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
          </div>
          <div tw='flex flex-col gap-1.5'>
            <Label for='note'>
@@ -16735,7 +16778,7 @@ index d5b6cab..ab96343 100644
            />
          </div>
          {canEmail && (
-@@ -594,10 +506,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -594,10 +544,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
                tw='w-[17px] h-[17px] m-0 flex-none'
                style={{ accentColor: 'var(--color-accent)' }}
              />
@@ -16747,7 +16790,7 @@ index d5b6cab..ab96343 100644
            </label>
          )}
          {error && (
-@@ -606,7 +515,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -606,7 +553,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
              tw='m-0 flex items-start gap-2 text-[13px] text-err'
            >
              <CircleX tw='w-4 h-4 flex-none mt-px' />
@@ -16756,7 +16799,7 @@ index d5b6cab..ab96343 100644
            </p>
          )}
          <div tw='flex items-center gap-3 flex-wrap'>
-@@ -616,22 +525,17 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -616,22 +563,17 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
              tw='btn btn-primary h-9 px-4'
              disabled={pending}
            >
@@ -16785,7 +16828,7 @@ index d5b6cab..ab96343 100644
            </span>
          </div>
        </form>
-@@ -642,7 +546,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
+@@ -642,7 +584,7 @@ const InvitePanel = ({ a }: { a: AssessmentState }) => {
  /** the personal link still opens the test (not finished, revoked, expired) */
  const linkUsable = (c: CandidateSummary) =>
    !!c.invitation &&
@@ -16794,7 +16837,7 @@ index d5b6cab..ab96343 100644
  
  const revoke = (c: CandidateSummary) => {
    const who = c.identity
-@@ -650,10 +554,7 @@ const revoke = (c: CandidateSummary) => {
+@@ -650,10 +592,7 @@ const revoke = (c: CandidateSummary) => {
      : c.pseudonym
    if (
      !confirm(
@@ -16806,7 +16849,7 @@ index d5b6cab..ab96343 100644
      )
    ) {
      return
-@@ -663,28 +564,28 @@ const revoke = (c: CandidateSummary) => {
+@@ -663,28 +602,28 @@ const revoke = (c: CandidateSummary) => {
    )
  }
  
@@ -16840,7 +16883,7 @@ index d5b6cab..ab96343 100644
  const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
    const [pending, setPending] = useState(false)
    return (
-@@ -698,12 +599,7 @@ const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
+@@ -698,12 +637,7 @@ const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
          try {
            const result = await sendCandidateLink(c.id)
            if (!result.sent) {
@@ -16854,7 +16897,7 @@ index d5b6cab..ab96343 100644
            }
          } catch (err) {
            alert(err instanceof Error ? err.message : String(err))
-@@ -715,12 +611,12 @@ const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
+@@ -715,12 +649,12 @@ const SendLinkButton = ({ c }: { c: CandidateSummary }) => {
        {pending
          ? <LoaderCircle tw='w-3.5 h-3.5 animate-spin' />
          : <Send tw='w-3.5 h-3.5' />}
@@ -16869,7 +16912,7 @@ index d5b6cab..ab96343 100644
  export const AssessmentPage = () => {
    const canEmail = member.value?.canEmail === true
    const a = getAssessment(url.params.id)
-@@ -738,11 +634,44 @@ export const AssessmentPage = () => {
+@@ -738,11 +672,44 @@ export const AssessmentPage = () => {
      return null
    }
    const { spec } = a
@@ -16916,7 +16959,7 @@ index d5b6cab..ab96343 100644
        </BackLink>
        <div
          role='status'
-@@ -750,10 +679,10 @@ export const AssessmentPage = () => {
+@@ -750,10 +717,10 @@ export const AssessmentPage = () => {
        >
          <CircleCheck tw='w-[17px] h-[17px] flex-none text-ok' />
          <strong tw='font-semibold'>
@@ -16929,7 +16972,7 @@ index d5b6cab..ab96343 100644
          </span>
        </div>
        <div tw='flex flex-col gap-2'>
-@@ -761,54 +690,27 @@ export const AssessmentPage = () => {
+@@ -761,54 +728,27 @@ export const AssessmentPage = () => {
          <div tw='flex gap-1.5 flex-wrap'>
            <MetaTag>{levelLabels[spec.level]}</MetaTag>
            <MetaTag icon={Clock}>{spec.durationMin} min</MetaTag>
@@ -16993,7 +17036,7 @@ index d5b6cab..ab96343 100644
              </th>
            </THead>
            <tbody>
-@@ -818,15 +720,12 @@ export const AssessmentPage = () => {
+@@ -818,15 +758,12 @@ export const AssessmentPage = () => {
                    colSpan={6}
                    tw={[td, 'pl-4 text-content-tertiary text-[13px]']}
                  >
@@ -17011,7 +17054,7 @@ index d5b6cab..ab96343 100644
                return (
                  <tr key={c.id} tw='border-t border-border-primary'>
                    <td tw={[td, 'pl-4']}>
-@@ -844,7 +743,7 @@ export const AssessmentPage = () => {
+@@ -844,7 +781,7 @@ export const AssessmentPage = () => {
                        )
                        : (
                          <span tw='text-[13px] text-content-tertiary'>
@@ -17020,7 +17063,7 @@ index d5b6cab..ab96343 100644
                          </span>
                        )}
                    </td>
-@@ -853,7 +752,7 @@ export const AssessmentPage = () => {
+@@ -853,7 +790,7 @@ export const AssessmentPage = () => {
                    <td tw={[td, 'text-content-secondary']}>
                      {c.buildMinutes
                        ? `${formatMinutes(c.buildMinutes)}${
@@ -17029,7 +17072,7 @@ index d5b6cab..ab96343 100644
                        }`
                        : '—'}
                    </td>
-@@ -862,17 +761,17 @@ export const AssessmentPage = () => {
+@@ -862,17 +799,17 @@ export const AssessmentPage = () => {
                    </td>
                    <td tw={[td, 'pr-4 text-right']}>
                      <span tw='inline-flex items-center gap-2 justify-end flex-wrap'>
@@ -17051,7 +17094,7 @@ index d5b6cab..ab96343 100644
                          <button
                            type='button'
                            data-test='revoke-btn'
-@@ -880,7 +779,7 @@ export const AssessmentPage = () => {
+@@ -880,7 +817,7 @@ export const AssessmentPage = () => {
                            onClick={() => revoke(c)}
                          >
                            <Ban tw='w-3.5 h-3.5' />
@@ -17060,7 +17103,7 @@ index d5b6cab..ab96343 100644
                          </button>
                        )}
                        {done
-@@ -892,21 +791,18 @@ export const AssessmentPage = () => {
+@@ -892,21 +829,18 @@ export const AssessmentPage = () => {
                              tw='btn btn-secondary h-8 px-3 text-[13px]'
                            >
                              <FileText tw='w-3.5 h-3.5' />
@@ -17085,7 +17128,7 @@ index d5b6cab..ab96343 100644
                            </button>
                          )}
                      </span>
-@@ -917,12 +813,10 @@ export const AssessmentPage = () => {
+@@ -917,12 +851,10 @@ export const AssessmentPage = () => {
            </tbody>
          </TableWrap>
          <p tw='m-0 text-[12.5px] text-content-tertiary'>
@@ -17239,7 +17282,7 @@ index 5b10304..9680f16 100644
                    </td>
                    <td tw={td}>{levelLabels[a.spec.level]}</td>
 diff --git a/web/pages/recruiter/new-assessment-page.tsx b/web/pages/recruiter/new-assessment-page.tsx
-index 7d8a2d5..f34ec17 100644
+index 7d8a2d5..578f440 100644
 --- a/web/pages/recruiter/new-assessment-page.tsx
 +++ b/web/pages/recruiter/new-assessment-page.tsx
 @@ -1,20 +1,18 @@
@@ -17711,7 +17754,7 @@ index 7d8a2d5..f34ec17 100644
 +        <dd tw='m-0'>{levelLabels[level.value]}</dd>
 +        <dt tw='text-content-tertiary'>Duration</dt>
 +        <dd tw='m-0'>
-+          {duration.value} {'min + about 20 min of questions'}
++          {duration.value} {'min + about 10 min of questions'}
 +        </dd>
 +        <dt tw='text-content-tertiary'>
 +          {kind.value === 'program' ? 'Contract' : 'Routes'}

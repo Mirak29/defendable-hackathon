@@ -647,6 +647,10 @@ export const INTERVIEW_NUDGE = (seconds: number) =>
 export const INTERVIEW_SKIP = (seconds: number) =>
   `(The candidate has still said nothing, ${seconds} seconds after your question. In a few warm words, say that you will move on, then ask your next question, about another point. Do not mention the silence again and do not ask the same question.)`
 
+/** final words after three unanswered questions; no model call is needed */
+export const INTERVIEW_NO_RESPONSE =
+  'We have not received an answer to the last three questions, so we will stop here. Thank you for your time. A person will read this conversation afterwards.'
+
 /* ---------- the report ---------- */
 
 export const REPORTER =

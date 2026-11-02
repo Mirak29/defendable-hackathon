@@ -1003,6 +1003,259 @@ test('voice interview: a prepared opening is said at once, without the model', a
   await silent.shutdown()
 })
 
+test('voice interview: silence is watched again after the candidate answers', async (step) => {
+  await withInterview({
+    replies: [
+      'Hello. How did you start?',
+      'What about input validation?',
+      'Take your time. Shall I repeat it?',
+      'Let us move on. How are clicks counted?',
+    ],
+    recognise: (send) => {
+      send({ type: 'speechEnd' })
+      send({ type: 'speechComplete', turnId: 1, transcript: 'I used a map.' })
+    },
+  }, async ({ port }) => {
+    Object.assign(voiceConfig, {
+      holdMs: 0,
+      nudgeMs: 150,
+      skipMs: 400,
+      charsPerSecond: 1e9,
+    })
+    const b = await browser(port)
+    try {
+      b.frame()
+      await b.waitFor((e) => e.type === 'ai-done')
+      b.frame()
+      await b.waitFor((e) => e.type === 'ai-done' && e.silence === 'skip')
+      await step('the second question gets its own prompt and timeout', () => {
+        eq(
+          b.events.filter((e) => e.type === 'ai-done').map((e) =>
+            e.silence ?? 'question'
+          ),
+          ['question', 'question', 'nudge', 'skip'],
+        )
+      })
+    } finally {
+      b.ws.close()
+    }
+  })
+})
+
+test('voice interview: three unanswered questions close it without a fourth', async (step) => {
+  await withInterview({
+    replies: [
+      'How did you start?',
+      'Shall I repeat it?',
+      'What about validation?',
+      'Shall I repeat it?',
+      'How are clicks counted?',
+      'Shall I repeat it?',
+    ],
+    recognise: () => {},
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, {
+      nudgeMs: 80,
+      skipMs: 200,
+      charsPerSecond: 1e9,
+    })
+    const b = await browser(port)
+    try {
+      b.frame()
+      await b.waitFor((e) => e.type === 'end')
+      await step(
+        'three prompts, two moves on, then a deterministic goodbye',
+        () => {
+          const done = b.events.filter((e) => e.type === 'ai-done')
+          eq(done.filter((e) => e.silence === 'nudge').length, 3)
+          eq(done.filter((e) => e.silence === 'skip').length, 2)
+          eq(done.at(-1).text.includes('last three questions'), true)
+          eq(done.at(-1).text.includes('?'), false)
+          eq(model.calls.length, 6)
+          eq(b.events.filter((e) => e.type === 'end').length, 1)
+        },
+      )
+    } finally {
+      b.ws.close()
+    }
+  })
+})
+
+test('voice interview: an answer resets the unanswered question count', async (step) => {
+  let recognise
+  await withInterview({
+    replies: [
+      'Question one?',
+      'Take your time.',
+      'Question two?',
+      'Take your time.',
+      'Question three?',
+      'Question four?',
+      'Take your time.',
+      'Question five?',
+      'Take your time.',
+      'Question six?',
+      'Take your time.',
+    ],
+    recognise: (send) => {
+      recognise = send
+    },
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, {
+      holdMs: 0,
+      nudgeMs: 150,
+      skipMs: 400,
+      charsPerSecond: 1e9,
+    })
+    const b = await browser(port)
+    try {
+      b.frame()
+      await b.waitFor((e) => e.type === 'ai-done')
+      b.frame()
+      await b.waitFor((e) =>
+        e.type === 'ai-done' && e.text === 'Question three?'
+      )
+      recognise({ type: 'speechEnd' })
+      recognise({
+        type: 'speechComplete',
+        turnId: 1,
+        transcript: 'I used a map.',
+      })
+      await b.waitFor((e) => e.type === 'end')
+      await step(
+        'another full sequence of three unanswered questions is allowed',
+        () => {
+          eq(b.events.filter((e) => e.type === 'heard').length, 1)
+          eq(
+            b.events.filter((e) => e.type === 'ai-done' && e.silence === 'skip')
+              .length,
+            4,
+          )
+          eq(model.calls.length, 11)
+        },
+      )
+    } finally {
+      b.ws.close()
+    }
+  })
+})
+
+test('voice interview: reloading preserves the unanswered question count', async (step) => {
+  await withInterview({
+    interviewFacts: {
+      ...facts,
+      previous: [
+        { who: 'ai', text: 'Question one?' },
+        { who: 'ai', text: 'Take your time.', silence: 'nudge' },
+        { who: 'ai', text: 'Question two?', silence: 'skip' },
+        { who: 'ai', text: 'Take your time.', silence: 'nudge' },
+        { who: 'ai', text: 'Question three?', silence: 'skip' },
+      ],
+    },
+    replies: ['We can continue. How do you count clicks?', 'Take your time.'],
+    recognise: () => {},
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, {
+      nudgeMs: 80,
+      skipMs: 200,
+      charsPerSecond: 1e9,
+    })
+    const b = await browser(port)
+    try {
+      b.frame()
+      await b.waitFor((e) => e.type === 'end')
+      await step('the next unanswered question closes it', () => {
+        eq(model.calls.length, 2)
+        eq(
+          b.events.filter((e) => e.type === 'ai-done' && e.silence === 'skip')
+            .length,
+          0,
+        )
+      })
+    } finally {
+      b.ws.close()
+    }
+  })
+})
+
+test('voice interview: a last answer before reloading resets the unanswered count', async (step) => {
+  await withInterview({
+    interviewFacts: {
+      ...facts,
+      previous: [
+        { who: 'ai', text: 'Question one?' },
+        { who: 'ai', text: 'Question two?', silence: 'skip' },
+        { who: 'ai', text: 'Question three?', silence: 'skip' },
+        { who: 'candidate', text: 'I used a map.' },
+      ],
+    },
+    replies: [
+      'We can continue. What about validation?',
+      'Take your time.',
+      'How do you count clicks?',
+      'Take your time.',
+      'What about deleting links?',
+      'Take your time.',
+    ],
+    recognise: () => {},
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, {
+      nudgeMs: 80,
+      skipMs: 200,
+      charsPerSecond: 1e9,
+    })
+    const b = await browser(port)
+    try {
+      b.frame()
+      await b.waitFor((e) => e.type === 'end')
+      await step(
+        'the restored answer allows three new unanswered questions',
+        () => {
+          eq(model.calls.length, 6)
+          eq(
+            b.events.filter((e) => e.type === 'ai-done' && e.silence === 'skip')
+              .length,
+            2,
+          )
+        },
+      )
+    } finally {
+      b.ws.close()
+    }
+  })
+})
+
+test('voice interview: a slow nudge does not restart the question timeout', async (step) => {
+  await withInterview({
+    replies: [
+      'How did you start?',
+      { pieces: ['Shall I repeat it?'], gap: 1000 },
+      'What about validation?',
+    ],
+    recognise: () => {},
+  }, async ({ port }) => {
+    Object.assign(voiceConfig, {
+      nudgeMs: 100,
+      skipMs: 700,
+      charsPerSecond: 1e9,
+    })
+    const b = await browser(port)
+    try {
+      b.frame()
+      await b.waitFor((e) => e.type === 'ai-done' && e.silence === 'nudge')
+      await b.waitFor((e) => e.type === 'ai-done' && e.silence === 'skip', 350)
+      await step('an overdue timeout runs as soon as the nudge ends', () => {
+        eq(
+          b.events.some((e) => e.type === 'ai-done' && e.silence === 'skip'),
+          true,
+        )
+      })
+    } finally {
+      b.ws.close()
+    }
+  })
+})
+
 test('voice interview: after a reload the prepared opening is not said again', async (step) => {
   await withInterview({
     interviewFacts: {

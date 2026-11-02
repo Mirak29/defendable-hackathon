@@ -326,7 +326,10 @@ prompt, without the rule on absences, doubted 31 % of the right readings
   says nothing for 10 seconds (`INTERVIEW_NUDGE_MS`, counted from the end of
   Oracle's voice) is offered, once, to hear it again; still nothing 30 seconds
   after the question (`INTERVIEW_SKIP_MS`) and Oracle moves on to another point.
-  Any words stop the count: someone thinking aloud is never cut.
+  The reminder does not restart that deadline. After three consecutive questions
+  with no answer, Oracle thanks the candidate and ends the interview. Any words
+  reset this count: someone thinking aloud is never cut. Reloading the page
+  preserves the consecutive unanswered count.
 - **Answer times, per question.** The server records answer timestamps and
   estimates when each question finishes playing from the audio duration (or text
   length for browser speech). It uses these to estimate the wait before an
