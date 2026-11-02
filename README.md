@@ -1,6 +1,11 @@
 # Defendable
 
-**An AI technical interviewer that understands your code.**
+**AI can write the code. Can the candidate defend it?**
+
+[**Try the live app**](https://defendable-dimxty2z0.gobrev.dev) · **Demo video
+(2:34):** link to be added
+
+<!-- Add the final YouTube link here before submission. -->
 
 A recruiter pastes a job offer. Defendable generates a practical task and its
 tests, checks them in a sandbox, and lets the candidate build it with any AI
@@ -12,9 +17,27 @@ stays human.
 
 Built for the Meta Global AI Developer Hackathon, with Meta's models.
 
-- Origin: the concept and a first prototype (Defendable 1.0) were built before
-  the hackathon, in a separate private repository. Everything in this repository
-  after the first commit is hackathon work (see `git log`).
+- Before the hackathon: the concept, the landing page and all UI pages were
+  prototyped in a separate private repository (Defendable 1.0).
+- Built during the hackathon: all runtime functionality, including the backend,
+  Meta model integrations, assessment generation and verification, sandboxed
+  code execution, voice interviews, and reports.
+
+## Try the product
+
+1. Open the [live app](https://defendable-dimxty2z0.gobrev.dev) and choose **Try
+   with the demo account** on the sign-in page. No account or API key is needed
+   to use the hosted demo.
+2. Create a **New assessment** from a job offer (examples in
+   [fixtures/offers/](fixtures/offers/)), review the brief and automatic checks,
+   then approve it and create a candidate link.
+3. Open the candidate link, build and submit the solution, then talk with Oracle
+   using a microphone and headphones. Return to the recruiter space to inspect
+   the report: test results, quotes, code evidence and follow-up questions.
+
+The full journey takes longer than the demo video. Generation and the interview
+use live model calls. A fresh local installation starts with an empty company
+space.
 
 ## Run it
 
@@ -41,7 +64,8 @@ DEMO_ACCESS=1
 MODEL_API_KEY=
 BASETEN_API_KEY=
 ENV
-docker run -d --name defendable -p 8000:8000 -v defendable-data:/data   --env-file defendable.env ghcr.io/mirak29/defendable:latest
+docker run -d --name defendable -p 8000:8000 -v defendable-data:/data \
+  --env-file defendable.env ghcr.io/mirak29/defendable:latest
 docker logs -f defendable   # ready at "server-start"
 ```
 
@@ -77,22 +101,43 @@ deno task dev    # http://localhost:8000
 deno task test   # all tests, in-memory SQLite, no network
 ```
 
-## Status
+## What it does
 
-| Part                                                                   | State |
-| ---------------------------------------------------------------------- | ----- |
-| Accounts of a company space (sign-up, sessions, lockout)               | done  |
-| Landing page                                                           | done  |
-| Meta Model API client (streaming, retries, fallback, schemas)          | done  |
-| Generation of an assessment from a job offer (4 steps, fairness check) | done  |
-| Sandbox: runs the candidate's code, judges the tests on the server     | done  |
-| Recruiter pages (list, new assessment, review, approval, invitation)   | done  |
-| Candidate journey (link, consent, editor, submission)                  | done  |
-| Voice interview: server, interviewer prompt, test page (`/dev/voice`)  | done  |
-| Voice interview inside the candidate journey (Oracle)                  | done  |
-| Report (facts, checked interpretations) and human decision             | done  |
-| E-mail of the personal link, resume import                             | done  |
-| Program assessments (input to output), in TypeScript or Python         | done  |
+- **Verified assessments:** turn a job offer into a task, public and hidden
+  tests; check a reference solution and whether hidden tests catch real
+  shortcuts.
+- **A working candidate environment:** a file editor, sandboxed execution, type
+  checks and candidate-written tests. AI tools are allowed and declared.
+- **A code-aware voice interview:** Oracle asks about the submitted solution,
+  follows up on explanations and resumes after a connection loss.
+- **An evidence-based report:** measured results stay separate from AI
+  interpretations. Quotes, code references and test IDs are checked; a second
+  model call checks whether evidence supports the interpretation.
+- **Human decisions:** suggested follow-up questions and a saved recruiter
+  decision, with no overall score or automatic hiring recommendation.
+
+## Meta models
+
+| Use                                                    | Model                                                       |
+| ------------------------------------------------------ | ----------------------------------------------------------- |
+| Generation (need, scenario, tests), reference solution | `muse-spark-open-1026`, **open weights, served by Baseten** |
+| Prefill of the form, reading of a resume               | `muse-spark-open-1026`                                      |
+| The report (interpretations, checked evidence)         | `muse-spark-1.3` at `high` (fallback `muse-spark-1.2`)      |
+| The interviewer Oracle (spoken, streamed)              | `muse-wonder-1.0` (fallback Muse Spark)                     |
+| Listening to the candidate                             | `muse-voice-transcribe-1.0`                                 |
+| Oracle's voice (not in the Meta Model API)             | `facebook/mms-tts-eng` (Meta MMS-TTS), **on our server**    |
+| Development and benchmarks with fictional data         | `muse-spark-1.3-contributor`                                |
+
+**Built with Muse Spark Open** (the Muse Model License asks for this line in the
+product, its documentation or its website: it is in the footer of the landing
+page).
+
+If the open-weights model fails or has no key, the step falls back to
+`muse-spark-1.3` and the trace under the step says so. Each step shows which
+model answered, where, and how long it took.
+
+Candidate code and answers are never sent to a Contributor-mode model (Meta may
+train on its content).
 
 ## How an assessment is generated
 
@@ -155,28 +200,8 @@ A program has one limit: Python's memory is capped by the 2 s time limit only.
 Go and Rust are not offered: they need a compiler in an isolated sandbox (Judge0
 or Modal Sandboxes), which is a decision for the hosting.
 
-## Meta models
-
-| Use                                                    | Model                                                       |
-| ------------------------------------------------------ | ----------------------------------------------------------- |
-| Generation (need, scenario, tests), reference solution | `muse-spark-open-1026`, **open weights, served by Baseten** |
-| Prefill of the form, reading of a resume               | `muse-spark-open-1026`                                      |
-| The report (interpretations, checked evidence)         | `muse-spark-1.3` at `high` (fallback `muse-spark-1.2`)      |
-| The interviewer Oracle (spoken, streamed)              | `muse-wonder-1.0` (fallback Muse Spark)                     |
-| Listening to the candidate                             | `muse-voice-transcribe-1.0`                                 |
-| Oracle's voice (not in the Meta Model API)             | `facebook/mms-tts-eng` (Meta MMS-TTS), **on our server**    |
-| Development and benchmarks with fictional data         | `muse-spark-1.3-contributor`                                |
-
-**Built with Muse Spark Open** (the Muse Model License asks for this line in the
-product, its documentation or its website: it is in the footer of the landing
-page).
-
-If the open-weights model fails or has no key, the step falls back to
-`muse-spark-1.3` and the trace under the step says so. Each step shows which
-model answered, where, and how long it took.
-
-Candidate code and answers are never sent to a Contributor-mode model (Meta may
-train on its content).
+<details>
+<summary><strong>Oracle's voice: implementation, license and CPU measurements</strong></summary>
 
 ### Oracle's voice
 
@@ -219,6 +244,8 @@ several interviews at once, and the delay in a real interview with this voice,
 have **not been measured**. The sentences of an interview are made one after the
 other.
 
+</details>
+
 ### A second look at the evidence
 
 The report checks every piece of evidence exists (the quote word for word in the
@@ -259,23 +286,48 @@ prompt, without the rule on absences, doubted 31 % of the right readings
   first time it opened (`INTERVIEW_MS`); reloading the page does not restart it.
   When time is over, Oracle hears out a candidate who is speaking, answers them
   in a few words, thanks them and closes. A page reloaded mid-interview resumes
-  from the saved conversation instead of starting over, so the questions cannot
-  be seen twice.
+  from the saved conversation instead of restarting the interview.
 - **Facts about the session, never a verdict.** The report shows how many times
   the page was left and for how long (building and interview), whether a second
   display was seen (Chromium only, otherwise "unknown"), reloads, and copy
   attempts on the words of the interviewer. These have many innocent causes and
   say nothing about the candidate's understanding; the report says so. Nothing
   is inferred from how the code was written, since AI is allowed.
+- **A microphone check and a prepared opening.** Before the interview, the
+  candidate tries their microphone (a level that moves, a check once a voice is
+  heard) and clicks Start; the 10 minutes start then. Oracle's first words (the
+  greeting and an open question on the approach) are written by Muse Wonder
+  during the preparation, after the code has run, and its voice is made while
+  the transcription connects: the first sound no longer waits for the model nor
+  for the transcription. Without them (no key, a failure) they are written live.
+- **A silence is not a wait without end.** After a question, a candidate who
+  says nothing for 10 seconds (`INTERVIEW_NUDGE_MS`, counted from the end of
+  Oracle's voice) is offered, once, to hear it again; still nothing 30 seconds
+  after the question (`INTERVIEW_SKIP_MS`) and Oracle moves on to another point.
+  Any words stop the count: someone thinking aloud is never cut.
+- **Answer times, per question.** The server records answer timestamps and
+  estimates when each question finishes playing from the audio duration (or text
+  length for browser speech). It uses these to estimate the wait before an
+  answer and relates browser-reported absences to the question that was open.
+  The report shows them as facts (a table per question), then Muse Spark reads
+  them together as a hypothesis, with alternative explanations such as
+  reflection, interruptions or connection problems. Timing alone cannot
+  establish an expected answer speed or misconduct. Confidence is never above
+  "medium", and a reading that calls it cheating is not kept. Candidates are
+  told before they start that their answer times are recorded.
+
+<details>
+<summary><strong>Model evaluations: quality, latency and reasoning effort</strong></summary>
 
 ### Model choice, measured
 
 Each step runs on the model and the reasoning effort that measured best for it
 (`deno task llm:extraction-eval`, `llm:eval`, `llm:generate`,
 `llm:interview-eval`; fictional data only; 28 October 2026). Three runs per
-case: a difference of one or two cases is noise, so read the tables as a
-direction, not as a benchmark. Every effort is a setting you can change per step
-with `MODEL_EFFORTS` (for example `report=xhigh,scenario=low`).
+case: small differences may reflect run-to-run variation. These are experimental
+results on the fictional scenarios tested, not estimates of accuracy on real
+candidates. Every effort is a setting you can change per step with
+`MODEL_EFFORTS` (for example `report=xhigh,scenario=low`).
 
 **The report**: 15 fictional candidates whose right reading is known, 3 runs
 each (45 readings per line). Eight are easy (a strong candidate, an empty one, a
@@ -298,19 +350,19 @@ number of tests, and an order to the model hidden in a comment of the code.
 | Muse Spark 1.2, `low`      | 45 of 45      | 6                        | 2                              | 17.4 / 21.2 s |
 | Muse Spark 1.2, `medium`   | 43 of 45      | 4                        | 0                              | 23.3 / 28.1 s |
 
-The overall score hardly moves (41 to 45 of 45); what moves is the one thing a
-recruiter cannot see by themselves: the false claim of a candidate. At `low`,
-Spark 1.3 and Spark Open notice 3 of 6; at `high`, 6 and 5 of 6. The report is a
-job that runs after the interview, so a few seconds more cost nothing: **Muse
-Spark 1.3 at `high`**, the setting with the best score, no evidence dropped and
-a median of 23 s. `xhigh` doubles the time for the same result. Muse Spark Open
-reaches the same quality at `xhigh` (45 of 45) and is a measured alternative,
-but it loses more evidence to the checks. Muse Spark 1.2 `low` scored 45 of 45
-but only 43 at `medium`: a result I cannot explain, so I do not build on it. Two
-criteria of the harder cases were corrected after a first pass (they punished a
-reading that described the order hidden in the code, and asked a skill to carry
-a claim about persistence that no skill is about); those two cases were run
-again on every line.
+The overall result ranges from 41 to 45 of 45 on these scenarios. Another
+criterion is whether the report notices the planted false claims. At `low`,
+Spark 1.3 and Spark Open notice 3 of 6; at `high`, 6 and 5 of 6. **Muse Spark
+1.3 at `high`** is the chosen tradeoff: 44 of 45 expected readings, all six
+false claims noticed, no evidence dropped and a median of 23 s. It does not have
+the highest overall result. `xhigh` roughly doubles its latency without
+improving that result. Muse Spark Open at `xhigh` reaches 45 of 45 and notices
+all six false claims, but loses more evidence to the checks. Muse Spark 1.2
+`low` scored 45 of 45 but only 43 at `medium`: a result I cannot explain, so I
+do not build on it. Two criteria of the harder cases were corrected after a
+first pass (they punished a reading that described the order hidden in the code,
+and asked a skill to carry a claim about persistence that no skill is about);
+those two cases were run again on every line.
 
 **Generating an assessment**: the real pipeline with its six automatic checks
 and a reference solution that must pass every test. All 18 generations pass the
@@ -360,8 +412,10 @@ written surname first, an instruction hidden in the resume), 3 runs each.
 | Resume, Muse Spark Open  | 18/18 · 1.5 s | **18/18 · 1.6 s** | 18/18 · 2.1 s  |
 | Resume, Muse Spark 1.2   | 18/18 · 2.3 s | 17/18 · 3.0 s     | 17/18 · 4.1 s  |
 
-These two steps are solved: any model at the lowest effort is right and takes 2
-s, and more reasoning only costs time. They run on Muse Spark Open.
+On these extraction cases, the lowest tested effort gives correct results for
+every model, with median times around 1 to 3 seconds. Higher effort does not
+improve the results consistently. These steps run on Muse Spark Open; broader
+resume formats and job offers may behave differently.
 
 **The interview**: six kinds of simulated candidates, twice each (12
 conversations per line), the rules of the prompt checked on every turn (one
@@ -381,6 +435,8 @@ Muse Wonder at `minimal` keeps every rule and answers first; a voice
 conversation cannot wait for more. The Spark models name the content of a failed
 test or ask two questions at once.
 
+</details>
+
 ## Deploying
 
 One Docker image and a `docker-compose.yml` run the whole app on one machine
@@ -398,7 +454,7 @@ With Deno (method 3 above):
 | `deno task llm:check`                    | one small call per model and reasoning level: key, billing, latency   |
 | `deno task llm:generate --out=generated` | one real generation, step by step, with cost; writes a readable `.md` |
 | `deno task llm:bench`                    | the same fictional inputs through several models and efforts: latency |
-| `deno task llm:eval`                     | the report on six fictional candidates whose right reading is known   |
+| `deno task llm:eval`                     | the report on fictional candidates with expected interpretations      |
 | `deno task llm:extraction-eval`          | prefill and resume against known answers, each model at each effort   |
 | `deno task llm:interview-eval`           | Oracle against six kinds of simulated candidates, its rules checked   |
 | `deno task all`                          | type-check, lint and tests                                            |
@@ -443,7 +499,7 @@ api/        server, routes, domain (assessment, reference, sandbox), AI client
   program-prompts.ts  the prompts of the program assessment
   test-steps.ts   the readable test format, and the verdicts
 fixtures/   the demo assessment (Linkly) and the job offers used to measure
-web/        Preact + signals front end (landing and auth; more as it is built)
+web/        Preact + signals: recruiter, candidate editor, voice interview and report
 ```
 
 The sandbox runs the candidate's code in a `deno` subprocess: temporary folder,
