@@ -23,7 +23,12 @@ it).
 
 The image is built and published by GitHub, not on the machine: the workflow
 `.github/workflows/publish.yml` runs at every push to `main` (or by hand, in
-the Actions tab) and publishes `ghcr.io/mirak29/defendable:latest`. The build
+the Actions tab) and publishes `ghcr.io/mirak29/defendable:latest`. It first calls
+the reusable `.github/workflows/checks.yml` workflow, which installs the locked
+dependencies and runs `deno task all` (type-check, lint and tests). The image job
+depends on these checks succeeding; a failed check blocks the build and
+publication. Checks also run on pull requests targeting `main`, or by hand.
+The build
 checks the voice, SQLite, Pyodide and the sandboxes, and the server is cached so
 that it downloads nothing when it starts: a published image works offline. The
 big layers (dependencies, voice weights) are cached: editing the code publishes

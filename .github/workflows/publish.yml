@@ -11,12 +11,18 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
   image:
+    needs: checks
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       # the app is the pre-event extract plus the work of the event: see README

@@ -1,0 +1,30 @@
+name: checks
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./setup.sh
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.8
+      - name: Type-check, lint and test
+        # Outside the checkout, Deno does not inherit its app/ gitignore rule.
+        run: |
+          check_dir="$RUNNER_TEMP/defendable-check"
+          mkdir -p "$check_dir"
+          cp -a app/. "$check_dir/"
+          cd "$check_dir"
+          deno install --frozen
+          deno task all
