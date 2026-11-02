@@ -38,6 +38,91 @@ const StepRow = ({ label, state }: { label: string; state: ProgressState }) => (
   </li>
 )
 
+type MicState = 'idle' | 'asking' | 'listening' | 'heard' | 'denied'
+
+/**
+ * The microphone tried in the waiting room: its level, and whether a voice was
+ * heard. It starts by itself when the page already had a click (coming from
+ * the editor); otherwise one button starts it (a browser only lets a page
+ * listen and play after a click). `stop` frees it for the interview.
+ */
+const useMicCheck = (enabled: boolean) => {
+  const [state, setState] = useState<MicState>('idle')
+  const bar = useRef<HTMLSpanElement>(null)
+  const running = useRef<() => void>()
+  const stop = () => {
+    running.current?.()
+    running.current = undefined
+  }
+  const start = async () => {
+    if (running.current) return
+    setState('asking')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      })
+      const context = new AudioContext()
+      await context.resume().catch(() => {})
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 1024
+      context.createMediaStreamSource(stream).connect(analyser)
+      const samples: Float32Array<ArrayBuffer> = new Float32Array(
+        analyser.fftSize,
+      )
+      const timer = setInterval(() => {
+        analyser.getFloatTimeDomainData(samples)
+        let sum = 0
+        for (const s of samples) sum += s * s
+        const level = Math.min(1, Math.sqrt(sum / samples.length) * 5)
+        // the bar moves with the voice, without rendering the page again
+        if (bar.current) bar.current.style.width = `${level * 100}%`
+        if (level > 0.2) setState('heard')
+      }, 80)
+      running.current = () => {
+        clearInterval(timer)
+        stream.getTracks().forEach((t) => t.stop())
+        context.close().catch(() => {})
+      }
+      setState((s) => s === 'heard' ? s : 'listening')
+    } catch {
+      setState('denied')
+    }
+  }
+  useEffect(() => {
+    if (enabled && navigator.userActivation?.hasBeenActive) start()
+    return stop
+  }, [enabled])
+  return { state, bar, start, stop }
+}
+
+/** one line of the waiting room: an icon and a label, never a color alone */
+const RoomRow = (
+  { state, label, children }: {
+    state: 'done' | 'run' | 'todo' | 'error'
+    label: string
+    children?: preact.ComponentChildren
+  },
+) => (
+  <li tw='flex items-start gap-2.5 text-left text-[14px]'>
+    {state === 'run'
+      ? <Spinner tw='w-4 h-4 mt-0.5 flex-none' />
+      : state === 'done'
+      ? <CircleCheck tw='w-4 h-4 mt-0.5 flex-none text-ok' />
+      : state === 'error'
+      ? <CircleX tw='w-4 h-4 mt-0.5 flex-none text-err' />
+      : (
+        <span
+          tw='w-4 h-4 mt-0.5 flex-none rounded-full'
+          style={{ border: '1.5px solid rgba(143,176,238,.6)' }}
+        />
+      )}
+    <span tw='flex-1 flex flex-col gap-1.5'>
+      {label}
+      {children}
+    </span>
+  </li>
+)
+
 const Shell = ({ children }: { children: preact.ComponentChildren }) => (
   <main tw='min-h-screen flex flex-col items-center justify-center gap-6 px-4 py-12'>
     <Logo />
@@ -78,19 +163,16 @@ export const InterviewPage = () => {
   // the conditions of the interview, reported as facts
   useEffect(() => trackIntegrity('interview'), [])
 
-  // Oracle starts by itself. The browser only lets a page speak after a click
-  // of the person: coming from the editor (Submit) it has one, after a reload
-  // it has not and one button asks for it.
+  // A waiting room before the interview: the microphone is tried, then the
+  // candidate starts it. Oracle's first words were written during the
+  // preparation, so it speaks as soon as they click; the 10 minutes start then.
   const ready = view?.preparation?.steps.at(-1)?.state === 'done' &&
     (!view.finishedAt || closingLive)
-  const started = useRef(false)
-  const [needsGesture, setNeedsGesture] = useState(false)
-  useEffect(() => {
-    if (!ready || started.current || url.params.demo === '1') return
-    started.current = true
-    if (navigator.userActivation?.hasBeenActive) startVoice()
-    else setNeedsGesture(true)
-  }, [ready])
+  const mic = useMicCheck(!!ready && live === 'idle')
+  const begin = () => {
+    mic.stop()
+    startVoice()
+  }
 
   // the conversation follows its latest message
   const scroller = useRef<HTMLDivElement>(null)
@@ -175,8 +257,7 @@ export const InterviewPage = () => {
   const caption = voice.writing.value ||
     (voice.speaking.value ? lines.findLast((l) => l.who === 'ai')?.text : '') ||
     ''
-  const asking = !talking && live !== 'ended' &&
-    (needsGesture || live === 'error' || demo)
+  const asking = !talking && live !== 'ended'
   return (
     <div tw='h-screen flex flex-col bg-surface-page text-content-primary'>
       <header tw='h-12 flex-none flex items-center justify-between px-5 border-b border-border-primary'>
@@ -223,10 +304,62 @@ export const InterviewPage = () => {
                 >
                   {live === 'error'
                     ? 'Check that your microphone is allowed, then try again.'
-                    : 'Oracle has read your code and will talk it through with you, out loud. There are no trick questions, you can take your time, and a person reads the result afterwards.'}
+                    : 'Oracle will talk your code through with you, out loud. There are no trick questions, you can take your time, and a person reads the result afterwards.'}
                 </p>
+                {live !== 'error' && (
+                  <ul
+                    data-test='waiting-room'
+                    tw='list-none m-0 p-0 flex flex-col gap-2.5'
+                  >
+                    <RoomRow state='done' label='Oracle has read your code' />
+                    <RoomRow
+                      state={mic.state === 'heard'
+                        ? 'done'
+                        : mic.state === 'denied'
+                        ? 'error'
+                        : mic.state === 'idle'
+                        ? 'todo'
+                        : 'run'}
+                      label={mic.state === 'heard'
+                        ? 'Your microphone works'
+                        : mic.state === 'denied'
+                        ? 'The microphone is blocked: allow it in your browser, then reload the page'
+                        : mic.state === 'idle'
+                        ? 'Your microphone is not tested yet'
+                        : 'Say a few words to test your microphone'}
+                    >
+                      {(mic.state === 'listening' || mic.state === 'heard') && (
+                        <span
+                          tw='block h-1.5 rounded-full overflow-hidden'
+                          style={{ background: 'rgba(120,170,255,.18)' }}
+                        >
+                          <span
+                            ref={mic.bar}
+                            tw='block h-full rounded-full'
+                            style={{
+                              width: '0%',
+                              background: '#8fb0ee',
+                              transition: 'width 80ms linear',
+                            }}
+                          />
+                        </span>
+                      )}
+                      {mic.state === 'idle' && (
+                        <button
+                          type='button'
+                          data-test='mic-test'
+                          tw='btn btn-secondary h-8 px-3 text-[13px] self-start'
+                          onClick={mic.start}
+                        >
+                          <Mic tw='w-3.5 h-3.5' />
+                          Test my microphone
+                        </button>
+                      )}
+                    </RoomRow>
+                  </ul>
+                )}
                 <p tw='m-0 text-[12.5px]' style={{ opacity: 0.65 }}>
-                  Headphones help. The browser will ask for your microphone.
+                  Headphones help. The 10 minutes start when you click Start.
                 </p>
               </div>
             )}
@@ -251,7 +384,7 @@ export const InterviewPage = () => {
                 {voice.error.value}
               </p>
             )}
-            {(needsGesture || live === 'error' || demo) && live !== 'ended' && (
+            {live !== 'ended' && (asking || demo) && (
               <div tw='flex gap-2'>
                 {talking && demo
                   ? (
@@ -269,12 +402,11 @@ export const InterviewPage = () => {
                       type='button'
                       data-test='interview-start'
                       tw='btn btn-primary'
-                      onClick={startVoice}
+                      disabled={mic.state === 'denied'}
+                      onClick={begin}
                     >
                       <Mic tw='w-4 h-4' />
-                      {live === 'error'
-                        ? 'Try again'
-                        : 'Start the conversation'}
+                      {live === 'error' ? 'Try again' : 'Start the interview'}
                     </button>
                   )}
               </div>
@@ -297,8 +429,8 @@ export const InterviewPage = () => {
           >
             {!lines.length && !voice.writing.value && (
               <p tw='m-0 text-content-tertiary text-[13px]'>
-                Oracle will start in a moment. Everything said is written here,
-                so you can follow along.
+                Oracle starts as soon as you click Start. Everything said is
+                written here, so you can follow along.
               </p>
             )}
             {lines.map((line, i) => (

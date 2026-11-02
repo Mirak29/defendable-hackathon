@@ -4,15 +4,16 @@ import { json } from '/api/assessment.ts'
 import {
   findCandidate,
   finishInterview,
+  preparation,
   recordResume,
   startInterview,
   type StoredResults,
 } from '/api/candidate.ts'
 import { candidateBriefText } from '/api/reference.ts'
 import type { InterviewFacts } from '/api/prompts.ts'
-import { Assessment, type CandidateRow } from '/api/schema.ts'
+import { Assessment, Candidate, type CandidateRow } from '/api/schema.ts'
 import { startReport } from '/api/report.ts'
-import { voiceConfig } from '/api/voice.ts'
+import { voiceConfig, writeOpening } from '/api/voice.ts'
 import type {
   AssessmentSpec,
   CandidateFiles,
@@ -77,7 +78,14 @@ export const factsOf = (c: CandidateRow): InterviewFacts | undefined => {
     ),
     previous: json<InterviewLine[]>(c.candidateInterview) ?? undefined,
     interviewStartedAt: c.candidateInterviewStartedAt ?? undefined,
+    opening: results.opening,
   }
+}
+
+// the preparation writes the first words of the interviewer (api/candidate.ts)
+preparation.opening = (candidateId) => {
+  const facts = factsOf(Candidate.require(candidateId))
+  return facts ? writeOpening(facts) : Promise.resolve(undefined)
 }
 
 /**

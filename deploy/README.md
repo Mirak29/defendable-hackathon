@@ -22,7 +22,7 @@ it).
 ## 2. The image, the files and the secrets
 
 The image is built and published by GitHub, not on the machine: the workflow
-`.github/workflows/publish.yml` runs at every push to `master` (or by hand, in
+`.github/workflows/publish.yml` runs at every push to `main` (or by hand, in
 the Actions tab) and publishes `ghcr.io/mirak29/defendable:latest`. The build
 checks the voice, SQLite, Pyodide and the sandboxes, and the server is cached so
 that it downloads nothing when it starts: a published image works offline. The
@@ -107,7 +107,7 @@ interview asks for the microphone (it needs HTTPS).
     -c 'rm -f /data/defendable.db-wal /data/defendable.db-shm; cp /b/defendable-X.db /data/defendable.db'
   docker compose start app
   ```
-- **Update**: push to `master`, wait for the `publish` workflow (green), then on
+- **Update**: push to `main`, wait for the `publish` workflow (green), then on
   the machine `docker compose pull && docker compose up -d`. The database stays
   in the volume. A change of the database columns needs a new database (there is
   no migration): back it up, then `docker compose down -v` deletes the volume.

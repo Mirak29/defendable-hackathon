@@ -73,7 +73,7 @@ cannot run.
 ### 1. Pull the published image (nothing to build)
 
 Docker only. The image is built and published by GitHub at every push to
-`master`.
+`main`.
 
 ```bash
 cat > defendable.env <<'ENV'
@@ -502,6 +502,8 @@ With Deno (method 3 above):
 | `VOICE_HOLD_MS`      | interview: pause before Oracle speaks, default `900`                                                      |
 | `INTERVIEW_MS`       | duration of the interview from its first opening, default `600000` (10 min); a reload does not restart it |
 | `INTERVIEW_GRACE_MS` | after that, the longest wait for a turn before Oracle closes, default `45000`                             |
+| `INTERVIEW_NUDGE_MS` | silence after a question before Oracle offers to repeat it, default `10000`                               |
+| `INTERVIEW_SKIP_MS`  | silence after a question before Oracle moves on, default `30000`                                          |
 | `TTS`                | `off` keeps the browser's voice for Oracle (default `on`)                                                 |
 | `TTS_MODEL`          | speech model of Oracle, default `Xenova/mms-tts-eng` (Meta MMS-TTS)                                       |
 | `VOICE_LAB`          | `on`: the voice lab (`/dev/voice`, demo code) for members; default `off` in production, `on` elsewhere    |

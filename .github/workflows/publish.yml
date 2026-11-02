@@ -1,12 +1,12 @@
 # Builds the production image and publishes it to the GitHub registry, for the
 # machine to pull (the package is made public once by hand): see
 # deploy/README.md.
-# Run it by hand from the Actions tab, or it runs at every push to master.
+# Run it by hand from the Actions tab, or it runs at every push to main.
 name: publish
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
