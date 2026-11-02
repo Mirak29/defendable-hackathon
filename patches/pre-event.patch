@@ -1554,10 +1554,10 @@ index 46b79c9..4e786cf 100644
    }
    Assessment.update({
 diff --git a/api/candidate.test.js b/api/candidate.test.js
-index 2d5d576..aad29ec 100644
+index 2d5d576..dd4b89c 100644
 --- a/api/candidate.test.js
 +++ b/api/candidate.test.js
-@@ -1,60 +1,385 @@
+@@ -1,60 +1,419 @@
 +// The journey of a candidate on the real routes: invitation, start, editor
 +// (save, run, type check), submission, and the preparation of the interview
 +// (every test run on the frozen code, the facts the interviewer receives).
@@ -1591,7 +1591,7 @@ index 2d5d576..aad29ec 100644
 +  signup,
 +} from '/api/lib/journey-test.js'
 +import { Candidate } from '/api/schema.ts'
-+import { readIntegrity } from '/api/candidate.ts'
++import { preparation, readIntegrity } from '/api/candidate.ts'
 +import { factsOf } from '/api/interview.ts'
 +import { demoFiles } from '/fixtures/demo-files.ts'
 +
@@ -1745,21 +1745,9 @@ index 2d5d576..aad29ec 100644
 +      })).status,
 +      401,
 +    )
-   })
- })
- 
--test('assistant limit under parallel calls (AUD-007)', async (step) => {
--  await step('4 calls at once: 3 replies, 1 refused', async () => {
--    const row = atQuestion(1_000, 7) // Q7 is a free answer
--    const calls = await Promise.allSettled(
--      [1, 2, 3, 4].map((i) =>
--        askAssistant(row(), { n: 7, message: `Question ${i}` })
--      ),
--    )
--    eq(calls.filter((c) => c.status === 'fulfilled').length, ASSISTANT_LIMIT)
--    eq(calls.filter((c) => c.status === 'rejected').length, 1)
--    const stored = answersOf(row())[7].assistant
--    eq(stored.filter((m) => m.role === 'user').length, ASSISTANT_LIMIT)
++  })
++})
++
 +test('candidate: build, submit, and the facts of the interview', async (step) => {
 +  const member = await signup('Builds')
 +  const assessment = await approvedAssessment(member)
@@ -1923,9 +1911,21 @@ index 2d5d576..aad29ec 100644
 +    await call('POST', '/api/candidate/submit', { tools: ['Claude'] }, cookies)
 +    await prepared(cookies)
 +    eq(factsOf(Candidate.require(body.candidateId)).ownTests, 'none written')
-+  })
-+})
-+
+   })
+ })
+ 
+-test('assistant limit under parallel calls (AUD-007)', async (step) => {
+-  await step('4 calls at once: 3 replies, 1 refused', async () => {
+-    const row = atQuestion(1_000, 7) // Q7 is a free answer
+-    const calls = await Promise.allSettled(
+-      [1, 2, 3, 4].map((i) =>
+-        askAssistant(row(), { n: 7, message: `Question ${i}` })
+-      ),
+-    )
+-    eq(calls.filter((c) => c.status === 'fulfilled').length, ASSISTANT_LIMIT)
+-    eq(calls.filter((c) => c.status === 'rejected').length, 1)
+-    const stored = answersOf(row())[7].assistant
+-    eq(stored.filter((m) => m.role === 'user').length, ASSISTANT_LIMIT)
 +test('candidate: the conditions of the session are measured, not judged', async (step) => {
 +  const member = await signup('Conditions')
 +  const assessment = await approvedAssessment(member)
@@ -1988,13 +1988,47 @@ index 2d5d576..aad29ec 100644
 +      401,
 +    )
 +    eq((await report({ kind: 'nonsense', phase: 'build' })).status, 400)
++  })
++})
++
++test('candidate: the first words of the interviewer are written during the preparation', async (step) => {
++  const member = await signup('Opening')
++  const assessment = await approvedAssessment(member)
++  const { body } = await invite(member, assessment)
++  const started = await call('POST', '/api/candidate/start', {
++    invitation: body.invitation,
++  })
++  const cookies = { dfd_candidate: cookieOf(started, 'dfd_candidate') }
++  const saved = preparation.opening
++  const asked = []
++  preparation.opening = (id) => {
++    asked.push(id)
++    return Promise.resolve('Hi, I am Oracle. How did you start?')
++  }
++  try {
++    await call('POST', '/api/candidate/submit', { tools: ['Claude'] }, cookies)
++    await prepared(cookies)
++  } finally {
++    preparation.opening = saved
++  }
++
++  await step('written once the code has run, kept for the interview', () => {
++    eq(asked, [body.candidateId])
++    const c = Candidate.require(body.candidateId)
++    eq(factsOf(c).opening, 'Hi, I am Oracle. How did you start?')
++  })
++
++  await step('never sent to the candidate before the interview', async () => {
++    const me = await (await call('GET', '/api/candidate/me', {}, cookies))
++      .text()
++    eq(me.includes('How did you start?'), false)
    })
  })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..4bda4a1 100644
+index 9a19ccb..51a016d 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
-@@ -1,63 +1,70 @@
+@@ -1,63 +1,82 @@
 -import { companyOfAssessment } from '/api/schema.ts'
 -// Candidate journey (C1 → C7). The candidate is identified by a token in an
 -// httpOnly cookie, set when they start (no account, brief §6). The server is
@@ -2079,27 +2113,38 @@ index 9a19ccb..4bda4a1 100644
 -  auto?: boolean
 -  /** sent after the time and its grace: recorded unanswered (AUD-005) */
 -  expired?: boolean
--}
 +/** a link not opened for 14 days is no longer valid */
 +export const INVITATION_DAYS = 14
- 
--/* ---------- invitation and start (C1) ---------- */
++
 +export type Runs = { run: number; mine: number; eval: number }
- 
--/** a link not opened for 14 days is no longer valid (spec D9) */
--export const INVITATION_DAYS = 14
++
 +/** what the server found when it ran the submitted code */
 +export type StoredResults = {
 +  tests: TestResult[]
 +  problems: CodeProblem[]
 +  own: { passed: number; failed: number }
++  /** the first words of the interviewer, written during the preparation */
++  opening?: string
+ }
+ 
+-/* ---------- invitation and start (C1) ---------- */
++/**
++ * Writes the first words of the interviewer once the code was run, so the
++ * interview starts without waiting for the model. Set by `api/interview.ts`
++ * (an object so this module does not import it); undefined: written live.
++ */
++export const preparation = {
++  opening: (_candidateId: number): Promise<string | undefined> =>
++    Promise.resolve(undefined),
 +}
-+
+ 
+-/** a link not opened for 14 days is no longer valid (spec D9) */
+-export const INVITATION_DAYS = 14
 +/* ---------- invitation and start ---------- */
  
  const byInvitation = Candidate.sql`
    SELECT * FROM candidate WHERE candidateInvitation = :invitation
-@@ -90,13 +97,26 @@ const findInvitation = (invitation?: string) => {
+@@ -90,13 +109,26 @@ const findInvitation = (invitation?: string) => {
    const c = invitation ? byInvitation({ invitation }) : undefined
    const a = c && Assessment.get(c.assessmentId)
    if (!c || !a || a.assessmentStatus !== 'approved') {
@@ -2127,7 +2172,7 @@ index 9a19ccb..4bda4a1 100644
  export const getInvitation = (invitation?: string): Invitation => {
    const { c, a } = findInvitation(invitation)
    const spec = specOf(a)
-@@ -108,12 +128,15 @@ export const getInvitation = (invitation?: string): Invitation => {
+@@ -108,12 +140,15 @@ export const getInvitation = (invitation?: string): Invitation => {
      durationMin: a.assessmentDuration,
      firstName: c.candidateFirstName ?? undefined,
      state: invitationState(c),
@@ -2146,7 +2191,7 @@ index 9a19ccb..4bda4a1 100644
      Array.from(crypto.getRandomValues(new Uint8Array(2)), (n) =>
        n.toString(16).padStart(2, '0')).join('').toUpperCase()
    }`
-@@ -125,15 +148,15 @@ const field = (
+@@ -125,15 +160,15 @@ const field = (
  ) => {
    const clean = (value ?? '').trim()
    if (clean.length > max) {
@@ -2167,7 +2212,7 @@ index 9a19ccb..4bda4a1 100644
  export const inviteCandidate = (
    assessmentId: number,
    memberId: number,
-@@ -143,44 +166,44 @@ export const inviteCandidate = (
+@@ -143,44 +178,44 @@ export const inviteCandidate = (
      email: string
      profileUrl?: string | null
      note?: string | null
@@ -2222,7 +2267,7 @@ index 9a19ccb..4bda4a1 100644
      assessmentId,
      candidateCreatedAt: now,
      candidateInvitation: invitation,
-@@ -191,62 +214,60 @@ export const inviteCandidate = (
+@@ -191,62 +226,60 @@ export const inviteCandidate = (
      candidateEmail: email,
      candidateProfileUrl: profileUrl || undefined,
      candidateNote: note || undefined,
@@ -2306,7 +2351,7 @@ index 9a19ccb..4bda4a1 100644
    })
    Entry.insert.CANDIDATE_BUILD_STARTED({
      companyId: companyOfAssessment(a.assessmentId),
-@@ -261,7 +282,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
+@@ -261,7 +294,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
  export const findCandidate = (token?: string) => {
    const row = token ? byToken({ token }) : undefined
    if (!row) {
@@ -2317,7 +2362,7 @@ index 9a19ccb..4bda4a1 100644
    }
    return row
  }
-@@ -272,27 +295,24 @@ const deadline = (c: CandidateRow) =>
+@@ -272,27 +307,24 @@ const deadline = (c: CandidateRow) =>
    (c.candidateStartedAt ?? Date.now()) +
    assessmentOf(c).assessmentDuration * 60_000
  
@@ -2348,7 +2393,7 @@ index 9a19ccb..4bda4a1 100644
      assessment: {
        title: spec.title,
        company: spec.company,
-@@ -308,6 +328,7 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -308,6 +340,7 @@ export const toView = (c: CandidateRow): CandidateView => {
        constraints: spec.constraints,
        publicTests: spec.tests.filter((t) => t.visibility === 'public'),
        hiddenCount: spec.tests.filter((t) => t.visibility !== 'public').length,
@@ -2356,7 +2401,7 @@ index 9a19ccb..4bda4a1 100644
      },
      startedAt: c.candidateStartedAt ?? undefined,
      submittedAt: c.candidateSubmittedAt ?? undefined,
-@@ -316,18 +337,17 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -316,18 +349,17 @@ export const toView = (c: CandidateRow): CandidateView => {
      files: json<CandidateFiles>(c.candidateFiles) ?? {},
      savedAt: c.candidateSavedAt ?? undefined,
      preparation: json(c.candidatePreparation),
@@ -2378,7 +2423,7 @@ index 9a19ccb..4bda4a1 100644
      })
    }
  }
-@@ -343,30 +363,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
+@@ -343,30 +375,63 @@ export const saveFiles = (c: CandidateRow, files: CandidateFiles) => {
    return { savedAt }
  }
  
@@ -2428,12 +2473,12 @@ index 9a19ccb..4bda4a1 100644
 +  kindOf(specOf(assessmentOf(c))) === 'program'
 +    ? checkProgram(languageOf(c), files)
 +    : checkTypes(files)
- 
--/* ---------- submission (C3) → preparation (C4) ---------- */
++
 +/* ---------- submission and preparation of the interview ---------- */
 +
 +const PREPARATION_STEPS = 3
-+
+ 
+-/* ---------- submission (C3) → preparation (C4) ---------- */
 +const saveProgress = (c: CandidateRow, progress: Progress) => {
 +  Candidate.update({
 +    candidateId: c.candidateId,
@@ -2449,7 +2494,7 @@ index 9a19ccb..4bda4a1 100644
  
  export const submitCode = (
    c: CandidateRow,
-@@ -376,261 +429,215 @@ export const submitCode = (
+@@ -376,261 +441,237 @@ export const submitCode = (
      auto?: boolean
    },
  ) => {
@@ -2557,15 +2602,27 @@ index 9a19ccb..4bda4a1 100644
 +        ? runProgramOwnTests(language, authored)
 +        : runOwnTests(authored),
 +    ])
-+    Candidate.update({
-+      candidateId,
-+      candidateResults: {
-+        tests,
-+        problems,
-+        own: { passed: own.passed, failed: own.failed },
-+      } satisfies StoredResults,
-     })
++    const results: StoredResults = {
++      tests,
++      problems,
++      own: { passed: own.passed, failed: own.failed },
++    }
++    Candidate.update({ candidateId, candidateResults: results })
 +    progress.steps[1] = { state: 'done' }
++    progress.steps[2] = { state: 'run' }
++    saveProgress(c, progress)
++    // the interviewer reads the code and writes its first words now; the
++    // interview still opens without them (written live then)
++    const opening = await preparation.opening(candidateId).catch((err) => {
++      log.warn('opening-failed', { candidateId, message: String(err) })
++      return undefined
+     })
++    if (opening) {
++      Candidate.update({
++        candidateId,
++        candidateResults: { ...results, opening },
++      })
++    }
 +    progress.steps[2] = { state: 'done' }
 +    delete progress.error
 +    saveProgress(c, progress)
@@ -2742,10 +2799,14 @@ index 9a19ccb..4bda4a1 100644
 +    },
 +    copies: stored.copies ?? 0,
 +    extendedScreen: stored.extendedScreen,
++    away: stored.away,
    }
  }
  
 -const replyAssistant = async (
++/** the absences from the interview page kept to place them: the latest ones */
++const MAX_AWAY = 100
++
 +const saveIntegrity = (
    c: CandidateRow,
 -  n: number,
@@ -2831,9 +2892,15 @@ index 9a19ccb..4bda4a1 100644
 +  saveIntegrity(c, (i) => {
 +    if (event.kind === 'page-leave') {
 +      const leave = i.leaves[event.phase]
-+      leave.count++
 +      // an hour at most: a laptop that slept is not an hour of absence
-+      leave.ms += Math.max(0, Math.min(Math.round(event.ms ?? 0), 3_600_000))
++      const ms = Math.max(0, Math.min(Math.round(event.ms ?? 0), 3_600_000))
++      leave.count++
++      leave.ms += ms
++      // reported on the way back: it ended now, on the server clock
++      if (event.phase === 'interview') {
++        const to = Date.now()
++        i.away = [...(i.away ?? []), { from: to - ms, to }].slice(-MAX_AWAY)
++      }
 +    } else if (event.kind === 'copy') i.copies++
 +    else if (event.extended !== undefined) {
 +      // once a second display was seen, it stays seen
@@ -6912,10 +6979,10 @@ index 58b4786..777e643 100644
    log.info('reference-check', {
      passed: results.filter((r) => r.passed).length,
 diff --git a/api/report.test.js b/api/report.test.js
-index f8db3f1..49df1c0 100644
+index f8db3f1..35714ff 100644
 --- a/api/report.test.js
 +++ b/api/report.test.js
-@@ -1,161 +1,631 @@
+@@ -1,161 +1,782 @@
 +// The report on the real routes, against a local mock of the model: the facts
 +// the server measures, the evidence of the model checked against what exists,
 +// the failure and its retry, the human decision, and the start of the report
@@ -6961,21 +7028,15 @@ index f8db3f1..49df1c0 100644
 +    text:
 +      'I split it in three files: the handler, the validation and an in-memory repository.',
 +  },
-+  {
-+    who: 'ai',
-+    text: 'What happens if the address starts with something else?',
-+  },
    {
 -    id: '8-0',
 -    answer: 'a',
 -    quote: 'le code renvoie 400',
 -    claim: 'le code renvoie 400',
 -    why: 'il renvoie 201',
-+    who: 'candidate',
-+    text:
-+      'My check only builds a URL object, so anything that parses is accepted, even javascript.',
++    who: 'ai',
++    text: 'What happens if the address starts with something else?',
    },
-+  { who: 'ai', text: 'And two requests with the same alias at once?' },
    {
 -    id: '9-0',
 -    answer: 'b',
@@ -6983,8 +7044,14 @@ index f8db3f1..49df1c0 100644
 -    claim: 'une Map',
 -    why: 'un tableau',
 +    who: 'candidate',
-+    text: 'I am not sure, I did not think about that one.',
++    text:
++      'My check only builds a URL object, so anything that parses is accepted, even javascript.',
    },
++  { who: 'ai', text: 'And two requests with the same alias at once?' },
++  {
++    who: 'candidate',
++    text: 'I am not sure, I did not think about that one.',
++  },
 +  { who: 'ai', text: 'Thank you, that is all. [END]' },
  ]
  
@@ -7135,18 +7202,8 @@ index f8db3f1..49df1c0 100644
 -    eq(m.calls.some((c) => c.model === 'model-precise'), false)
 +    const { reading } = await view(member, candidateId)
 +    eq(reading.skills[0].confidence, 'medium')
-   })
--})
- 
--test('QCM with a disputed key are not counted (AUD-003)', () => {
--  const qcm = [
--    { isCorrect: true, check: 'execution' },
--    { isCorrect: false, check: 'double-key' },
--    { isCorrect: false, check: 'disputed' },
--  ]
--  eq(qcmScore(qcm), '1/2 (1 clé contestée, non comptée)')
--  eq(qcmScore(qcm.slice(0, 2)), '1/2')
--})
++  })
++
 +  await step('a skill the model forgot is not assessed', async () => {
 +    await withModel(answer(names.slice(0, 1)), async () => {
 +      await buildReport(candidateId)
@@ -7178,10 +7235,7 @@ index f8db3f1..49df1c0 100644
 +    eq([first.quotes, first.code, first.tests], [[], [], []])
 +    eq(reading.discarded, 0)
 +  })
- 
--test('a contradiction is anchored in the answer (LIVE-004)', async (step) => {
--  const answer =
--    'Je conteste la prémisse : la chaîne fait 31 caractères, pas 33. Une chaîne de 33 caractères retourne bien 400.'
++
 +  await step(
 +    'words that do not match the code lower a "Demonstrated"',
 +    async () => {
@@ -7198,16 +7252,7 @@ index f8db3f1..49df1c0 100644
 +      eq(first.capped.includes('does not match the code'), true)
 +    },
 +  )
- 
--  await step('words the candidate wrote', () => {
--    eq(anchoredInAnswer(answer, 'la chaîne fait 31 caractères, pas 33'), true)
--    // apostrophes, spaces and case of the copy do not matter
--    eq(
--      anchoredInAnswer(
--        'Je valide déjà que l’URL est en http',
--        "je valide  déjà que l'URL",
--      ),
--      true,
++
 +  await step('a skill read in the interview needs their words', async () => {
 +    // code and tests alone do not defend a skill the interview reads
 +    const spec = json(Assessment.require(assessment).assessmentSpec)
@@ -7217,19 +7262,12 @@ index f8db3f1..49df1c0 100644
 +      async () => {
 +        await buildReport(candidateId)
 +      },
-     )
++    )
 +    const skill = (await view(member, candidateId)).reading.skills[index]
 +    eq([skill.status, skill.words], ['Partial', 'none'])
 +    eq(skill.capped.includes('read in the interview'), true)
-   })
- 
--  await step('words the model made up are refused', () => {
--    eq(
--      anchoredInAnswer(
--        answer,
--        'Le test T6 envoie un alias de 33 caractères et reçoit 201',
--      ),
--      false,
++  })
++
 +  await step(
 +    'tests and code are enough where they are the measure',
 +    async () => {
@@ -7275,22 +7313,11 @@ index f8db3f1..49df1c0 100644
 +      async () => {
 +        await buildReport(candidateId)
 +      },
-     )
--    eq(anchoredInAnswer(answer, undefined), false)
--    eq(anchoredInAnswer(answer, '33'), false) // too short to carry a claim
++    )
 +    const [first] = (await view(member, candidateId)).reading.skills
 +    eq(first.words, 'none')
-   })
- 
--  await step('the second key reads the quote', async () => {
--    await using m = mockLlm(() => [
--      200,
--      '{"verdicts":[{"id":"8-0","confirmed":false},{"id":"9-0","confirmed":false}]}',
--    ])
--    await confirmContradictions(files, claims)
--    const prompt = m.calls[0].messages.at(-1).content
--    eq(prompt.includes('"quote":"le code renvoie 400"'), true)
--    eq(prompt.includes('vérifie d’abord l’attribution'), true)
++  })
++
 +  await step('words of the interviewer are not evidence', async () => {
 +    await withModel(
 +      answer(names, [{
@@ -7306,33 +7333,14 @@ index f8db3f1..49df1c0 100644
    })
  })
  
--test('a disputed QCM is neither right nor wrong for the evaluator (LIVE-007)', async (step) => {
--  await step('no verdict nor key in what the evaluator reads', () => {
--    const [disputed, counted] = qcmForEvaluator([
--      {
--        n: 3,
--        prompt: 'p',
--        chosen: 'a',
--        correct: 'b',
--        isCorrect: false,
--        check: 'disputed',
--      },
--      {
--        n: 4,
--        prompt: 'p',
--        chosen: 'a',
--        correct: 'a',
--        isCorrect: true,
--        check: 'double-key',
--      },
--    ])
--    eq(disputed, { n: 3, prompt: 'p', chosen: 'a', cleContestee: true })
--    eq(counted, {
--      n: 4,
--      prompt: 'p',
--      chosen: 'a',
--      correct: 'a',
--      isCorrect: true,
+-test('QCM with a disputed key are not counted (AUD-003)', () => {
+-  const qcm = [
+-    { isCorrect: true, check: 'execution' },
+-    { isCorrect: false, check: 'double-key' },
+-    { isCorrect: false, check: 'disputed' },
+-  ]
+-  eq(qcmScore(qcm), '1/2 (1 clé contestée, non comptée)')
+-  eq(qcmScore(qcm.slice(0, 2)), '1/2')
 +test('report: failure, retry, no transcript', async (step) => {
 +  const { member, assessment, candidateId } = await setup('Failures')
 +  const names = skillNames(assessment)
@@ -7374,21 +7382,10 @@ index f8db3f1..49df1c0 100644
 +        if ((await view(member, candidateId)).status === 'ready') break
 +        await new Promise((r) => setTimeout(r, 50))
 +      }
-     })
++    })
 +    eq((await view(member, candidateId)).status, 'ready')
-   })
- 
--  await step('no note of fault on a disputed key', async () => {
--    const assessmentId = seedDemoAssessment(randomToken(10))
--    const candidateId = seedFinishedCandidate(assessmentId, randomToken(24))
--    const row = Candidate.require(candidateId)
--    const questions = JSON.parse(row.candidateQuestions)
--    const list = Array.isArray(questions) ? questions : questions.questions
--    list.find((q) => q.n === 1).keyDisputed = true
--    Candidate.update({
--      candidateId,
--      candidateQuestions: questions,
--      candidateReport: null,
++  })
++
 +  await step(
 +    'an answer that is not the expected shape is refused',
 +    async () => {
@@ -7398,17 +7395,17 @@ index f8db3f1..49df1c0 100644
 +      eq((await view(member, candidateId)).status, 'failed')
 +    },
 +  )
-+})
-+
+ })
+ 
+-test('a contradiction is anchored in the answer (LIVE-004)', async (step) => {
+-  const answer =
+-    'Je conteste la prémisse : la chaîne fait 31 caractères, pas 33. Une chaîne de 33 caractères retourne bien 400.'
 +test('report: its events follow only the owner', async (step) => {
 +  const { member, candidateId } = await setup('Follows')
 +  const stream = (who) =>
 +    call('GET', '/api/events', { candidate: String(candidateId) }, who, {
 +      accept: 'text/event-stream',
-     })
--    await buildReport(candidateId)
--    const { status, report } = JSON.parse(
--      Candidate.require(candidateId).candidateReport,
++    })
 +
 +  await step('the owner opens the stream', async () => {
 +    const res = await stream(member)
@@ -7426,7 +7423,10 @@ index f8db3f1..49df1c0 100644
 +test('report: decision and access', async (step) => {
 +  const { member, candidateId } = await setup('Decides')
 +  finishInterview(Candidate.require(candidateId), TRANSCRIPT, true)
-+
+ 
+-  await step('words the candidate wrote', () => {
+-    eq(anchoredInAnswer(answer, 'la chaîne fait 31 caractères, pas 33'), true)
+-    // apostrophes, spaces and case of the copy do not matter
 +  await step('the recruiter writes the decision down', async () => {
 +    const res = await call('POST', '/api/report/decision', {
 +      candidate: candidateId,
@@ -7454,7 +7454,12 @@ index f8db3f1..49df1c0 100644
 +        .status,
 +      404,
 +    )
-+    eq(
+     eq(
+-      anchoredInAnswer(
+-        'Je valide déjà que l’URL est en http',
+-        "je valide  déjà que l'URL",
+-      ),
+-      true,
 +      (await call('POST', '/api/report/decision', {
 +        candidate: candidateId,
 +        choice: 'decline',
@@ -7471,19 +7476,33 @@ index f8db3f1..49df1c0 100644
 +        .status,
 +      404,
      )
--    eq(status, 'ready')
--    const q1 = report.qcm.find((q) => q.n === 1)
--    eq([q1.check, q1.isCorrect, q1.aiNote], ['disputed', false, undefined])
    })
-+
+ 
+-  await step('words the model made up are refused', () => {
 +  await step('without a session nothing is open', async () => {
-+    eq(
+     eq(
+-      anchoredInAnswer(
+-        answer,
+-        'Le test T6 envoie un alias de 33 caractères et reçoit 201',
+-      ),
+-      false,
 +      (await call('GET', '/api/report', { candidate: candidateId })).status,
 +      401,
-+    )
-+  })
+     )
+-    eq(anchoredInAnswer(answer, undefined), false)
+-    eq(anchoredInAnswer(answer, '33'), false) // too short to carry a claim
+   })
 +})
-+
+ 
+-  await step('the second key reads the quote', async () => {
+-    await using m = mockLlm(() => [
+-      200,
+-      '{"verdicts":[{"id":"8-0","confirmed":false},{"id":"9-0","confirmed":false}]}',
+-    ])
+-    await confirmContradictions(files, claims)
+-    const prompt = m.calls[0].messages.at(-1).content
+-    eq(prompt.includes('"quote":"le code renvoie 400"'), true)
+-    eq(prompt.includes('vérifie d’abord l’attribution'), true)
 +test('report: it starts when the interview ends', async (step) => {
 +  const { member, assessment, candidateId, cookies } = await setup('Starts')
 +  const names = skillNames(assessment)
@@ -7502,7 +7521,7 @@ index f8db3f1..49df1c0 100644
 +    const v = await view(member, candidateId)
 +    eq(v.status, 'ready')
 +    eq(v.facts.interviewCompleted, true)
-+  })
+   })
 +
 +  await step(
 +    'a candidate who leaves gets no report by themselves',
@@ -7519,8 +7538,27 @@ index f8db3f1..49df1c0 100644
 +      eq(v.transcript.length, 3)
 +    },
 +  )
-+})
-+
+ })
+ 
+-test('a disputed QCM is neither right nor wrong for the evaluator (LIVE-007)', async (step) => {
+-  await step('no verdict nor key in what the evaluator reads', () => {
+-    const [disputed, counted] = qcmForEvaluator([
+-      {
+-        n: 3,
+-        prompt: 'p',
+-        chosen: 'a',
+-        correct: 'b',
+-        isCorrect: false,
+-        check: 'disputed',
+-      },
+-      {
+-        n: 4,
+-        prompt: 'p',
+-        chosen: 'a',
+-        correct: 'a',
+-        isCorrect: true,
+-        check: 'double-key',
+-      },
 +test('report: the conditions of the session are facts, frozen at the end', async (step) => {
 +  const { member, candidateId } = await setup('Conditions')
 +  const row = () => Candidate.require(candidateId)
@@ -7557,6 +7595,183 @@ index f8db3f1..49df1c0 100644
 +    const { facts } = await view(member, candidateId)
 +    eq([facts.integrity.copies, facts.integrity.resumes], [1, 1])
 +  })
++})
++
++test('report: each question has its answer times, read with the absences', async (step) => {
++  const { member, assessment, candidateId } = await setup('Timing')
++  const names = skillNames(assessment)
++  const row = () => Candidate.require(candidateId)
++  // the interview took place over the last 100 seconds (server clock)
++  const now = Date.now()
++  const t = (s) => now - 100_000 + s * 1000
++  const timed = [
++    {
++      who: 'ai',
++      text: 'Hello, I am Oracle. How did you start?',
++      at: t(0),
++      endAt: t(4),
++    },
++    {
++      who: 'candidate',
++      text: 'I split it in three files.',
++      at: t(6),
++      endAt: t(12),
++    },
++    {
++      who: 'ai',
++      text: 'What happens with a two-step jump?',
++      at: t(13),
++      endAt: t(17),
++    },
++    {
++      who: 'ai',
++      text: 'Take your time. Want me to repeat?',
++      at: t(27),
++      endAt: t(30),
++      silence: 'nudge',
++    },
++    {
++      who: 'candidate',
++      text: 'It is rejected with a 409.',
++      at: t(40),
++      endAt: t(46),
++    },
++    {
++      who: 'ai',
++      text: 'How is the tracking code made?',
++      at: t(47),
++      endAt: t(50),
++    },
++    {
++      who: 'ai',
++      text: 'No rush. Should I say it again?',
++      at: t(60),
++      endAt: t(62),
++      silence: 'nudge',
++    },
++    {
++      who: 'ai',
++      text: "Let's move on. How did you use AI?",
++      at: t(80),
++      endAt: t(85),
++      silence: 'skip',
++    },
++    {
++      who: 'candidate',
++      text: 'Muse Code wrote most of it.',
++      at: t(88),
++      endAt: t(95),
++    },
++    {
++      who: 'ai',
++      text: 'Thank you, a person will read this. [END]',
++      at: t(101),
++      endAt: t(104),
++    },
++  ]
++
++  await step('the times of each question are facts', async () => {
++    // the page was left for 3 s just now: during the last question
++    recordIntegrity(row(), { kind: 'page-leave', phase: 'interview', ms: 3000 })
++    finishInterview(row(), timed, true)
++    const { facts } = await view(member, candidateId)
++    const a = facts.answers
++    // the closing words ask nothing: four questions
++    eq(a.map((q) => q.question), [1, 2, 3, 4])
++    eq([a[0].waitMs, a[0].speakMs, a[0].nudged, a[0].leaves], [
++      2000,
++      6000,
++      false,
++      0,
+     ])
+-    eq(disputed, { n: 3, prompt: 'p', chosen: 'a', cleContestee: true })
+-    eq(counted, {
+-      n: 4,
+-      prompt: 'p',
+-      chosen: 'a',
+-      correct: 'a',
+-      isCorrect: true,
+-    })
++    // answered after a prompt: the wait counts from the question itself
++    eq([a[1].waitMs, a[1].speakMs, a[1].nudged], [23000, 6000, true])
++    // nothing said: the interviewer prompted, then moved on
++    eq([a[2].unanswered, a[2].nudged, a[2].waitMs], [true, true, undefined])
++    eq([a[3].waitMs, a[3].speakMs, a[3].leaves], [3000, 7000, 1])
++    eq(Math.abs(a[3].awayMs - 3000) < 200, true)
++    eq(a[3].asked, "Let's move on. How did you use AI?")
+   })
+ 
+-  await step('no note of fault on a disputed key', async () => {
+-    const assessmentId = seedDemoAssessment(randomToken(10))
+-    const candidateId = seedFinishedCandidate(assessmentId, randomToken(24))
+-    const row = Candidate.require(candidateId)
+-    const questions = JSON.parse(row.candidateQuestions)
+-    const list = Array.isArray(questions) ? questions : questions.questions
+-    list.find((q) => q.n === 1).keyDisputed = true
+-    Candidate.update({
+-      candidateId,
+-      candidateQuestions: questions,
+-      candidateReport: null,
+-    })
+-    await buildReport(candidateId)
+-    const { status, report } = JSON.parse(
+-      Candidate.require(candidateId).candidateReport,
++  await step(
++    'the model reads them as a hypothesis, never above "medium"',
++    async () => {
++      await withModel(
++        {
++          ...answer(names),
++          timing: {
++            summary:
++              'Q2 waited 23 s for a question the author answers at once.',
++            confidence: 'high',
++            alternatives: ['They were thinking it through.'],
++          },
++        },
++        async (calls) => {
++          await buildReport(candidateId)
++          const prompt = calls[0].messages.at(-1).content
++          eq(prompt.includes('# Answer times and absences'), true)
++          eq(
++            prompt.includes('Q3 "How is the tracking code made?": no answer'),
++            true,
++          )
++        },
++      )
++      const { reading } = await view(member, candidateId)
++      eq(reading.timing.confidence, 'medium')
++      eq(reading.timing.alternatives, ['They were thinking it through.'])
++    },
++  )
++
++  await step('a reading that accuses is not kept', async () => {
++    await withModel(
++      {
++        ...answer(names),
++        timing: {
++          summary: 'They probably cheated while away from the page.',
++          confidence: 'medium',
++          alternatives: [],
++        },
++      },
++      async () => {
++        await buildReport(candidateId)
++      },
+     )
+-    eq(status, 'ready')
+-    const q1 = report.qcm.find((q) => q.n === 1)
+-    eq([q1.check, q1.isCorrect, q1.aiNote], ['disputed', false, undefined])
++    const { reading } = await view(member, candidateId)
++    eq(reading.timing, undefined)
+   })
+ })
++
++test('report: an interview recorded without times has no answer times', async () => {
++  const { member, candidateId } = await setup('Untimed')
++  finishInterview(Candidate.require(candidateId), TRANSCRIPT, true)
++  const { facts } = await view(member, candidateId)
++  eq(facts.answers, undefined)
 +})
 +
 +test('report: a second check reads each reading against its evidence', async (step) => {
@@ -7675,12 +7890,12 @@ index f8db3f1..49df1c0 100644
 +      )
 +    },
 +  )
- })
++})
 diff --git a/api/report.ts b/api/report.ts
-index 75d54dc..8639371 100644
+index 75d54dc..a8dec92 100644
 --- a/api/report.ts
 +++ b/api/report.ts
-@@ -1,1032 +1,681 @@
+@@ -1,1032 +1,789 @@
 -import { contentLang, tc, withContentLang } from '/api/lib/content-lang.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import { companyOfAssessment } from '/api/schema.ts'
@@ -7757,6 +7972,7 @@ index 75d54dc..8639371 100644
  import type {
    AiFailure,
 -  AiTrace,
++  AnswerTiming,
    AssessmentSpec,
    CandidateFiles,
 -  CandidateIdentity,
@@ -7808,22 +8024,41 @@ index 75d54dc..8639371 100644
  }
  
 -/* ---------- overlap with the assistant (facts) ---------- */
--
++const CONFIDENCE = ['low', 'medium', 'high'] as const
++const WORDS = ['agree', 'partly', 'disagree', 'none'] as const
++const STATUS = [
++  'Demonstrated',
++  'Partial',
++  'Not demonstrated',
++  'Not assessed',
++] as const
+ 
 -type Token = { word: string; start: number; end: number }
--
++const specOf = (c: CandidateRow) =>
++  json<AssessmentSpec>(Assessment.require(c.assessmentId).assessmentSpec)!
+ 
 -const tokens = (text: string): Token[] =>
 -  [...text.matchAll(/[\p{L}\p{N}]+/gu)].map((m) => ({
 -    word: m[0].toLowerCase().normalize('NFD').replace(/\p{M}/gu, ''),
 -    start: m.index!,
 -    end: m.index! + m[0].length,
 -  }))
--
++const transcriptOf = (c: CandidateRow) =>
++  json<InterviewLine[]>(c.candidateInterview) ?? []
++
++const minutes = (from?: number | null, to?: number | null) =>
++  from && to ? Math.max(1, Math.round((to - from) / 60_000)) : undefined
+ 
 -const N = 4 // a passage copied from the assistant is 4 words or more
--
--/**
++/* ---------- facts ---------- */
+ 
+ /**
 - * Splits an answer into passages; those found word for word in the
 - * assistant's replies are highlighted in violet in the report.
-- */
++ * Each question of the interview and how its answer came, from the times kept
++ * on the transcript and the absences from the page. Undefined for an
++ * interview recorded before the times were kept.
+  */
 -export const splitByAssistant = (answer: string, replies: string[]) => {
 -  const words = tokens(answer)
 -  const grams = new Set<string>()
@@ -7844,42 +8079,46 @@ index 75d54dc..8639371 100644
 -    if (!copied[i]) {
 -      i++
 -      continue
-+const CONFIDENCE = ['low', 'medium', 'high'] as const
-+const WORDS = ['agree', 'partly', 'disagree', 'none'] as const
-+const STATUS = [
-+  'Demonstrated',
-+  'Partial',
-+  'Not demonstrated',
-+  'Not assessed',
-+] as const
-+
-+const specOf = (c: CandidateRow) =>
-+  json<AssessmentSpec>(Assessment.require(c.assessmentId).assessmentSpec)!
-+
-+const transcriptOf = (c: CandidateRow) =>
-+  json<InterviewLine[]>(c.candidateInterview) ?? []
-+
-+const minutes = (from?: number | null, to?: number | null) =>
-+  from && to ? Math.max(1, Math.round((to - from) / 60_000)) : undefined
-+
-+/* ---------- facts ---------- */
-+
-+/** what the server measured, from what it stored: the same every time */
-+export const reportFacts = (c: CandidateRow): ReportFacts => {
-+  const spec = specOf(c)
-+  const results = json<StoredResults>(c.candidateResults)
-+  const byId = new Map(spec.tests.map((t) => [t.id, t]))
-+  const lines = transcriptOf(c).filter((l) => l.who === 'candidate')
-+  const tests = (results?.tests ?? []).map((r) => {
-+    const t = byId.get(r.id)
++export const answersOf = (
++  lines: InterviewLine[],
++  away: { from: number; to: number }[] = [],
++  completed = true,
++): AnswerTiming[] | undefined => {
++  if (!lines.some((l) => l.at)) return undefined
++  // what the interviewer says, except its prompts after a silence
++  const turns = lines.flatMap((line, index) =>
++    line.who === 'ai' && line.silence !== 'nudge' ? [{ line, index }] : []
++  )
++  // the closing words of an interview the interviewer ended ask nothing
++  const last = turns.at(-1)
++  const asked = completed && last &&
++      !lines.slice(last.index + 1).some((l) => l.who === 'candidate')
++    ? turns.slice(0, -1)
++    : turns
++  const end = lines.at(-1)?.endAt ?? lines.at(-1)?.at ?? Date.now()
++  return asked.map(({ line, index }, n) => {
++    const next = turns[n + 1]
++    const between = lines.slice(index + 1, next?.index ?? lines.length)
++    const said = between.filter((l) => l.who === 'candidate')
++    const first = said[0], lastWord = said.at(-1)
++    // the question is open from its first word to the next question
++    const from = line.at ?? 0, to = next?.line.at ?? end
++    const overlaps = away.map((a) =>
++      Math.max(0, Math.min(a.to, to) - Math.max(a.from, from))
++    ).filter((ms) => ms > 0)
 +    return {
-+      id: r.id,
-+      title: t?.title ?? '',
-+      visibility: t?.visibility ?? 'public',
-+      passed: r.passed,
-+      expected: r.expected,
-+      received: r.received,
-+      request: r.request,
++      question: n + 1,
++      asked: line.text.length > 140 ? `${line.text.slice(0, 139)}…` : line.text,
++      waitMs: first?.at && line.endAt
++        ? Math.max(0, first.at - line.endAt)
++        : undefined,
++      speakMs: first?.at && lastWord
++        ? Math.max(0, (lastWord.endAt ?? lastWord.at ?? first.at) - first.at)
++        : undefined,
++      nudged: between.some((l) => l.silence === 'nudge'),
++      unanswered: !first,
++      leaves: overlaps.length,
++      awayMs: overlaps.reduce((s, ms) => s + ms, 0),
      }
 -    let j = i
 -    while (j + 1 < words.length && copied[j + 1]) j++
@@ -7895,8 +8134,9 @@ index 75d54dc..8639371 100644
 -    ? Math.round(copied.filter(Boolean).length * 100 / words.length)
 -    : 0
 -  return { passages: passages.length ? passages : [{ text: answer }], percent }
--}
--
++  })
+ }
+ 
 -/* ---------- integrity (facts) ---------- */
 -
 -const integrityEvents = Entry.sql<'data', { candidateId: number }>`
@@ -7921,6 +8161,23 @@ index 75d54dc..8639371 100644
 -    return `${numbers.length > 1 ? 'questions' : 'question'} ${
 -      numbers.join(', ')
 -    }`
++/** what the server measured, from what it stored: the same every time */
++export const reportFacts = (c: CandidateRow): ReportFacts => {
++  const spec = specOf(c)
++  const results = json<StoredResults>(c.candidateResults)
++  const byId = new Map(spec.tests.map((t) => [t.id, t]))
++  const lines = transcriptOf(c).filter((l) => l.who === 'candidate')
++  const tests = (results?.tests ?? []).map((r) => {
++    const t = byId.get(r.id)
++    return {
++      id: r.id,
++      title: t?.title ?? '',
++      visibility: t?.visibility ?? 'public',
++      passed: r.passed,
++      expected: r.expected,
++      received: r.received,
++      request: r.request,
++    }
 +  })
 +  return {
 +    tests,
@@ -7937,6 +8194,11 @@ index 75d54dc..8639371 100644
 +    autoSubmitted: !!c.candidateAutoSubmitted,
 +    interviewCompleted: !!c.candidateFinishedAt,
 +    integrity: readIntegrity(c),
++    answers: answersOf(
++      transcriptOf(c),
++      readIntegrity(c).away,
++      !!c.candidateFinishedAt,
++    ),
 +    candidateTurns: lines.length,
 +    candidateWords: lines.reduce(
 +      (n, l) => n + l.text.trim().split(/\s+/).filter(Boolean).length,
@@ -8054,14 +8316,33 @@ index 75d54dc..8639371 100644
 -      failures: traces.flatMap((t) => t.failures ?? []),
 -    }]
 -    : []
+-
+-/* ---------- evaluation by the model ---------- */
+-
+-const STATUS = ['Démontré', 'Partiel', 'Non démontré', 'Non évalué'] as const
+-const CONFIDENCE = ['faible', 'moyenne', 'élevée'] as const
+-const SIGNAL = ['present', 'partial', 'absent'] as const
+-export const UNDERSTANDING = 'Compréhension de son propre code'
 +type Raw = {
 +  understanding: { summary: string; confidence: Confidence }
 +  skills: RawSkill[]
 +  followUp: string[]
 +  limits: string[]
++  timing?: { summary: string; confidence: Confidence; alternatives: string[] }
 +}
  
--/* ---------- evaluation by the model ---------- */
+-type Claim = {
+-  claim: string
+-  verdict: 'exact' | 'faux'
+-  why: string
+-  file: string
+-  from: number
+-  to: number
+-  quote?: string
+-  /** the words of the answer that carry the claim, copied verbatim */
+-  answerQuote?: string
+-  testId?: string
+-  proof?: Proof
 +/** the shape of the answer, nothing more: the evidence is checked after */
 +export const parseReading = (v: unknown): Raw => {
 +  const o = obj(v, 'answer')
@@ -8100,33 +8381,11 @@ index 75d54dc..8639371 100644
 +    }, { max: 20, clip: true }),
 +    followUp: arr(o.followUp ?? [], 'followUp', text, { max: 4, clip: true }),
 +    limits: arr(o.limits ?? [], 'limits', text, { max: 6, clip: true }),
++    timing: o.timing && typeof o.timing === 'object'
++      ? parseTiming(obj(o.timing, 'timing'), text)
++      : undefined,
 +  }
-+}
- 
--const STATUS = ['Démontré', 'Partiel', 'Non démontré', 'Non évalué'] as const
--const CONFIDENCE = ['faible', 'moyenne', 'élevée'] as const
--const SIGNAL = ['present', 'partial', 'absent'] as const
--export const UNDERSTANDING = 'Compréhension de son propre code'
-+/** lower case, no accents, no punctuation, single spaces: how words are matched */
-+export const fold = (text: string) =>
-+  text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
-+    .replace(/[^a-z0-9]+/g, ' ').trim()
- 
--type Claim = {
--  claim: string
--  verdict: 'exact' | 'faux'
--  why: string
--  file: string
--  from: number
--  to: number
--  quote?: string
--  /** the words of the answer that carry the claim, copied verbatim */
--  answerQuote?: string
--  testId?: string
--  proof?: Proof
--}
-+const lowerConfidence = (c: Confidence, max: Confidence): Confidence =>
-+  CONFIDENCE.indexOf(c) > CONFIDENCE.indexOf(max) ? max : c
+ }
  
 -type Evaluation = {
 -  free: {
@@ -8146,12 +8405,38 @@ index 75d54dc..8639371 100644
 -  }[]
 -  interviewPoints: string[]
 -  debrief: Report['debrief']
++const parseTiming = (
++  t: Record<string, unknown>,
++  text: (x: unknown, path: string) => string,
++) => ({
++  summary: str(t.summary, 'timing.summary', 800),
++  confidence: oneOf(t.confidence, CONFIDENCE, 'timing.confidence'),
++  alternatives: arr(t.alternatives ?? [], 'timing.alternatives', text, {
++    max: 3,
++    clip: true,
++  }),
++})
++
++/** words that would turn a hypothesis about times into an accusation */
++const ACCUSING = /\b(cheat\w*|fraud\w*|lie|lied|lying|dishonest\w*)\b/i
++
++/** lower case, no accents, no punctuation, single spaces: how words are matched */
++export const fold = (text: string) =>
++  text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
++    .replace(/[^a-z0-9]+/g, ' ').trim()
++
++const lowerConfidence = (c: Confidence, max: Confidence): Confidence =>
++  CONFIDENCE.indexOf(c) > CONFIDENCE.indexOf(max) ? max : c
++
 +/** what a reading is checked against: everything that exists */
 +export type Evidence = {
 +  spec: AssessmentSpec
 +  files: CandidateFiles
 +  transcript: InterviewLine[]
-+  facts: Pick<ReportFacts, 'tests' | 'interviewCompleted' | 'candidateTurns'>
++  facts: Pick<
++    ReportFacts,
++    'tests' | 'interviewCompleted' | 'candidateTurns' | 'answers'
++  >
  }
  
 -const parseEvaluation = (v: unknown): Evaluation => {
@@ -8409,6 +8694,7 @@ index 75d54dc..8639371 100644
 +    skills,
 +    followUp: raw.followUp,
 +    limits,
++    timing: timingOf(raw, facts),
 +    discarded,
    }
  }
@@ -8420,8 +8706,7 @@ index 75d54dc..8639371 100644
 -        .join('\n')
 -    }`
 -  ).join('\n\n')
-+/* ---------- the second check: does the evidence back the reading? ---------- */
- 
+-
 -const EVALUATION_SYSTEM =
 -  'Tu aides un recruteur à lire les réponses d’un candidat sur son propre code. Tu sépares les faits de tes interprétations, tu ne donnes aucune note globale, tu ne recommandes aucune décision et tu ne devines pas si une réponse a été écrite par une IA. Tu parles du candidat à la troisième personne et tu le vouvoies dans les questions de débrief. Réponds uniquement en JSON, en français.'
 -
@@ -8445,18 +8730,21 @@ index 75d54dc..8639371 100644
 -    .replace(/\s+/g, ' ')
 -    .trim()
 -
--/**
+ /**
 - * A contradiction is only attributed to words the candidate wrote: the
 - * quote must be found in the answer, long enough to carry a claim (LIVE-004).
-- */
++ * The reading of the times: only when they were measured, never more than
++ * "medium" (times have many causes), and dropped if it accuses.
+  */
 -export const anchoredInAnswer = (answer: string, quote?: string) => {
 -  const q = normalized(quote ?? '').replace(/^["'\s]+|["'\s.,;:!?…]+$/g, '')
 -  return q.length >= 12 && normalized(answer).includes(q)
--}
-+type Support = Record<
-+  string,
-+  { support: 'yes' | 'partly' | 'no'; reason: string }
-+>
++const timingOf = (raw: Raw, facts: Evidence['facts']) => {
++  const t = raw.timing
++  if (!t || !facts.answers?.length) return undefined
++  if (ACCUSING.test([t.summary, ...t.alternatives].join(' '))) return undefined
++  return { ...t, confidence: lowerConfidence(t.confidence, 'medium') }
+ }
  
 -const contradictions = (free: FreeReview[]) => {
 -  // an unconfirmed contradiction is shown, never counted
@@ -8467,6 +8755,13 @@ index 75d54dc..8639371 100644
 -    : n
 -    ? tc('une contradiction', 'one contradiction')
 -    : ''
++/* ---------- the second check: does the evidence back the reading? ---------- */
++
++type Support = Record<
++  string,
++  { support: 'yes' | 'partly' | 'no'; reason: string }
++>
++
 +/** the shape of the answer of the second check */
 +export const parseSupport = (v: unknown): Support => {
 +  const o = obj(v, 'answer')
@@ -8732,14 +9027,12 @@ index 75d54dc..8639371 100644
  }
  
 -/* ---------- job ---------- */
-+/* ---------- the job ---------- */
- 
+-
 -const pace = (trace: AiTrace) =>
 -  trace.replay && APP_ENV !== 'test'
 -    ? new Promise((r) => setTimeout(r, 800))
 -    : Promise.resolve()
-+const store = (candidateId: number, report: StoredReport) =>
-+  Candidate.update({ candidateId, candidateReport: report })
++/* ---------- the job ---------- */
  
 -const LIMITS = () => [
 -  tc(
@@ -8759,15 +9052,12 @@ index 75d54dc..8639371 100644
 -    'A skill assessed by questions only does not go beyond medium confidence.',
 -  ),
 -]
-+const storedOf = (c: CandidateRow) => json<StoredReport>(c.candidateReport)
++const store = (candidateId: number, report: StoredReport) =>
++  Candidate.update({ candidateId, candidateReport: report })
  
 -const sectionOf = (methods: string[]) =>
 -  methods[0] === 'Tests' ? 's2' : methods[0] === 'Analyse du code' ? 's3' : 's4'
-+/** what the candidate wrote: an API or a program, and in which language */
-+const subjectOf = (c: CandidateRow): Subject => ({
-+  kind: specOf(c).kind === 'program' ? 'program' : 'api',
-+  language: c.candidateLanguage === 'python' ? 'python' : 'typescript',
-+})
++const storedOf = (c: CandidateRow) => json<StoredReport>(c.candidateReport)
  
 -/** R6 job, in the language of the assessment */
 -export const buildReport = (candidateId: number) =>
@@ -8844,7 +9134,12 @@ index 75d54dc..8639371 100644
 -          })),
 -        )
 -      }
--
++/** what the candidate wrote: an API or a program, and in which language */
++const subjectOf = (c: CandidateRow): Subject => ({
++  kind: specOf(c).kind === 'program' ? 'program' : 'api',
++  language: c.candidateLanguage === 'python' ? 'python' : 'typescript',
++})
+ 
 -Code du candidat (numéros de ligne à gauche) :
 -${numbered(files)}
 +const inputOf = (c: CandidateRow): ReportInput => {
@@ -8878,6 +9173,7 @@ index 75d54dc..8639371 100644
 +    files: json<CandidateFiles>(c.candidateFiles) ?? {},
 +    transcript: transcriptOf(c),
 +    interviewCompleted: facts.interviewCompleted,
++    answers: facts.answers?.map(answerLine),
 +  }
 +}
  
@@ -8899,6 +9195,24 @@ index 75d54dc..8639371 100644
 -      demoTrace: demoTraces.analysis,
 -    })
 -    await pace(trace)
++const seconds = (ms: number) => `${Math.round(ms / 1000)} s`
++
++/** one question and its times, as the reporter reads them */
++export const answerLine = (a: AnswerTiming) =>
++  `Q${a.question} "${a.asked}": ` + [
++    a.unanswered
++      ? 'no answer'
++      : `started answering ${
++        seconds(a.waitMs ?? 0)
++      } after the question ended, spoke ${seconds(a.speakMs ?? 0)}`,
++    a.nudged ? 'the interviewer prompted after a silence' : '',
++    a.leaves
++      ? `left the page ${a.leaves} time${a.leaves > 1 ? 's' : ''} (${
++        seconds(a.awayMs)
++      } away) while it was open`
++      : 'stayed on the page',
++  ].filter(Boolean).join('; ')
++
 +/** tells the page the report changed state: it refetches and shows it */
 +const announce = (c: CandidateRow) =>
 +  Entry.insert.CANDIDATE_REPORT_READY({
@@ -14838,7 +15152,7 @@ index 71c7b4d..e3beb2c 100644
        </p>
      </Card>
 diff --git a/web/pages/candidate/consent-page.tsx b/web/pages/candidate/consent-page.tsx
-index a8ac71c..9def344 100644
+index a8ac71c..97d1268 100644
 --- a/web/pages/candidate/consent-page.tsx
 +++ b/web/pages/candidate/consent-page.tsx
 @@ -2,65 +2,61 @@ import { paths } from '/web/paths.ts'
@@ -14884,7 +15198,7 @@ index a8ac71c..9def344 100644
 +const DATA = [
 +  [
 +    Database,
-+    'Collected: your code, its run results, and the transcript of the interview.',
++    'Collected: your code, its run results, the transcript of the interview, how long you take to answer each question, and when you leave the page.',
 +  ],
 +  [
 +    Server,
@@ -15396,7 +15710,7 @@ index 08078d9..bf1cc01 100644
      </main>
    )
 diff --git a/web/pages/landing/landing-sections.tsx b/web/pages/landing/landing-sections.tsx
-index b232fd7..249de0b 100644
+index b232fd7..f48d302 100644
 --- a/web/pages/landing/landing-sections.tsx
 +++ b/web/pages/landing/landing-sections.tsx
 @@ -3,124 +3,89 @@ import {
@@ -15512,7 +15826,7 @@ index b232fd7..249de0b 100644
 -      'The recruiter picks 60, 90 or 120 minutes for building. A timed question phase follows the code submission.',
 -    ),
 +    'What data is kept?',
-+    'The code, the runs, the declared use of AI, the interview transcript (text only, kept 30 days by default) and integrity events such as leaving the page. The audio is not stored. No webcam and no screen recording.',
++    'The code, the runs, the declared use of AI, the interview transcript (text only, kept 30 days by default), the time taken to answer each question and integrity events such as leaving the page. The audio is not stored. No webcam and no screen recording.',
 +  ],
 +  [
 +    'Do I need a microphone?',
@@ -15706,7 +16020,7 @@ index b232fd7..249de0b 100644
 -              'Sont enregistrés : code, exécutions, réponses et événements de sortie de page.',
 -              'Recorded: code, runs, answers and page-leave events.',
 -            )}
-+            {'Recorded: code, runs, the interview transcript and page-leave events.'}
++            {'Recorded: code, runs, the interview transcript, answer times and page-leave events.'}
            </p>
            <p tw='text-sm font-medium mt-3'>
 -            {t(
@@ -18422,10 +18736,10 @@ index a38b80c..f87ba5a 100644
              )}
            </AnchorLink>
 diff --git a/web/pages/report/report-page.tsx b/web/pages/report/report-page.tsx
-index 6370463..179037c 100644
+index 6370463..42facfa 100644
 --- a/web/pages/report/report-page.tsx
 +++ b/web/pages/report/report-page.tsx
-@@ -1,222 +1,624 @@
+@@ -1,222 +1,713 @@
 +// The report of a candidate. Two kinds of content, never mixed: what the
 +// server measured (verified facts) and what the AI read (interpretations, each
 +// with the evidence that was checked and a confidence). There is no global
@@ -18503,6 +18817,7 @@ index 6370463..179037c 100644
 -        {t('Rapport d’évaluation', 'Assessment report')} · {formatDate(r.date)}
 -      </span>
 +import type {
++  AnswerTiming,
 +  CodeRef,
 +  DecisionChoice,
 +  InterviewIntegrity,
@@ -18745,6 +19060,7 @@ index 6370463..179037c 100644
 -        {r.declaredTools.map((tool) => (
 -          <span key={tool} tw='badge badge-neutral h-[22px]'>{tv(tool)}</span>
 -        ))}
+-      </span>
 +  </article>
 +)
 +
@@ -18784,7 +19100,19 @@ index 6370463..179037c 100644
 +      <Stat label='Copy attempts · interview'>
 +        {i.copies ? `${i.copies}×` : 'none'}
 +      </Stat>
-+    </div>
+     </div>
+-    <div tw='flex items-center gap-2 flex-wrap px-3.5 py-2.5 rounded-[10px] border border-border-strong bg-surface-sunken text-[13px] text-content-secondary'>
+-      <Scale tw='w-[15px] h-[15px] flex-none text-content-primary' />
+-      <strong tw='font-semibold text-content-primary'>
+-        {t(
+-          'Aide à la décision. Aucun score global.',
+-          'Decision support. No overall score.',
+-        )}
+-      </strong>
+-      {t(
+-        'Chaque dimension est présentée avec ses preuves ; la décision vous revient.',
+-        'Each dimension comes with its evidence; the decision is yours.',
+-      )}
 +    <p tw='m-0 text-[12.5px] text-content-tertiary'>
 +      These facts say how the session went, not what the candidate understands:
 +      a call, a notification or a laptop on a dock explain most of them. Only
@@ -18793,6 +19121,95 @@ index 6370463..179037c 100644
 +  </div>
 +)
 +
++/** "8 s", "1 min 20 s": a duration a person reads at a glance */
++const duration = (ms: number) => {
++  const s = Math.round(ms / 1000)
++  return s < 60
++    ? `${s} s`
++    : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ''}`
++}
++
++/** each question and how its answer came: times and absences, nothing more */
++const AnswerTimes = ({ answers }: { answers: AnswerTiming[] }) => (
++  <div tw='flex flex-col gap-2' data-test='answer-times'>
++    <h3 tw='m-0 text-[13.5px] font-semibold flex items-center gap-1.5'>
++      <Timer tw='w-3.5 h-3.5 text-content-tertiary' />
++      Answer times
++    </h3>
++    <div tw='card overflow-x-auto'>
++      <table tw='w-full min-w-[560px] text-[13px] border-collapse'>
++        <thead>
++          <tr tw='text-left text-[12px] text-content-tertiary'>
++            <th tw='font-normal px-3.5 py-2'>Question</th>
++            <th tw='font-normal px-3 py-2 whitespace-nowrap'>
++              Before answering
++            </th>
++            <th tw='font-normal px-3 py-2'>Speaking</th>
++            <th tw='font-normal px-3 py-2 whitespace-nowrap'>Left the page</th>
++          </tr>
++        </thead>
++        <tbody>
++          {answers.map((a) => (
++            <tr key={a.question} tw='border-t border-border-primary align-top'>
++              <td tw='px-3.5 py-2.5'>
++                <strong tw='font-mono mr-1.5'>Q{a.question}</strong>
++                <span tw='text-content-secondary'>{a.asked}</span>
++                {a.nudged && (
++                  <span tw='block mt-1 text-[12px] text-content-tertiary'>
++                    Oracle offered to repeat after a silence
++                  </span>
++                )}
++              </td>
++              <td tw='px-3 py-2.5 font-mono whitespace-nowrap'>
++                {a.unanswered ? 'no answer' : duration(a.waitMs ?? 0)}
++              </td>
++              <td tw='px-3 py-2.5 font-mono whitespace-nowrap'>
++                {a.unanswered ? '–' : duration(a.speakMs ?? 0)}
++              </td>
++              <td tw='px-3 py-2.5 font-mono whitespace-nowrap'>
++                {a.leaves ? `${a.leaves}× · ${duration(a.awayMs)}` : 'no'}
++              </td>
++            </tr>
++          ))}
++        </tbody>
++      </table>
+     </div>
+-  </header>
++    <p tw='m-0 text-[12.5px] text-content-tertiary'>
++      Measured from the end of Oracle's question to the candidate's first word.
++      Thinking aloud counts as answering; a pause to think does not show as
++      leaving the page.
++    </p>
++  </div>
+ )
+ 
+-/**
+- * R6 — the report. Anchors on the left, 880 px of content, sticky decision
+- * column on the right (below 1280 px the anchors hide, below 1024 px the
+- * decision goes under the content).
+- */
+-const SECTION_IDS = SECTIONS().map(([id]) => id)
+-
+-const Waiting = ({ view }: { view?: ReportView }) => (
+-  <main tw='flex-1 w-full max-w-[640px] mx-auto px-4 sm:px-8 py-16 flex flex-col gap-4'>
+-    {view && (
+-      <BackLink href={`${paths.assessment}?id=${view.assessmentId}`}>
+-        {view.assessmentTitle}
+-      </BackLink>
+-    )}
+-    {view?.status === 'failed'
+-      ? (
+-        <AiErrorBanner
+-          final
+-          onRetry={() => retryReport(view.candidateId)}
+-          message={view.error}
+-          failures={view.failures}
+-        />
+-      )
+-      : (
+-        <div
+-          role='status'
+-          tw='card px-5 py-4 flex items-center gap-3 text-[14px]'
 +const Facts = ({ v }: { v: ReportView }) => {
 +  const f = v.facts
 +  const failed = f.tests.filter((t) => !t.passed)
@@ -18811,7 +19228,18 @@ index 6370463..179037c 100644
 +          ok={f.ownTests.passed + f.ownTests.failed
 +            ? !f.ownTests.failed
 +            : undefined}
-+        >
+         >
+-          <Spinner tw='w-4 h-4' />
+-          {view
+-            ? t(
+-              `Rapport de ${
+-                candidateName(view) ?? view.pseudonym
+-              } en cours de génération…`,
+-              `Report of ${
+-                candidateName(view) ?? view.pseudonym
+-              } being generated…`,
+-            )
+-            : t('Chargement du rapport…', 'Loading the report…')}
 +          {f.ownTests.passed + f.ownTests.failed
 +            ? `${f.ownTests.passed}/${f.ownTests.passed + f.ownTests.failed}`
 +            : 'none'}
@@ -18836,6 +19264,7 @@ index 6370463..179037c 100644
 +        <Stat label='Words spoken'>{f.candidateWords}</Stat>
 +      </div>
 +      {f.integrity && <Conditions integrity={f.integrity} />}
++      {f.answers && f.answers.length > 0 && <AnswerTimes answers={f.answers} />}
 +      {failed.length > 0 && (
 +        <div tw='card px-4 py-3 flex flex-col gap-2'>
 +          <h3 tw='m-0 text-[13.5px] font-semibold'>Failing tests</h3>
@@ -18860,8 +19289,9 @@ index 6370463..179037c 100644
 +        <div tw='card px-4 py-3 flex flex-col gap-1'>
 +          <h3 tw='m-0 text-[13.5px] font-semibold'>Type errors</h3>
 +          {f.typeErrors.map((e) => <code key={e} tw='text-[12px]'>{e}</code>)}
-+        </div>
-+      )}
+         </div>
+       )}
+-  </main>
 +    </section>
 +  )
 +}
@@ -18914,7 +19344,7 @@ index 6370463..179037c 100644
 +          : v.facts.interviewCompleted
 +          ? 'The report starts in a moment.'
 +          : 'The interview is not over: the reading starts when Oracle closes it.'}
-       </span>
++      </span>
 +      {v.status === 'waiting' && v.transcript.length > 0 && (
 +        <button
 +          type='button'
@@ -18924,18 +19354,7 @@ index 6370463..179037c 100644
 +          Read it now
 +        </button>
 +      )}
-     </div>
--    <div tw='flex items-center gap-2 flex-wrap px-3.5 py-2.5 rounded-[10px] border border-border-strong bg-surface-sunken text-[13px] text-content-secondary'>
--      <Scale tw='w-[15px] h-[15px] flex-none text-content-primary' />
--      <strong tw='font-semibold text-content-primary'>
--        {t(
--          'Aide à la décision. Aucun score global.',
--          'Decision support. No overall score.',
--        )}
--      </strong>
--      {t(
--        'Chaque dimension est présentée avec ses preuves ; la décision vous revient.',
--        'Each dimension comes with its evidence; the decision is yours.',
++    </div>
 +  )
 +}
 +
@@ -18964,6 +19383,32 @@ index 6370463..179037c 100644
 +        {r.skills.map((s) => <SkillCard key={s.skill} skill={s} v={v} />)}
 +      </section>
 +
++      {r.timing && (
++        <section tw='flex flex-col gap-3' aria-label='Timing'>
++          <SectionTitle title='Times and absences, read together' nature='ai'>
++            <ConfidenceMeter level={r.timing.confidence} />
++          </SectionTitle>
++          <div
++            data-test='timing-reading'
++            tw='card px-[18px] py-4 flex flex-col gap-2.5'
++          >
++            <p tw='m-0 text-[14px] leading-[1.6]'>{r.timing.summary}</p>
++            {r.timing.alternatives.length > 0 && (
++              <div tw='text-[13px] text-content-secondary'>
++                <span tw='font-semibold'>Other explanations:</span>
++                <ul tw='m-0 mt-1 pl-5 flex flex-col gap-0.5'>
++                  {r.timing.alternatives.map((a) => <li key={a}>{a}</li>)}
++                </ul>
++              </div>
++            )}
++            <p tw='m-0 text-[12.5px] text-content-tertiary'>
++              A hypothesis to check with the candidate, not a finding: nobody
++              knows what happened away from the page.
++            </p>
++          </div>
++        </section>
++      )}
++
 +      {r.followUp.length > 0 && (
 +        <section tw='flex flex-col gap-3' aria-label='To ask next'>
 +          <SectionTitle title='To ask next' nature='ai' />
@@ -18971,7 +19416,7 @@ index 6370463..179037c 100644
 +            {r.followUp.map((q) => <li key={q}>{q}</li>)}
 +          </ul>
 +        </section>
-       )}
++      )}
 +
 +      <section tw='flex flex-col gap-2' aria-label='Limits'>
 +        <h2 tw='m-0 text-[15px] font-semibold flex items-center gap-2'>
@@ -19009,32 +19454,16 @@ index 6370463..179037c 100644
 +          {l.text}
 +        </p>
 +      ))}
-     </div>
--  </header>
++    </div>
 +  </Collapsible>
  )
  
--/**
-- * R6 — the report. Anchors on the left, 880 px of content, sticky decision
-- * column on the right (below 1280 px the anchors hide, below 1024 px the
-- * decision goes under the content).
-- */
--const SECTION_IDS = SECTIONS().map(([id]) => id)
--
--const Waiting = ({ view }: { view?: ReportView }) => (
--  <main tw='flex-1 w-full max-w-[640px] mx-auto px-4 sm:px-8 py-16 flex flex-col gap-4'>
--    {view && (
--      <BackLink href={`${paths.assessment}?id=${view.assessmentId}`}>
--        {view.assessmentTitle}
--      </BackLink>
--    )}
--    {view?.status === 'failed'
--      ? (
--        <AiErrorBanner
--          final
--          onRetry={() => retryReport(view.candidateId)}
--          message={view.error}
--          failures={view.failures}
+-export const ReportPage = () => {
+-  const view = reportView.value
+-  const active = useActiveSection(SECTION_IDS)
+-  if (!view) return reportError.value ? <NotFoundPage /> : <Waiting />
+-  const r = view.report
+-  if (view.status !== 'ready' || !r) return <Waiting view={view} />
 +const CHOICES: { value: DecisionChoice; label: string }[] = [
 +  { value: 'advance', label: 'Move forward' },
 +  { value: 'more', label: 'I need more information' },
@@ -19049,7 +19478,21 @@ index 6370463..179037c 100644
 +  const [note, setNote] = useState(v.decision?.note ?? '')
 +  const [saving, setSaving] = useState(false)
 +  const [error, setError] = useState('')
-+  return (
+   return (
+-    <div tw='w-full max-w-[1400px] mx-auto px-4 sm:px-8 pt-7 pb-16 grid grid-cols-1 lg:grid-cols-report-md xl:grid-cols-report justify-center gap-8'>
+-      <nav
+-        aria-label={t('Sections du rapport', 'Report sections')}
+-        tw='hidden xl:flex sticky top-20 self-start flex-col gap-px text-[13px]'
+-      >
+-        <span tw='font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-content-tertiary px-2.5 pb-2'>
+-          {t('Rapport', 'Report')}
+-        </span>
+-        {SECTIONS().map(([id, label], i) => (
+-          <AnchorLink
+-            key={id}
+-            to={id}
+-            aria-current={active === id ? 'location' : undefined}
+-            tw={navLinkTw(active === id)}
 +    <Panel title='Your decision'>
 +      <p tw='m-0 text-[12.5px] text-content-secondary'>
 +        There is no score. Nothing here decides for you.
@@ -19064,7 +19507,12 @@ index 6370463..179037c 100644
 +                ? 'border-accent bg-accent-soft'
 +                : 'border-border-primary bg-surface-elevated',
 +            ]}
-+          >
+           >
+-            <span tw='w-3 font-mono text-[11.5px] text-content-tertiary'>
+-              {i + 1}
+-            </span>
+-            {label}
+-          </AnchorLink>
 +            <input
 +              type='radio'
 +              name='decision'
@@ -19075,7 +19523,15 @@ index 6370463..179037c 100644
 +            />
 +            {c.label}
 +          </label>
-+        ))}
+         ))}
+-      </nav>
+-      <main tw='min-w-0 flex flex-col gap-7'>
+-        <Header view={view} r={r} />
+-        <Summary report={r} />
+-        {view.results && (
+-          <Execution
+-            results={view.results}
+-            tests={view.tests}
 +      </div>
 +      <div tw='flex flex-col gap-1.5'>
 +        <Label for='decision-note'>Your note</Label>
@@ -19087,12 +19543,7 @@ index 6370463..179037c 100644
 +          value={note}
 +          onInput={(e) => setNote(e.currentTarget.value)}
 +          placeholder='Why, in your words (visible to your team only)'
-         />
--      )
--      : (
--        <div
--          role='status'
--          tw='card px-5 py-4 flex items-center gap-3 text-[14px]'
++        />
 +      </div>
 +      {error && <p role='alert' tw='m-0 text-[13px] text-err'>{error}</p>}
 +      <button
@@ -19119,35 +19570,16 @@ index 6370463..179037c 100644
 +        <p
 +          data-test='decision-saved'
 +          tw='m-0 text-[12px] text-content-tertiary flex items-center gap-1.5'
-         >
--          <Spinner tw='w-4 h-4' />
--          {view
--            ? t(
--              `Rapport de ${
--                candidateName(view) ?? view.pseudonym
--              } en cours de génération…`,
--              `Report of ${
--                candidateName(view) ?? view.pseudonym
--              } being generated…`,
--            )
--            : t('Chargement du rapport…', 'Loading the report…')}
--        </div>
++        >
 +          <Timer tw='w-3 h-3' /> Saved {formatDateTime(v.decision.at)}
 +        </p>
-       )}
--  </main>
--)
++      )}
 +    </Panel>
 +  )
 +}
- 
++
 +/** Report of a candidate: facts, then interpretations, then the decision */
- export const ReportPage = () => {
--  const view = reportView.value
--  const active = useActiveSection(SECTION_IDS)
--  if (!view) return reportError.value ? <NotFoundPage /> : <Waiting />
--  const r = view.report
--  if (view.status !== 'ready' || !r) return <Waiting view={view} />
++export const ReportPage = () => {
 +  const v = report.value
 +  if (!v) {
 +    return reportLoading.value
@@ -19161,36 +19593,7 @@ index 6370463..179037c 100644
 +  const who = v.identity
 +    ? `${v.identity.firstName} ${v.identity.lastName}`
 +    : v.pseudonym
-   return (
--    <div tw='w-full max-w-[1400px] mx-auto px-4 sm:px-8 pt-7 pb-16 grid grid-cols-1 lg:grid-cols-report-md xl:grid-cols-report justify-center gap-8'>
--      <nav
--        aria-label={t('Sections du rapport', 'Report sections')}
--        tw='hidden xl:flex sticky top-20 self-start flex-col gap-px text-[13px]'
--      >
--        <span tw='font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-content-tertiary px-2.5 pb-2'>
--          {t('Rapport', 'Report')}
--        </span>
--        {SECTIONS().map(([id, label], i) => (
--          <AnchorLink
--            key={id}
--            to={id}
--            aria-current={active === id ? 'location' : undefined}
--            tw={navLinkTw(active === id)}
--          >
--            <span tw='w-3 font-mono text-[11.5px] text-content-tertiary'>
--              {i + 1}
--            </span>
--            {label}
--          </AnchorLink>
--        ))}
--      </nav>
--      <main tw='min-w-0 flex flex-col gap-7'>
--        <Header view={view} r={r} />
--        <Summary report={r} />
--        {view.results && (
--          <Execution
--            results={view.results}
--            tests={view.tests}
++  return (
 +    <main tw='w-full max-w-[1120px] mx-auto px-4 sm:px-8 pt-7 pb-16 flex flex-col gap-5'>
 +      <BackLink href={`${paths.assessment}?id=${v.assessmentId}`}>
 +        {v.assessmentTitle}
@@ -20788,7 +21191,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..f04b8a2 100644
+index 83f3535..f90d79d 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,13 @@
@@ -21061,7 +21464,7 @@ index 83f3535..f04b8a2 100644
  export type Invitation = {
    invitation: string
    title: string
-@@ -208,15 +239,44 @@ export type Invitation = {
+@@ -208,15 +239,55 @@ export type Invitation = {
    durationMin: number
    firstName?: string
    state: InvitationState
@@ -21079,6 +21482,15 @@ index 83f3535..f04b8a2 100644
 +  text: string
 +  /** the candidate spoke over the interviewer, who stopped here */
 +  interrupted?: boolean
++  /**
++   * Server clock (ms). The interviewer: when its words started. The candidate:
++   * when their voice started (the first words of the turn).
++   */
++  at?: number
++  /** the interviewer: when its voice should end; the candidate: their last word */
++  endAt?: number
++  /** a line of the interviewer about a silence: a prompt, or moving on */
++  silence?: 'nudge' | 'skip'
 +}
 +
 +/**
@@ -21090,6 +21502,8 @@ index 83f3535..f04b8a2 100644
 +  resumes: number
 +  /** times the page was left (tab hidden, window out of focus), and for how long */
 +  leaves: Record<IntegrityPhase, { count: number; ms: number }>
++  /** when the interview page was left (server clock, ms), to place each absence */
++  away?: { from: number; to: number }[]
 +  /** attempts to copy what the interviewer says */
 +  copies: number
 +  /** a second display is connected (undefined: this browser cannot tell) */
@@ -21108,7 +21522,7 @@ index 83f3535..f04b8a2 100644
    assessment: {
      title: string
      company: string
-@@ -228,162 +288,111 @@ export type CandidateView = {
+@@ -228,162 +299,137 @@ export type CandidateView = {
      constraints: string[]
      publicTests: TestCase[]
      hiddenCount: number
@@ -21207,22 +21621,13 @@ index 83f3535..f04b8a2 100644
    methods: Method[]
 -  note?: string
 -  section: string // anchor of the proofs, e.g. "s2"
--}
--
+ }
+ 
 -export type Citation = {
 -  file: string
 -  lines: [number, number]
 -  verified: boolean
 -  reason?: string // why a citation could not be verified
- }
- 
--export type CodeObservation = {
--  kind: 'Décision' | 'Risque' | 'Point positif'
--  title: string
--  confidence: Confidence
--  citation: Citation
--  explanation: string
--  link?: { label: string; section: string }
 +/** what the server measured: no model took part */
 +export type ReportFacts = {
 +  tests: {
@@ -21248,6 +21653,34 @@ index 83f3535..f04b8a2 100644
 +  candidateWords: number
 +  /** how the session went: facts about the conditions, not about the person */
 +  integrity?: InterviewIntegrity
++  /** each question and how its answer came (interviews recorded with times) */
++  answers?: AnswerTiming[]
+ }
+ 
+-export type CodeObservation = {
+-  kind: 'Décision' | 'Risque' | 'Point positif'
+-  title: string
+-  confidence: Confidence
+-  citation: Citation
+-  explanation: string
+-  link?: { label: string; section: string }
++/** one question of the interview and the time its answer took (facts) */
++export type AnswerTiming = {
++  /** 1 for the first question */
++  question: number
++  /** the words of the interviewer, shortened */
++  asked: string
++  /** the question ends → the candidate starts speaking (no answer: undefined) */
++  waitMs?: number
++  /** the candidate's first word → their last word on this question */
++  speakMs?: number
++  /** the interviewer prompted after a silence */
++  nudged: boolean
++  /** no answer: the interviewer moved on, or the interview ended */
++  unanswered: boolean
++  /** absences from the page while this question was open */
++  leaves: number
++  awayMs: number
  }
  
 -export type QcmReview = {
@@ -21257,22 +21690,25 @@ index 83f3535..f04b8a2 100644
 -  chosen: string
 -  correct: string
 -  isCorrect: boolean
--  /**
--   * how the expected answer was checked; "disputed": the second model found
--   * another key, the question is not counted (shown « clé contestée »)
--   */
--  check: 'execution' | 'double-key' | 'disputed'
--  aiNote?: string
--  /** requests of a prediction question, shown on the card */
--  requests?: [HttpMethod, string, string][]
--  /** answered after the time: recorded unanswered */
--  expired?: boolean
 +/** what the model read in the code and the transcript */
 +export type Reading = {
 +  understanding: { summary: string; confidence: Confidence }
 +  skills: SkillReading[]
 +  followUp: string[]
 +  limits: string[]
+   /**
+-   * how the expected answer was checked; "disputed": the second model found
+-   * another key, the question is not counted (shown « clé contestée »)
++   * The answer times and the absences read together: a hypothesis, with other
++   * plain reasons. Absent for interviews recorded without times.
+    */
+-  check: 'execution' | 'double-key' | 'disputed'
+-  aiNote?: string
+-  /** requests of a prediction question, shown on the card */
+-  requests?: [HttpMethod, string, string][]
+-  /** answered after the time: recorded unanswered */
+-  expired?: boolean
++  timing?: { summary: string; confidence: Confidence; alternatives: string[] }
 +  /** quotes, lines or tests the model gave that could not be verified */
 +  discarded: number
 +  trace: AiTrace

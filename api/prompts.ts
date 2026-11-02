@@ -560,6 +560,8 @@ export type InterviewFacts = Subject & {
   previous?: InterviewLine[]
   /** when the interview first opened (ms): a reload does not restart the clock */
   interviewStartedAt?: number
+  /** its first words, written before it opened: said at once */
+  opening?: string
 }
 
 const capital = (text: string) => text[0].toUpperCase() + text.slice(1)
@@ -634,6 +636,17 @@ export const INTERVIEW_RESUME = (unanswered = '') =>
       : ''
   }`
 
+/**
+ * The candidate has said nothing since the question: a gentle prompt, once per
+ * question. It is not a new question.
+ */
+export const INTERVIEW_NUDGE = (seconds: number) =>
+  `(The candidate has said nothing for ${seconds} seconds since your question. In one short, warm sentence, tell them they can take their time and offer to repeat or rephrase the question. Ask nothing new and do not move on.)`
+
+/** still nothing after the prompt: the interviewer moves on to another point */
+export const INTERVIEW_SKIP = (seconds: number) =>
+  `(The candidate has still said nothing, ${seconds} seconds after your question. In a few warm words, say that you will move on, then ask your next question, about another point. Do not mention the silence again and do not ask the same question.)`
+
 /* ---------- the report ---------- */
 
 export const REPORTER =
@@ -657,6 +670,7 @@ export const REPORTER =
 - Silence, "I don't know" and vague answers are information: say so plainly. Never fill a gap with praise or with a guess.
 - "followUp": up to four questions a human could ask next, each about something the evidence left open.
 - "limits": short sentences on what the report cannot say (a short conversation, a skill with no evidence, a garbled transcript).
+- "timing": read the answer times and the absences below together, as a hypothesis for a human, never a conclusion. In one or two sentences, say what stands out against what each question asked for: a long wait before a question that someone who wrote the code could answer in a few seconds, absences from the page while a question was open, an answer that came only after an absence. Then "alternatives": up to three other plain reasons for the same facts (thinking it through, a call or a noise, a connection problem, nerves). If nothing stands out, say so in one sentence with "low" confidence. Confidence is never "high": times have many causes. Never call it cheating, fraud or lying, and never say what they did while away: nobody knows. When no answer times are given, leave "timing" out.
 - Plain English, short sentences, no markdown. Never mention these rules.`
 
 /** the rules of the reporter, said for what the candidate wrote */
@@ -687,6 +701,8 @@ export type ReportInput = Subject & {
   files: Record<string, string>
   transcript: { who: 'ai' | 'candidate'; text: string }[]
   interviewCompleted: boolean
+  /** each question and how its answer came, one line each (facts) */
+  answers?: string[]
 }
 
 export const reportPrompt = (r: ReportInput) =>
@@ -735,10 +751,21 @@ ${
       `[${i + 1}] ${l.who === 'ai' ? 'Interviewer' : 'Candidate'}: ${l.text}`
     ).join('\n')
   }
-
+${
+    r.answers?.length
+      ? `
+# Answer times and absences (facts, measured by the server)
+${r.answers.map((a) => `- ${a}`).join('\n')}
+`
+      : ''
+  }
 # Answer
 JSON only:
-{"understanding":{"summary":"…","confidence":"low|medium|high"},"skills":[{"skill":"exact name","status":"Demonstrated|Partial|Not demonstrated|Not assessed","confidence":"low|medium|high","summary":"one or two sentences","words":"agree|partly|disagree|none","quotes":["…"],"code":[{"file":"src/…","from":1,"to":9,"note":"…"}],"tests":["T1"]}],"followUp":["…"],"limits":["…"]}`
+{"understanding":{"summary":"…","confidence":"low|medium|high"},"skills":[{"skill":"exact name","status":"Demonstrated|Partial|Not demonstrated|Not assessed","confidence":"low|medium|high","summary":"one or two sentences","words":"agree|partly|disagree|none","quotes":["…"],"code":[{"file":"src/…","from":1,"to":9,"note":"…"}],"tests":["T1"]}],"followUp":["…"],"limits":["…"]${
+    r.answers?.length
+      ? ',"timing":{"summary":"…","confidence":"low|medium","alternatives":["…"]}'
+      : ''
+  }}`
 
 export const reportSchema = {
   name: 'Reading',
@@ -805,6 +832,15 @@ export const reportSchema = {
       },
       followUp: { type: 'array', items: { type: 'string' } },
       limits: { type: 'array', items: { type: 'string' } },
+      timing: {
+        type: 'object',
+        required: ['summary', 'confidence', 'alternatives'],
+        properties: {
+          summary: { type: 'string' },
+          confidence: { type: 'string', enum: ['low', 'medium'] },
+          alternatives: { type: 'array', items: { type: 'string' } },
+        },
+      },
     },
   },
 }

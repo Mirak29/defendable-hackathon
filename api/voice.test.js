@@ -869,3 +869,161 @@ test('voice interview: a malformed Origin is refused, not a crash', async () => 
   )
   eq(res.status, 403)
 })
+
+test('voice interview: a silence after a question brings a prompt, then the interviewer moves on', async (step) => {
+  await withInterview({
+    replies: [
+      'Hello, I am Oracle. How did you start?',
+      'Take your time. Would you like me to repeat the question?',
+      "Let's move on. How do you check the input?",
+    ],
+    recognise: () => {},
+  }, async ({ port, model }) => {
+    // a fraction of a second instead of 10 and 30 seconds
+    Object.assign(voiceConfig, {
+      nudgeMs: 150,
+      skipMs: 400,
+      charsPerSecond: 1e9,
+    })
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done' && e.silence === 'skip')
+
+    await step('first a gentle prompt, then a new question', () => {
+      eq(
+        b.events.filter((e) => e.type === 'ai-done').map((e) =>
+          e.silence ?? 'question'
+        ),
+        ['question', 'nudge', 'skip'],
+      )
+      eq(
+        model.calls[1].messages.at(-1).content.includes('has said nothing'),
+        true,
+      )
+      eq(
+        model.calls[2].messages.at(-1).content.includes('still said nothing'),
+        true,
+      )
+    })
+
+    await step('each line of the interviewer is placed in time', () => {
+      const done = b.events.filter((e) => e.type === 'ai-done')
+      eq(done.every((e) => e.at > 0 && e.endAt >= e.at), true)
+      eq(b.events.some((e) => e.type === 'ai-voice-end'), true)
+    })
+    b.ws.close()
+  })
+})
+
+test('voice interview: a candidate who starts answering is never prompted', async (step) => {
+  await withInterview({
+    replies: ['Hello, I am Oracle. How did you start?', 'Okay.'],
+    recognise: async (send) => {
+      // words, slowly: the answer has begun but is not finished
+      send({ type: 'speechStart' })
+      await sleep(40)
+      send({ type: 'transcript', transcript: 'Well I started', final: false })
+    },
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, {
+      nudgeMs: 150,
+      skipMs: 400,
+      charsPerSecond: 1e9,
+    })
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done')
+    b.frame()
+    await b.waitFor((e) => e.type === 'partial')
+    await sleep(700)
+
+    await step('no prompt and no new question while they answer', () => {
+      eq(model.calls.length, 1)
+      eq(b.events.filter((e) => e.type === 'ai-done').length, 1)
+    })
+    b.ws.close()
+  })
+})
+
+test('voice interview: the words of a turn are placed in time', async (step) => {
+  await withInterview({
+    replies: ['Hello, I am Oracle. How did you start?', 'Okay. And then?'],
+    recognise: async (send) => {
+      send({ type: 'speechStart' })
+      await sleep(30)
+      send({ type: 'transcript', transcript: 'I started', final: false })
+      await sleep(120)
+      send({ type: 'speechEnd', turnId: 1, audioProcessedMs: 900 })
+      send({
+        type: 'speechComplete',
+        turnId: 1,
+        transcript: 'I started with the file',
+      })
+    },
+  }, async ({ port }) => {
+    Object.assign(voiceConfig, { holdMs: 0 })
+    const b = await browser(port)
+    b.frame()
+    await b.waitFor((e) => e.type === 'ai-done')
+    b.frame()
+    const heard = await b.waitFor((e) => e.type === 'heard')
+
+    await step('from the first sound to the last word', () => {
+      eq(heard.endAt - heard.at >= 100, true)
+    })
+    b.ws.close()
+  })
+})
+
+test('voice interview: a prepared opening is said at once, without the model', async (step) => {
+  // a transcription that never answers: the opening does not wait for it
+  const silent = Deno.serve({ port: 0, onListen() {} }, (req) => {
+    const { response } = Deno.upgradeWebSocket(req)
+    return response
+  })
+  await withInterview({
+    interviewFacts: {
+      ...facts,
+      opening: 'Hi, I am Oracle. How did you approach the task?',
+    },
+    replies: ['Should not be asked.'],
+    recognise: () => {},
+  }, async ({ port, model }) => {
+    Object.assign(voiceConfig, { asrUrl: `ws://localhost:${silent.addr.port}` })
+    const b = await browser(port)
+    const done = await b.waitFor((e) => e.type === 'ai-done')
+
+    await step('the prepared words are said, the model is not asked', () => {
+      eq(done.text, 'Hi, I am Oracle. How did you approach the task?')
+      eq(model.calls.length, 0)
+      eq(b.events.find((e) => e.type === 'ready').voice, 'browser')
+    })
+    b.ws.close()
+  })
+  await silent.shutdown()
+})
+
+test('voice interview: after a reload the prepared opening is not said again', async (step) => {
+  await withInterview({
+    interviewFacts: {
+      ...facts,
+      opening: 'Hi, I am Oracle. How did you approach the task?',
+      previous: [
+        { who: 'ai', text: 'Hi, I am Oracle. How did you approach the task?' },
+        { who: 'candidate', text: 'I started from the handler.' },
+      ],
+    },
+    replies: ['Glad you are back. What about the validation?'],
+    recognise: () => {},
+  }, async ({ port, model }) => {
+    const b = await browser(port)
+    b.frame()
+    const done = await b.waitFor((e) => e.type === 'ai-done')
+
+    await step('the conversation goes on from where it was', () => {
+      eq(done.text.startsWith('Glad you are back'), true)
+      eq(model.calls.length, 1)
+    })
+    b.ws.close()
+  })
+})
