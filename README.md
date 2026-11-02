@@ -15,11 +15,31 @@ stays human.
 
 Built for the Meta Global AI Developer Hackathon, with Meta's models.
 
-- Before the hackathon: the concept, the landing page and all UI pages were
-  prototyped in a separate private repository (Defendable 1.0).
-- Built during the hackathon: all runtime functionality, including the backend,
-  Meta model integrations, assessment generation and verification, sandboxed
-  code execution, voice interviews, and reports.
+## What existed before, what was built here
+
+- **Before the hackathon**, in Defendable 1.0 (a private repository): the
+  concept, the UI pages and a first backend (accounts, assessment generation
+  and review, the candidate journey, a TypeScript sandbox, written reports).
+  The files this project builds on are published unchanged as an extract,
+  [defendable-pre-event](https://github.com/Mirak29/defendable-pre-event), taken from the last pre-event commit of
+  Defendable 1.0 (`c7bc119`, 2026-09-29).
+- **Built during the hackathon**, in this repository: 61 new files, and the
+  changes to 112 of the 122 pre-event files, 3 of them removed (one patch). Every AI step moved to
+  Meta's models, the live voice interview with Oracle (transcription and voice),
+  hidden tests checked against planted flaws, program assessments in TypeScript
+  and Python, the evidence report with its second check, the product in
+  English, the deployment and the evaluations.
+
+## How this repository is organised
+
+| Path | What it is |
+| --- | --- |
+| `patches/pre-event.patch` | the changes made during the event to the pre-event files |
+| every other file | created during the event |
+| `setup.sh` | rebuilds the full app in `./app`: downloads the extract at its pinned commit, applies the patch, adds the new files |
+
+The extract is pinned in `setup.sh` (`PRE_EVENT_COMMIT`); nothing from before the
+event is stored in this repository or in its history.
 
 ## Try the product
 
@@ -75,8 +95,10 @@ volume.
 The same image, built on your machine from the code.
 
 ```bash
-git clone https://github.com/Mirak29/defendable.git
-cd defendable
+git clone https://github.com/Mirak29/defendable-hackathon.git
+cd defendable-hackathon
+./setup.sh   # the full app, in ./app
+cd app
 cp .env.production.example .env.production
 # in .env.production: REDIRECT_URI=http://localhost:8000, the keys, DEMO_ACCESS=1
 docker compose up -d --build
@@ -91,8 +113,10 @@ For a server with HTTPS, backups and updates:
 Deno 2 only (no Node), hot reload, a local SQLite file.
 
 ```bash
-git clone https://github.com/Mirak29/defendable.git
-cd defendable
+git clone https://github.com/Mirak29/defendable-hackathon.git
+cd defendable-hackathon
+./setup.sh   # the full app, in ./app
+cd app
 deno install
 echo 'MODEL_API_KEY=LLM_…' > .env   # git-ignored; add BASETEN_API_KEY= too
 deno task dev    # http://localhost:8000

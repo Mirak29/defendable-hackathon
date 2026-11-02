@@ -1,0 +1,5 @@
+# this repository's own rules (the app has its own .gitattributes, from the patch)
+# the patch is applied byte for byte: never converted
+*.patch -text
+# a bash script runs only with LF line endings
+*.sh text eol=lf
