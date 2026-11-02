@@ -2,8 +2,8 @@
 
 **AI can write the code. Can the candidate defend it?**
 
-[**Try the live app**](https://defendable-dimxty2z0.gobrev.dev) · **Demo video
-(2:34):** link to be added
+[**Try the live app**](https://defendableapp.com) · **Demo video (2:34):** link
+to be added
 
 <!-- Add the final YouTube link here before submission. -->
 
@@ -25,9 +25,9 @@ Built for the Meta Global AI Developer Hackathon, with Meta's models.
 
 ## Try the product
 
-1. Open the [live app](https://defendable-dimxty2z0.gobrev.dev) and choose **Try
-   with the demo account** on the sign-in page. No account or API key is needed
-   to use the hosted demo.
+1. Open the [live app](https://defendableapp.com) and choose **Try with the demo
+   account** on the sign-in page. No account or API key is needed to use the
+   hosted demo.
 2. Create a **New assessment** from a job offer (examples in
    [fixtures/offers/](fixtures/offers/)), review the brief and automatic checks,
    then approve it and create a candidate link.
