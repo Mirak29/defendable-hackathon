@@ -11121,10 +11121,10 @@ index 263037b..a588592 100644
      memberPassword: demoHash!,
      memberCreatedAt: Date.now(),
 diff --git a/api/server.ts b/api/server.ts
-index a751410..4c868c8 100644
+index a751410..3bba6c3 100644
 --- a/api/server.ts
 +++ b/api/server.ts
-@@ -2,43 +2,37 @@ import { log } from '/api/lib/log.ts'
+@@ -2,43 +2,50 @@ import { log } from '/api/lib/log.ts'
  import { routeHandler } from '/api/routes.ts'
  import '/api/schema.ts'
  import { recoverInterruptedJobs } from '/api/recovery.ts'
@@ -11133,6 +11133,8 @@ index a751410..4c868c8 100644
 +import { handleVoice } from '/api/voice.ts'
 +import { tts } from '/api/tts.ts'
 +import { voiceOptionsFor } from '/api/voice-lab.ts'
++import { handleRecording, purgeRecordings } from '/api/recordings.ts'
++import { APP_ENV } from '/api/lib/env.ts'
  
  import { server } from '@01edu/api/server'
  
@@ -11164,6 +11166,12 @@ index a751410..4c868c8 100644
  export default {
 -  async fetch(req: Request) {
 +  fetch(req: Request) {
++    const path = new URL(req.url).pathname
++    if (
++      path === '/api/candidate/recording' || path === '/api/recruiter/recording'
++    ) {
++      return handleRecording(req)
++    }
 +    // the voice interview is a WebSocket: it does not go through the router
 +    if (new URL(req.url).pathname === '/api/voice') return voice(req)
      // @01edu/api fails on an empty Cookie header (sent by some HTTP clients)
@@ -11180,6 +11188,11 @@ index a751410..4c868c8 100644
  }
  
  recoverInterruptedJobs()
++purgeRecordings()
++if (APP_ENV !== 'test') {
++  const cleanup = setInterval(purgeRecordings, 6 * 60 * 60_000)
++  Deno.unrefTimer(cleanup)
++}
 +// Oracle's voice loads while the server idles, not when somebody waits for it
 +tts.warmUp()
  log.info('server-start')
@@ -15305,7 +15318,7 @@ index 71c7b4d..e3beb2c 100644
        </p>
      </Card>
 diff --git a/web/pages/candidate/consent-page.tsx b/web/pages/candidate/consent-page.tsx
-index a8ac71c..97d1268 100644
+index a8ac71c..0ee92d2 100644
 --- a/web/pages/candidate/consent-page.tsx
 +++ b/web/pages/candidate/consent-page.tsx
 @@ -2,65 +2,61 @@ import { paths } from '/web/paths.ts'
@@ -15351,7 +15364,7 @@ index a8ac71c..97d1268 100644
 +const DATA = [
 +  [
 +    Database,
-+    'Collected: your code, its run results, the transcript of the interview, how long you take to answer each question, and when you leave the page.',
++    'Collected: your code, its run results, the interview transcript, answer times and page-leave events, plus a camera and audio recording of the interview after your explicit agreement.',
 +  ],
 +  [
 +    Server,
@@ -15394,7 +15407,7 @@ index a8ac71c..97d1268 100644
 -    ],
 -  ] as const
 +    Mic,
-+    'The microphone is used only during the interview. The audio is not stored, only its transcript. No webcam.',
++    'The camera and microphone are used only during the interview. The recording includes your voice and Oracle’s voice and is available to the recruiting team for 30 days. Camera images are not sent to AI models. No screen recording. If you cannot use a camera, ask the recruiter for an adjustment.',
 +  ],
 +  [CalendarClock, 'Kept for 30 days.'],
 +  [
@@ -15863,7 +15876,7 @@ index 08078d9..bf1cc01 100644
      </main>
    )
 diff --git a/web/pages/landing/landing-sections.tsx b/web/pages/landing/landing-sections.tsx
-index b232fd7..f48d302 100644
+index b232fd7..cc00609 100644
 --- a/web/pages/landing/landing-sections.tsx
 +++ b/web/pages/landing/landing-sections.tsx
 @@ -3,124 +3,89 @@ import {
@@ -15979,11 +15992,11 @@ index b232fd7..f48d302 100644
 -      'The recruiter picks 60, 90 or 120 minutes for building. A timed question phase follows the code submission.',
 -    ),
 +    'What data is kept?',
-+    'The code, the runs, the declared use of AI, the interview transcript (text only, kept 30 days by default), the time taken to answer each question and integrity events such as leaving the page. The audio is not stored. No webcam and no screen recording.',
++    'The code, the runs, declared AI use, the interview transcript, answer times and session events such as leaving the page. With your explicit agreement, the interview camera and audio are recorded for replay by the recruiting team and available for 30 days. Camera images are not sent to AI models. No screen recording.',
 +  ],
 +  [
-+    'Do I need a microphone?',
-+    'Yes, for the interview. You can check your microphone before it starts, and nothing is recorded until you accept.',
++    'Do I need a camera and microphone?',
++    'Yes, for the recorded interview. Recording starts only after you agree and start the conversation. If your equipment or accessibility needs prevent this, contact the recruiter for an adjustment.',
 +  ],
 +  [
 +    'How long does an assessment take?',
@@ -16180,7 +16193,7 @@ index b232fd7..f48d302 100644
 -              'Jamais : webcam, microphone, enregistrement d’écran.',
 -              'Never: webcam, microphone, screen recording.',
 -            )}
-+            {'The microphone is used only during the interview, with your consent. Never: webcam, screen recording.'}
++            {'The camera and microphone are used only during the interview, after your explicit recording agreement. The replay is available to the recruiting team. No screen recording.'}
            </p>
          </div>
        </div>
@@ -18932,15 +18945,20 @@ index a38b80c..f87ba5a 100644
              )}
            </AnchorLink>
 diff --git a/web/pages/report/report-page.tsx b/web/pages/report/report-page.tsx
-index 6370463..42facfa 100644
+index 6370463..274eb09 100644
 --- a/web/pages/report/report-page.tsx
 +++ b/web/pages/report/report-page.tsx
-@@ -1,222 +1,713 @@
+@@ -1,222 +1,721 @@
 +// The report of a candidate. Two kinds of content, never mixed: what the
 +// server measured (verified facts) and what the AI read (interpretations, each
 +// with the evidence that was checked and a confidence). There is no global
 +// score: the decision is the recruiter's, written down at the side.
 +import { useState } from 'preact/hooks'
++import {
++  InterviewReplay,
++  ReplayLink,
++  ReplayQuote,
++} from './interview-replay.tsx'
  import { paths } from '/web/paths.ts'
  import {
 +  report,
@@ -19211,6 +19229,7 @@ index 6370463..42facfa 100644
 -            {t('Note interne :', 'Internal note:')} {view.identity.note}
 -          </span>
 -        )}
++        <ReplayQuote quote={q} v={v} />
 +      </blockquote>
 +    ))}
 +    {skill.code.map((r) => (
@@ -19479,15 +19498,15 @@ index 6370463..42facfa 100644
 +              </span>
 +            </div>
 +          ))}
-+        </div>
-+      )}
+         </div>
+       )}
+-  </main>
 +      {f.typeErrors.length > 0 && (
 +        <div tw='card px-4 py-3 flex flex-col gap-1'>
 +          <h3 tw='m-0 text-[13.5px] font-semibold'>Type errors</h3>
 +          {f.typeErrors.map((e) => <code key={e} tw='text-[12px]'>{e}</code>)}
-         </div>
-       )}
--  </main>
++        </div>
++      )}
 +    </section>
 +  )
 +}
@@ -19648,6 +19667,7 @@ index 6370463..42facfa 100644
 +            {l.interrupted ? ' (interrupted)' : ''}:{' '}
 +          </strong>
 +          {l.text}
++          <ReplayLink line={l} />
 +        </p>
 +      ))}
 +    </div>
@@ -19814,6 +19834,7 @@ index 6370463..42facfa 100644
 +      <div tw='grid grid-cols-1 lg:grid-cols-report-md gap-6 items-start'>
 +        <div tw='flex flex-col gap-7 min-w-0'>
 +          <Facts v={v} />
++          <InterviewReplay key={v.candidateId} v={v} />
 +          {v.reading ? <Reading v={v} /> : <Waiting v={v} />}
 +          {v.transcript.length > 0 && <Transcript v={v} />}
 +        </div>
@@ -21216,10 +21237,10 @@ index a8ecf4b..f95b77f 100644
 -  bottomTab.value = 'out'
 -})
 diff --git a/web/paths.ts b/web/paths.ts
-index 0c5de49..e2b7843 100644
+index 0c5de49..0f755f3 100644
 --- a/web/paths.ts
 +++ b/web/paths.ts
-@@ -1,26 +1,26 @@
+@@ -1,26 +1,28 @@
  // Every route of the app, in one place: pages never hard-code a URL.
  // Two symmetric spaces, /recruiter/… and /candidate/…; ids stay in the
 -// query string (?id=, ?q=) like tournament's signal-router routes.
@@ -21255,6 +21276,8 @@ index 0c5de49..e2b7843 100644
 +  review: '/recruiter/review', // review before approval, ?id=
 +  assessment: '/recruiter/assessment', // approved assessment, ?id=
 +  report: '/recruiter/report', // report of a candidate, ?candidate=
++  candidateRecording: '/api/candidate/recording',
++  recruiterRecording: '/api/recruiter/recording',
 +  candidate: '/candidate', // welcome and consent
 +  workspace: '/candidate/workspace', // code editor and submission
 +  interview: '/candidate/interview', // the voice interview
@@ -21432,7 +21455,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..548bec3 100644
+index 83f3535..93bd7b6 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,15 @@
@@ -21485,8 +21508,8 @@ index 83f3535..548bec3 100644
 +  languages?: Language[]
 +  /** what the program reads and what it writes (kind `program`) */
 +  io?: { input: string; output: string }
-+}
-+
+ }
+ 
 +export type TestResult = {
 +  id: string
 +  passed: boolean
@@ -21494,8 +21517,8 @@ index 83f3535..548bec3 100644
 +  expected?: string
 +  received?: string
 +  request?: string
- }
- 
++}
++
 +export type CandidateFiles = Record<string, string>
 +
 +/** what the candidate writes the program in (chosen before the timer starts) */
@@ -21707,7 +21730,7 @@ index 83f3535..548bec3 100644
  export type Invitation = {
    invitation: string
    title: string
-@@ -208,15 +241,61 @@ export type Invitation = {
+@@ -208,15 +241,74 @@ export type Invitation = {
    durationMin: number
    firstName?: string
    state: InvitationState
@@ -21733,6 +21756,20 @@ index 83f3535..548bec3 100644
 +  endAt?: number
 +  /** a line of the interviewer about a silence: a prompt, or moving on */
 +  silence?: 'nudge' | 'skip'
++  /** Approximate server event position in the matching recording attempt. */
++  recordingId?: string
++  atMs?: number
+ }
+ 
+-/** the candidate's own session: never the hidden tests nor answer keys */
++export type RecordingView = {
++  id: string
++  mime: string
++  createdAt: number
++  expiresAt: number
++  durationMs: number
++  bytes: number
++  status: 'recording' | 'complete' | 'interrupted'
 +}
 +
 +/**
@@ -21750,9 +21787,8 @@ index 83f3535..548bec3 100644
 +  copies: number
 +  /** a second display is connected (undefined: this browser cannot tell) */
 +  extendedScreen?: boolean
- }
- 
--/** the candidate's own session: never the hidden tests nor answer keys */
++}
++
 +/** Last workspace test runs, valid only for the currently saved code. */
 +export type WorkspaceTestRuns = {
 +  eval?: { at: number; results: TestResult[] }
@@ -21771,7 +21807,7 @@ index 83f3535..548bec3 100644
    assessment: {
      title: string
      company: string
-@@ -228,162 +307,138 @@ export type CandidateView = {
+@@ -228,162 +320,138 @@ export type CandidateView = {
      constraints: string[]
      publicTests: TestCase[]
      hiddenCount: number

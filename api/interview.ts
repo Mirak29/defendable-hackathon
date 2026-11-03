@@ -14,6 +14,7 @@ import type { InterviewFacts } from '/api/prompts.ts'
 import { Assessment, Candidate, type CandidateRow } from '/api/schema.ts'
 import { startReport } from '/api/report.ts'
 import { voiceConfig, writeOpening } from '/api/voice.ts'
+import { activeRecording } from '/api/recordings.ts'
 import type {
   AssessmentSpec,
   CandidateFiles,
@@ -96,7 +97,11 @@ export const candidateVoice = {
   authorize: (req: Request) => {
     try {
       const c = candidateOf(req)
-      return Promise.resolve(!c.candidateFinishedAt && !!factsOf(c))
+      const recording = new URL(req.url).searchParams.get('recording') ?? ''
+      return Promise.resolve(
+        !c.candidateFinishedAt && !c.candidateRevokedAt && !!factsOf(c) &&
+          !!activeRecording(c.candidateId, recording),
+      )
     } catch {
       return Promise.resolve(false)
     }

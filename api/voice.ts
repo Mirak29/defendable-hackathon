@@ -836,6 +836,7 @@ export const handleVoice = async (
     authorize?: (req: Request) => Promise<boolean>
     /** the interview opens */
     onStart?: (req: Request) => void
+    recording?: { id: string; createdAt: number }
     /** the interview is over: what was said, and whether the interviewer closed it */
     onFinish?: (
       req: Request,
@@ -867,6 +868,13 @@ export const handleVoice = async (
   // what was said before a reload stays in the transcript
   const transcript: InterviewLine[] = [...(facts.previous ?? [])]
   let completed = false
+  const position = (at = Date.now()) =>
+    options.recording
+      ? {
+        recordingId: options.recording.id,
+        atMs: Math.max(0, at - options.recording.createdAt),
+      }
+      : {}
   const interview = new VoiceInterview(facts, (event) => {
     if (event.type === 'heard') {
       const last = transcript.at(-1)
@@ -879,6 +887,7 @@ export const handleVoice = async (
           text: event.text,
           at: event.at,
           endAt: event.endAt,
+          ...position(event.at),
         })
       }
     } else if (event.type === 'ai-done' && event.text) {
@@ -889,6 +898,7 @@ export const handleVoice = async (
         at: event.at,
         endAt: event.endAt,
         silence: event.silence,
+        ...position(event.at),
       })
     } else if (event.type === 'ai-voice-end') {
       const last = transcript.findLast((l) => l.who === 'ai')

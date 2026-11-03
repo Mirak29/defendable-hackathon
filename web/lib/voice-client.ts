@@ -4,6 +4,7 @@
 import { signal } from '@preact/signals'
 import { isEcho } from '/web/lib/echo.ts'
 import type { TurnMetrics, VoiceEvent } from '/api/voice.ts'
+import { beginRecording, endRecording } from '/web/lib/interview-recording.ts'
 
 export type Line = { who: 'ai' | 'you'; text: string; interrupted?: boolean }
 /** the delays a listener feels, with the one only the browser knows */
@@ -78,6 +79,8 @@ type Session = {
   socket: WebSocket
   context: AudioContext
   stream: MediaStream
+  recorded: boolean
+  releaseDevices: () => void
 }
 let session: Session | undefined
 /** where the voice made by the server is played, and measured */
@@ -254,6 +257,13 @@ const silence = () => {
 const onEvent = (event: VoiceEvent) => {
   switch (event.type) {
     case 'ready':
+      if (session?.recorded && event.voice !== 'server') {
+        voice.error.value =
+          'Oracle’s server voice is unavailable. The recorded interview needs both voices. Please try again later.'
+        voice.status.value = 'error'
+        stopVoice(false)
+        break
+      }
       serverVoice = event.voice === 'server'
       speechRate = event.rate ?? 0
       // back after a reload: what was said is shown again
@@ -265,6 +275,13 @@ const onEvent = (event: VoiceEvent) => {
       voice.status.value = 'live'
       break
     case 'speech':
+      if (session?.recorded && !event.pcm) {
+        voice.error.value =
+          'Oracle’s audio could not be recorded. The conversation has stopped so the replay does not silently lose a voice. Please try again later.'
+        voice.status.value = 'error'
+        stopVoice(false)
+        break
+      }
       // the sound made by the server, or the text alone when it could not
       if (event.pcm) playPcm(event.text, event.pcm)
       else speak(event.text)
@@ -324,13 +341,17 @@ const onEvent = (event: VoiceEvent) => {
     case 'error':
       voice.error.value = event.message
       voice.status.value = 'error'
+      stopVoice(false)
       break
   }
 }
 
 /* ---------- start and stop ---------- */
 
-export const startVoice = async () => {
+export const startVoice = () => openVoice(false)
+export const startRecordedVoice = () => openVoice(true)
+
+const openVoice = async (recordInterview: boolean) => {
   if (session) return
   voice.lines.value = []
   voice.delays.value = []
@@ -338,8 +359,17 @@ export const startVoice = async () => {
   voice.writing.value = ''
   voice.error.value = ''
   voice.status.value = 'connecting'
+  let stream: MediaStream | undefined
+  let context: AudioContext | undefined
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: recordInterview
+        ? {
+          width: { ideal: 480 },
+          height: { ideal: 360 },
+          frameRate: { ideal: 15, max: 20 },
+        }
+        : false,
       audio: {
         channelCount: 1,
         echoCancellation: true,
@@ -347,7 +377,8 @@ export const startVoice = async () => {
         autoGainControl: true,
       },
     })
-    const context = new AudioContext()
+    context = new AudioContext()
+    await context.resume()
     const module = URL.createObjectURL(
       new Blob([WORKLET], { type: 'text/javascript' }),
     )
@@ -356,6 +387,24 @@ export const startVoice = async () => {
 
     const url = new URL('api/voice', document.baseURI)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    const gain = context.createGain()
+    const analyser = context.createAnalyser()
+    analyser.fftSize = 1024
+    gain.connect(analyser)
+    analyser.connect(context.destination)
+    if (recordInterview) {
+      const recordingId = await beginRecording(
+        stream,
+        context,
+        gain,
+        (message) => {
+          voice.error.value = message
+          voice.status.value = 'error'
+          stopVoice()
+        },
+      )
+      url.searchParams.set('recording', recordingId)
+    }
     const socket = new WebSocket(url)
     socket.binaryType = 'arraybuffer'
     socket.onmessage = (e) => onEvent(JSON.parse(e.data))
@@ -376,13 +425,27 @@ export const startVoice = async () => {
     }
     source.connect(pcm)
     // the voice of the server: played here, and measured to move the presence
-    const gain = context.createGain()
-    const analyser = context.createAnalyser()
-    analyser.fftSize = 1024
-    gain.connect(analyser)
-    analyser.connect(context.destination)
     serverVoice = false
-    session = { socket, context, stream }
+    const deviceLost = () => {
+      voice.error.value =
+        'The camera or microphone disconnected. Reconnect it, then resume the conversation.'
+      voice.status.value = 'error'
+      stopVoice()
+    }
+    for (const track of stream.getTracks()) {
+      track.addEventListener('ended', deviceLost)
+    }
+    const devices = stream
+    session = {
+      socket,
+      context,
+      stream,
+      recorded: recordInterview,
+      releaseDevices: () =>
+        devices.getTracks().forEach((track) =>
+          track.removeEventListener('ended', deviceLost)
+        ),
+    }
     playback = { context, gain, analyser }
     // the voices of the browser load late: ask once so the first sentence has one
     speechSynthesis.getVoices()
@@ -390,6 +453,9 @@ export const startVoice = async () => {
     voice.error.value = err instanceof Error ? err.message : String(err)
     voice.status.value = 'error'
     stopVoice(false)
+    await endRecording(false)
+    stream?.getTracks().forEach((track) => track.stop())
+    await context?.close().catch(() => {})
   }
 }
 
@@ -402,12 +468,17 @@ export const stopVoice = (tell = true, keepVoice = false) => {
     current.socket.send(JSON.stringify({ type: 'stop' }))
   }
   current.socket.close()
-  current.stream.getTracks().forEach((t) => t.stop())
+  current.releaseDevices()
   // the last sentence of an interview that is over is still being played
   const closeContext = () => {
     whenSilent = undefined
     if (playback?.context === current.context) playback = undefined
-    current.context.close().catch(() => {})
+    const completed = voice.status.value === 'ended'
+    const save = current.recorded ? endRecording(completed) : Promise.resolve()
+    save.finally(() => {
+      current.stream.getTracks().forEach((t) => t.stop())
+      current.context.close().catch(() => {})
+    })
   }
   if (sounds.size) whenSilent = closeContext
   else closeContext()

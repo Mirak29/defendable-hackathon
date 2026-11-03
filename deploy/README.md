@@ -97,6 +97,14 @@ interview asks for the microphone (it needs HTTPS).
   reboot. The container has a health check: `docker compose ps` shows `healthy`.
 - **Backups**, every 6 hours, 30 copies kept in the volume (`/data/backups`):
 
+  Interview camera/audio recordings are stored as bounded chunks in the same
+  SQLite database and included in these snapshots. Budget additional disk for
+  media and backup copies (up to 100 MiB per attempt). Expired recordings are
+  unavailable after 30 days and purged by the app; a recruiter can also delete
+  them. These operations do not rewrite existing backup files. Apply the
+  organisation's media retention/deletion policy to backups as well, and purge
+  expired recordings after restoring a snapshot before exposing the service.
+
   ```bash
   crontab -e
   0 */6 * * * cd /home/ubuntu/defendable && ./deploy/backup.sh >> backup.log 2>&1

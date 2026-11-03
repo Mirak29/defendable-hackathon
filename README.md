@@ -50,8 +50,42 @@ event is stored in this repository or in its history.
    [fixtures/offers/](fixtures/offers/)), review the brief and automatic checks,
    then approve it and create a candidate link.
 3. Open the candidate link, build and submit the solution, then talk with Oracle
-   using a microphone and headphones. Return to the recruiter space to inspect
-   the report: test results, quotes, code evidence and follow-up questions.
+   using a camera, microphone and headphones. After agreeing to recording, start
+   the conversation. Return to the recruiter space to inspect the report: test
+   results, quotes, code evidence and follow-up questions.
+
+### Recorded interviews and evidence replay
+
+The interview starts after an explicit camera/audio recording agreement. The
+candidate sees their muted camera preview at the bottom left, plus a recording
+indicator. One video combines their camera and microphone with Oracle's actual
+server-generated voice. The camera is not sent to AI models: the existing report
+analysis still reads the transcript and code only.
+
+MediaRecorder uploads ordered chunks while the interview runs. The final page
+waits for the last chunk to save. A lost device or failed upload stops the
+conversation with an explanation; resumed attempts are kept separately, and
+incomplete recordings are labelled. Recorded interviews require the server
+voice: browser speech synthesis cannot be mixed into the recorded audio. The
+developer voice lab still supports unrecorded audio and its fallback.
+
+The report has a private replay player. Transcript passages and supported quotes
+link to approximate server-event positions, with context before the passage.
+These positions are not word-aligned audio evidence. Older interviews without
+recordings still open normally. A pause or camera event is never interpreted as
+dishonesty or used as a skill score.
+
+Recordings are kept in two separate SQLite tables, so existing candidate tables
+need no reset. Access requires a current recruiter session in the owning
+company. Video requests support byte ranges for seeking and are never publicly
+cached. Uploads are capped at 2 MiB per request, 100 MiB per attempt, 20 minutes
+and five attempts per candidate. Media is unavailable after 30 days and purged
+on startup, on recording requests and every six hours while the server runs. The
+recruiting team can delete a recording from its report. Backup copies have their
+own retention and must be included in the operator's deletion policy.
+
+If a candidate cannot use a camera, the interface directs them to the recruiter
+for an adjustment; an alternate assessment workflow is not implemented here.
 
 The full journey takes longer than the demo video. Generation and the interview
 use live model calls. A fresh local installation starts with an empty company
