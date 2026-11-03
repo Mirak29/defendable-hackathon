@@ -14,6 +14,8 @@ import type { InterviewFacts } from '/api/prompts.ts'
 import { demoAssessment } from '/fixtures/demo.ts'
 import { demoFiles } from '/fixtures/demo-files.ts'
 import { programDemo, pythonSolution } from '/fixtures/program-demo.ts'
+import { activeRecording } from '/api/recordings.ts'
+import { findCandidate } from '/api/candidate.ts'
 
 let cached: Promise<InterviewFacts> | undefined
 let cachedProgram: Promise<InterviewFacts> | undefined
@@ -68,9 +70,19 @@ export const labConfig = {
  * required there). A leftover candidate cookie, from a link opened earlier in
  * this browser, no longer locks the lab.
  */
-export const voiceOptionsFor = async (req: Request) =>
-  await candidateVoice.authorize(req)
-    ? candidateVoice
-    : labConfig.enabled
-    ? { facts: labFacts }
-    : undefined
+export const voiceOptionsFor = async (req: Request) => {
+  if (await candidateVoice.authorize(req)) {
+    const c = findCandidate(
+      req.headers.get('cookie')?.match(/dfd_candidate=([^;]+)/)?.[1],
+    )
+    const recording = activeRecording(
+      c.candidateId,
+      new URL(req.url).searchParams.get('recording') ?? '',
+    )!
+    return {
+      ...candidateVoice,
+      recording: { id: recording.id, createdAt: recording.createdAt },
+    }
+  }
+  return labConfig.enabled ? { facts: labFacts } : undefined
+}

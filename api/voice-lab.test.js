@@ -3,6 +3,7 @@
 // interviews on the project's model keys).
 import { eq, test } from '/api/lib/test.ts'
 import { candidateVoice } from '/api/interview.ts'
+import { handleRecording } from '/api/recordings.ts'
 import {
   labConfig,
   labFacts,
@@ -15,10 +16,13 @@ import {
   submittedCandidate,
 } from '/api/lib/journey-test.js'
 
-const voiceRequest = (cookie) =>
-  new Request('http://localhost/api/voice', {
-    headers: cookie ? { cookie } : {},
-  })
+const voiceRequest = (cookie, recording) =>
+  new Request(
+    `http://localhost/api/voice${recording ? `?recording=${recording}` : ''}`,
+    {
+      headers: cookie ? { cookie } : {},
+    },
+  )
 
 const withLab = async (enabled, fn) => {
   const saved = labConfig.enabled
@@ -59,12 +63,24 @@ test('voice: who the interview is for', async (step) => {
       const member = await signup('VoiceRoute')
       const assessment = await approvedAssessment(member)
       const { cookies } = await submittedCandidate(member, assessment)
+      const created = await handleRecording(
+        new Request('http://localhost/api/candidate/recording', {
+          method: 'POST',
+          headers: {
+            origin: 'http://localhost',
+            cookie: `dfd_candidate=${cookies.dfd_candidate}`,
+          },
+          body: JSON.stringify({ accepted: true, mime: 'video/webm' }),
+        }),
+      )
+      const recording = await created.json()
       // with the lab off too: a real interview never depends on it
       await withLab(false, async () => {
         const options = await voiceOptionsFor(
-          voiceRequest(`dfd_candidate=${cookies.dfd_candidate}`),
+          voiceRequest(`dfd_candidate=${cookies.dfd_candidate}`, recording.id),
         )
-        eq(options, candidateVoice)
+        eq(options.facts, candidateVoice.facts)
+        eq(options.recording.id, recording.id)
       })
     },
   )
