@@ -1,6 +1,9 @@
 import { eq, test } from '/api/lib/test.ts'
+import { sql } from '@01edu/db'
 import {
   approvedAssessment,
+  call,
+  cookieOf,
   signup,
   submittedCandidate,
 } from '/api/lib/journey-test.js'
@@ -280,4 +283,124 @@ test('recording: consent, ordered uploads, private ranges and deletion', async (
       )
     },
   )
+})
+
+test('demo recordings: private to the login session that invited the candidate', async (step) => {
+  const previous = Deno.env.get('DEMO_ACCESS')
+  Deno.env.set('DEMO_ACCESS', '1')
+  try {
+    const signIn = async () => ({
+      dfd_session: cookieOf(
+        await call('POST', '/api/demo/session'),
+        'dfd_session',
+      ),
+    })
+    const owner = await signIn()
+    const visitor = await signIn()
+    const { id } = await (await call('POST', '/api/demo/assessment', {}, owner))
+      .json()
+    const { cookies, candidateId, invitation } = await submittedCandidate(
+      owner,
+      id,
+    )
+    const path = '/api/candidate/recording'
+    const info = await (await send('POST', path, cookies, {
+      accepted: true,
+      mime: 'video/webm',
+    })).json()
+    await send(
+      'PUT',
+      `${path}?id=${info.id}&sequence=0`,
+      cookies,
+      new Uint8Array([1, 2, 3]),
+    )
+    await send('POST', `${path}?id=${info.id}`, cookies, {
+      status: 'complete',
+      durationMs: 1000,
+    })
+    const listing = `/api/recruiter/recording?candidate=${candidateId}`
+    const media = `${listing}&id=${info.id}`
+    await step(
+      'the inviting session can list and play its own recording',
+      async () => {
+        const rows = await (await send('GET', listing, owner)).json()
+        eq(rows.map((r) => r.id), [info.id])
+        const response = await send('GET', media, owner)
+        eq(response.status, 200)
+        eq([...new Uint8Array(await response.arrayBuffer())], [1, 2, 3])
+      },
+    )
+    await step(
+      'another public demo login cannot list, stream, inspect or delete it',
+      async () => {
+        eq(await (await send('GET', listing, visitor)).json(), [])
+        for (const method of ['GET', 'HEAD', 'DELETE']) {
+          eq((await send(method, media, visitor)).status, 404)
+        }
+        eq(
+          (await send('GET', media, visitor, undefined, { range: 'bytes=0-1' }))
+            .status,
+          404,
+        )
+        eq((await send('HEAD', media, owner)).status, 200)
+      },
+    )
+    await step(
+      'legacy demo videos without a provable owner are hidden too',
+      async () => {
+        sql`DELETE FROM interviewRecordingOwner WHERE candidateId = ${candidateId}`
+          .run()
+        eq(await (await send('GET', listing, owner)).json(), [])
+        eq((await send('GET', media, owner)).status, 404)
+        eq((await send('DELETE', media, owner)).status, 404)
+      },
+    )
+    await step(
+      'legacy recovery requires the actual completed candidate session',
+      async () => {
+        Candidate.update({ candidateId, candidateFinishedAt: Date.now() })
+        const claim = `${listing}&claim=1`
+        eq((await send('POST', claim, visitor)).status, 404)
+        eq(
+          (await call('POST', '/api/candidate/start', { invitation }, visitor))
+            .status,
+          409,
+        )
+        const other = await submittedCandidate(visitor, id)
+        eq(
+          (await send('POST', claim, { ...visitor, ...other.cookies })).status,
+          404,
+        )
+        eq((await send('POST', claim, { ...owner, ...cookies })).status, 200)
+        const replay = await send('GET', media, owner)
+        eq(replay.status, 200)
+        eq([...new Uint8Array(await replay.arrayBuffer())], [1, 2, 3])
+        eq((await send('POST', claim, { ...visitor, ...cookies })).status, 404)
+        eq((await send('GET', media, visitor)).status, 404)
+      },
+    )
+    await step(
+      'starting a recording on an older invitation binds ownership without exposing it',
+      async () => {
+        const older = await submittedCandidate(owner, id)
+        sql`DELETE FROM interviewRecordingOwner WHERE candidateId = ${older.candidateId}`
+          .run()
+        const response = await send('POST', path, {
+          ...owner,
+          ...older.cookies,
+        }, { accepted: true, mime: 'video/webm' })
+        eq(response.status, 200)
+        const list = `/api/recruiter/recording?candidate=${older.candidateId}`
+        eq((await (await send('GET', list, owner)).json()).length, 1)
+        eq(await (await send('GET', list, visitor)).json(), [])
+      },
+    )
+    await step('signing out ends access even with the old cookie', async () => {
+      eq((await call('POST', '/api/logout', {}, owner)).status, 204)
+      eq((await send('GET', listing, owner)).status, 401)
+    })
+  } finally {
+    if (previous === undefined) Deno.env.delete('DEMO_ACCESS')
+    else Deno.env.set('DEMO_ACCESS', previous)
+  }
 })

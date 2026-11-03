@@ -83,6 +83,9 @@ type Session = {
   releaseDevices: () => void
 }
 let session: Session | undefined
+let opening = false
+let generation = 0
+let releasePending: (() => void) | undefined
 /** where the voice made by the server is played, and measured */
 let playback:
   | { context: AudioContext; gain: GainNode; analyser: AnalyserNode }
@@ -352,7 +355,12 @@ export const startVoice = () => openVoice(false)
 export const startRecordedVoice = () => openVoice(true)
 
 const openVoice = async (recordInterview: boolean) => {
-  if (session) return
+  if (session || opening || releasePending) return
+  opening = true
+  const attempt = ++generation
+  const ensureCurrent = () => {
+    if (attempt !== generation) throw Error('Interview start cancelled.')
+  }
   voice.lines.value = []
   voice.delays.value = []
   voice.partial.value = ''
@@ -377,13 +385,16 @@ const openVoice = async (recordInterview: boolean) => {
         autoGainControl: true,
       },
     })
+    ensureCurrent()
     context = new AudioContext()
     await context.resume()
+    ensureCurrent()
     const module = URL.createObjectURL(
       new Blob([WORKLET], { type: 'text/javascript' }),
     )
     await context.audioWorklet.addModule(module)
     URL.revokeObjectURL(module)
+    ensureCurrent()
 
     const url = new URL('api/voice', document.baseURI)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -403,6 +414,7 @@ const openVoice = async (recordInterview: boolean) => {
           stopVoice()
         },
       )
+      ensureCurrent()
       url.searchParams.set('recording', recordingId)
     }
     const socket = new WebSocket(url)
@@ -428,7 +440,7 @@ const openVoice = async (recordInterview: boolean) => {
     serverVoice = false
     const deviceLost = () => {
       voice.error.value =
-        'The camera or microphone disconnected. Reconnect it, then resume the conversation.'
+        'The camera or microphone disconnected. The interview has ended and cannot be resumed.'
       voice.status.value = 'error'
       stopVoice()
     }
@@ -450,20 +462,31 @@ const openVoice = async (recordInterview: boolean) => {
     // the voices of the browser load late: ask once so the first sentence has one
     speechSynthesis.getVoices()
   } catch (err) {
-    voice.error.value = err instanceof Error ? err.message : String(err)
-    voice.status.value = 'error'
-    stopVoice(false)
+    if (attempt === generation) {
+      voice.error.value = err instanceof Error ? err.message : String(err)
+      voice.status.value = 'error'
+      stopVoice(false)
+    }
     await endRecording(false)
     stream?.getTracks().forEach((track) => track.stop())
     await context?.close().catch(() => {})
+  } finally {
+    opening = false
   }
 }
 
 export const stopVoice = (tell = true, keepVoice = false) => {
-  if (!keepVoice) silence()
+  generation++
+  if (!keepVoice) {
+    silence()
+    releasePending?.()
+  }
   const current = session
   session = undefined
-  if (!current) return
+  if (!current) {
+    if (voice.status.value === 'connecting') voice.status.value = 'idle'
+    return
+  }
   if (tell && current.socket.readyState === WebSocket.OPEN) {
     current.socket.send(JSON.stringify({ type: 'stop' }))
   }
@@ -471,15 +494,19 @@ export const stopVoice = (tell = true, keepVoice = false) => {
   current.releaseDevices()
   // the last sentence of an interview that is over is still being played
   const closeContext = () => {
+    if (releasePending !== closeContext) return
+    releasePending = undefined
     whenSilent = undefined
     if (playback?.context === current.context) playback = undefined
     const completed = voice.status.value === 'ended'
     const save = current.recorded ? endRecording(completed) : Promise.resolve()
+    current.stream.getTracks().forEach((t) => t.stop())
     save.finally(() => {
       current.stream.getTracks().forEach((t) => t.stop())
       current.context.close().catch(() => {})
     })
   }
+  releasePending = closeContext
   if (sounds.size) whenSilent = closeContext
   else closeContext()
   voice.listening.value = false

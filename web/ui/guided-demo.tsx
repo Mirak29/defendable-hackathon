@@ -120,7 +120,7 @@ export const GuidedDemo = () => {
                 inspect the report. The assessment and code are examples; tests
                 run in the sandbox and the interview and report use the
                 configured AI models. Allow about 10–15 minutes and use a
-                microphone and headphones.
+                camera, microphone and headphones.
               </p>
               <div tw='flex gap-2 flex-wrap'>
                 <button
@@ -233,10 +233,11 @@ export const GuidedDemo = () => {
           : step === 3
           ? (
             <p tw='m-0 text-[13px] text-content-secondary leading-relaxed'>
-              Test your microphone, then start the interview. Explain the code
-              in your own words; if you used the example, you can say so. Try
-              creating a link, validation, conflicts and click counts. The guide
-              hides during the call.
+              Test your microphone, accept the camera and audio recording
+              notice, then start the interview. Explain the code in your own
+              words; if you used the example, you can say so. Try creating a
+              link, validation, conflicts and click counts. The guide hides
+              during the call.
             </p>
           )
           : step === 4

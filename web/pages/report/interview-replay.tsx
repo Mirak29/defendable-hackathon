@@ -1,6 +1,7 @@
 import { signal } from '@preact/signals'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { paths } from '/web/paths.ts'
+import { member } from '/web/lib/member-store.ts'
 import type { InterviewLine, RecordingView, ReportView } from '/web/types.ts'
 import { formatDateTime } from '/web/lib/format.ts'
 
@@ -71,7 +72,24 @@ export const InterviewReplay = ({ v }: { v: ReportView }) => {
     fetch(endpoint(v.candidateId), { signal: abort.signal }).then(
       async (response) => {
         if (!response.ok) throw Error('The recording list could not be loaded.')
-        const list: RecordingView[] = await response.json()
+        let list: RecordingView[] = await response.json()
+        if (!list.length && member.peek()?.demo) {
+          // Recover older recordings only when this browser can prove it was
+          // the candidate. The server refuses other visitors and reassignment.
+          const recovered = await fetch(`${endpoint(v.candidateId)}&claim=1`, {
+            method: 'POST',
+            signal: abort.signal,
+          })
+          if (recovered.ok) {
+            const retry = await fetch(endpoint(v.candidateId), {
+              signal: abort.signal,
+            })
+            if (!retry.ok) {
+              throw Error('The recording list could not be loaded.')
+            }
+            list = await retry.json()
+          }
+        }
         setRecordings(list)
         available.value = list.filter((r) => r.bytes > 0).map((r) => r.id)
         setSelectedId(
@@ -102,7 +120,22 @@ export const InterviewReplay = ({ v }: { v: ReportView }) => {
     if (selectedId !== request.id) setSelectedId(request.id)
     else if (video.current?.readyState) seek()
   }, [request, selectedId, recordings])
-  if (!loading && !error && !recordings.length) return null
+  if (!loading && !error && !recordings.length) {
+    if (!member.value?.demo) return null
+    return (
+      <section
+        aria-label='Interview recording'
+        tw='card p-4 flex flex-col gap-2'
+      >
+        <h2 tw='m-0 text-[17px] font-semibold'>Interview recording</h2>
+        <p tw='m-0 text-[13px] text-content-secondary'>
+          No replay is available in this demo session. Open the report in the
+          browser session that created the invitation or completed this
+          interview.
+        </p>
+      </section>
+    )
+  }
   return (
     <section
       id='interview-replay'
@@ -203,8 +236,10 @@ export const InterviewReplay = ({ v }: { v: ReportView }) => {
             {formatDateTime(new Date(selected.expiresAt).toISOString())}
           </p>
           <p tw='m-0 text-[12px] text-content-tertiary'>
-            Only members of your company space can access this recording. Camera
-            images are not analysed by AI.
+            {member.value?.demo
+              ? 'This demo recording is private to your current login session. Signing out ends access. '
+              : 'Only members of your company space can access this recording. '}
+            Camera images are not analysed by AI.
           </p>
           {!confirmDelete
             ? (

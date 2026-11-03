@@ -1,9 +1,9 @@
 // Private interview media. Binary uploads bypass the JSON route validator.
 // Separate tables leave existing candidate databases compatible.
 import { createTable, db, sql } from '@01edu/db'
-import { Assessment, Candidate } from '/api/schema.ts'
+import { Assessment, Candidate, demoCompanyId } from '/api/schema.ts'
 import { findCandidate } from '/api/candidate.ts'
-import { decodeSession } from '/api/member.ts'
+import { decodeSession, type MemberSession } from '/api/member.ts'
 import { json } from '/api/assessment.ts'
 import type { Progress, RecordingView } from '/web/types.ts'
 
@@ -19,6 +19,26 @@ const Recording = createTable('interviewRecording', {
   nextSequence: { type: 'INTEGER' },
   status: { type: 'TEXT' },
 })
+// The public demo member is shared. Media belongs to the login that invited
+// this candidate, not to every visitor using that member account.
+const RecordingOwner = createTable('interviewRecordingOwner', {
+  ownerRowId: { type: 'INTEGER', primary: true },
+  candidateId: { type: 'INTEGER', join: Candidate },
+  memberSessionId: { type: 'INTEGER' },
+})
+sql`CREATE UNIQUE INDEX IF NOT EXISTS recording_owner_candidate
+  ON interviewRecordingOwner(candidateId)`.run()
+const ownerOf = RecordingOwner.sql<'memberSessionId', number>`
+  SELECT memberSessionId FROM interviewRecordingOwner WHERE candidateId = ?
+`.get
+
+export const bindDemoRecordingOwner = (
+  candidateId: number,
+  session: MemberSession,
+) => {
+  if (session.companyId !== demoCompanyId) return
+  RecordingOwner.insert({ candidateId, memberSessionId: session.entryId })
+}
 createTable('interviewRecordingChunk', {
   chunkId: { type: 'INTEGER', primary: true },
   recordingId: { type: 'TEXT' },
@@ -143,7 +163,8 @@ const upload = async (req: Request, url: URL) => {
   const recordingId = url.searchParams.get('id') ?? ''
   if (req.method === 'POST' && !recordingId) {
     if (
-      c.candidateFinishedAt || !c.candidateSubmittedAt ||
+      c.candidateFinishedAt || c.candidateInterviewStartedAt ||
+      !c.candidateSubmittedAt ||
       json<Progress>(c.candidatePreparation)?.steps.at(-1)?.state !== 'done'
     ) {
       fail(409, 'The interview is not ready for recording.')
@@ -156,6 +177,17 @@ const upload = async (req: Request, url: URL) => {
     const count = countRecordings(c.candidateId)!
     if (count.count >= 5) {
       fail(409, 'Recording attempt limit reached. Contact the recruiter.')
+    }
+    // An invitation can predate demo isolation. The browser actually recording
+    // the interview can establish ownership, but never replace an existing owner.
+    if (
+      Assessment.require(c.assessmentId).companyId === demoCompanyId &&
+      !ownerOf(c.candidateId)
+    ) {
+      const recruiter = await decodeSession(cookie(req, 'dfd_session'))
+      if (recruiter?.companyId === demoCompanyId) {
+        bindDemoRecordingOwner(c.candidateId, recruiter)
+      }
     }
     const now = Date.now()
     const recordingId = crypto.randomUUID()
@@ -257,6 +289,44 @@ const replay = async (req: Request, url: URL) => {
     fail(404, 'Candidate not found.')
   }
   const recordingId = url.searchParams.get('id')
+  if (req.method === 'POST' && url.searchParams.get('claim') === '1') {
+    if (session!.companyId !== demoCompanyId || recordingId) {
+      fail(405, 'Method not allowed.')
+    }
+    db.transaction(() => {
+      const owner = ownerOf(candidateId)
+      if (owner) {
+        if (owner.memberSessionId !== session!.entryId) {
+          fail(404, 'Recording not found.')
+        }
+        return
+      }
+      // A completed interview's secret candidate cookie proves participation.
+      // Its public invitation alone must never grant access to old videos.
+      let subject
+      try {
+        subject = findCandidate(cookie(req, 'dfd_candidate'))
+      } catch { /* no proof */ }
+      if (
+        !c!.candidateFinishedAt || subject?.candidateId !== candidateId ||
+        !listRecordings({ candidateId, now: Date.now() }).some((r) =>
+          r.bytes > 0
+        )
+      ) {
+        fail(404, 'Recording not found.')
+      }
+      bindDemoRecordingOwner(candidateId, session!)
+    })()
+    return Response.json({ claimed: true })
+  }
+  if (
+    session!.companyId === demoCompanyId &&
+    ownerOf(candidateId)?.memberSessionId !== session!.entryId
+  ) {
+    // Old demo recordings have no safe owner to infer. Hide those too.
+    if (!recordingId && req.method === 'GET') return Response.json([])
+    fail(404, 'Recording not found.')
+  }
   if (!recordingId && req.method === 'GET') {
     const rows = listRecordings({ candidateId, now: Date.now() })
     return Response.json(rows.map(viewOf))

@@ -835,7 +835,7 @@ export const handleVoice = async (
     facts: (req: Request) => Promise<InterviewFacts>
     authorize?: (req: Request) => Promise<boolean>
     /** the interview opens */
-    onStart?: (req: Request) => void
+    onStart?: (req: Request) => void | boolean
     recording?: { id: string; createdAt: number }
     /** the interview is over: what was said, and whether the interviewer closed it */
     onFinish?: (
@@ -909,13 +909,21 @@ export const handleVoice = async (
     if (event.type === 'end') finish()
   })
   let finished = false
+  let began = false
   const finish = () => {
-    if (finished) return
+    if (finished || !began) return
     finished = true
     options.onFinish?.(asked, transcript, completed)
   }
   socket.onopen = () => {
-    options.onStart?.(asked)
+    if (options.onStart?.(asked) === false) {
+      socket.close(
+        1008,
+        'The interview has already started and cannot be resumed.',
+      )
+      return
+    }
+    began = true
     interview.start()
   }
   socket.onmessage = (e) => {

@@ -84,5 +84,6 @@ export const voiceOptionsFor = async (req: Request) => {
       recording: { id: recording.id, createdAt: recording.createdAt },
     }
   }
+  if (new URL(req.url).searchParams.has('recording')) return undefined
   return labConfig.enabled ? { facts: labFacts } : undefined
 }

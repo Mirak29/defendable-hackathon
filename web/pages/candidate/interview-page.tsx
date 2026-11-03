@@ -14,6 +14,7 @@ import {
   voice,
 } from '/web/lib/voice-client.ts'
 import { recording } from '/web/lib/interview-recording.ts'
+import { GuidedDemo } from '/web/ui/guided-demo.tsx'
 import { noCopy, trackIntegrity } from '/web/lib/integrity.ts'
 import { Spinner } from '/web/ui/spinner.tsx'
 import { OracleOrb, STAGE_BACKGROUND } from '/web/ui/oracle-orb.tsx'
@@ -150,10 +151,22 @@ export const InterviewPage = () => {
     if (status === 'none') navigate({ href: paths.candidate, replace: true })
     else if (view && !view.submittedAt) {
       navigate({ href: paths.workspace, replace: true })
-    } else if (view?.finishedAt && !closingLive) {
+    } else if (
+      (view?.finishedAt && !closingLive ||
+        view?.interviewStartedAt && live === 'idle') &&
+      captureStatus !== 'recording' && captureStatus !== 'saving'
+    ) {
       navigate({ href: paths.done, replace: true })
     }
-  }, [status, view?.submittedAt, view?.finishedAt, closingLive])
+  }, [
+    status,
+    view?.submittedAt,
+    view?.finishedAt,
+    view?.interviewStartedAt,
+    live,
+    captureStatus,
+    closingLive,
+  ])
 
   // The interviewer closed the interview: the server marks it finished. The
   // page stays until its last words are said, then a moment more.
@@ -290,6 +303,7 @@ export const InterviewPage = () => {
             : 'A conversation about your code'}
         </span>
       </header>
+      {asking && <GuidedDemo />}
       <div tw='flex-1 min-h-0 flex flex-col lg:flex-row'>
         <section
           aria-label='Oracle'
@@ -394,7 +408,9 @@ export const InterviewPage = () => {
                   for replay by the recruiting team. The recording is available
                   for 30 days. Camera images are not sent to AI models. Use
                   headphones. If you cannot use a camera, contact the recruiter
-                  for an adjustment before starting.
+                  for an adjustment before starting. Once the interview starts,
+                  closing or refreshing this page, or losing the connection,
+                  ends it permanently. Switching tabs does not end it.
                 </p>
                 {!demo && (
                   <label tw='flex items-start gap-2 text-left text-[13px]'>

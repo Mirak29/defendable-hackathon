@@ -2129,7 +2129,7 @@ index 2d5d576..0f706d3 100644
    })
  })
 diff --git a/api/candidate.ts b/api/candidate.ts
-index 9a19ccb..e040e9b 100644
+index 9a19ccb..81560e9 100644
 --- a/api/candidate.ts
 +++ b/api/candidate.ts
 @@ -1,63 +1,84 @@
@@ -2373,7 +2373,7 @@ index 9a19ccb..e040e9b 100644
      assessmentId,
      candidateCreatedAt: now,
      candidateInvitation: invitation,
-@@ -191,62 +228,60 @@ export const inviteCandidate = (
+@@ -191,62 +228,66 @@ export const inviteCandidate = (
      candidateEmail: email,
      candidateProfileUrl: profileUrl || undefined,
      candidateNote: note || undefined,
@@ -2414,6 +2414,12 @@ index 9a19ccb..e040e9b 100644
 +export const startCandidate = (invitation: string, language?: Language) => {
    const { c, a } = findInvitation(invitation)
    const state = invitationState(c)
++  if (c.candidateInterviewStartedAt || c.candidateFinishedAt) {
++    throw new respond.ConflictError({
++      message:
++        'The interview has already started or ended and cannot be resumed.',
++    })
++  }
    if (state === 'expired' || state === 'revoked') {
      throw new respond.BadRequestError({
 -      message: `Ce lien n’est plus valable. Demandez un nouveau lien à ${
@@ -2457,7 +2463,7 @@ index 9a19ccb..e040e9b 100644
    })
    Entry.insert.CANDIDATE_BUILD_STARTED({
      companyId: companyOfAssessment(a.assessmentId),
-@@ -261,7 +296,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
+@@ -261,7 +302,9 @@ export const startCandidate = (invitation: string, demo: boolean) => {
  export const findCandidate = (token?: string) => {
    const row = token ? byToken({ token }) : undefined
    if (!row) {
@@ -2468,7 +2474,7 @@ index 9a19ccb..e040e9b 100644
    }
    return row
  }
-@@ -272,27 +309,24 @@ const deadline = (c: CandidateRow) =>
+@@ -272,27 +315,24 @@ const deadline = (c: CandidateRow) =>
    (c.candidateStartedAt ?? Date.now()) +
    assessmentOf(c).assessmentDuration * 60_000
  
@@ -2501,7 +2507,7 @@ index 9a19ccb..e040e9b 100644
      assessment: {
        title: spec.title,
        company: spec.company,
-@@ -308,6 +342,7 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -308,6 +348,7 @@ export const toView = (c: CandidateRow): CandidateView => {
        constraints: spec.constraints,
        publicTests: spec.tests.filter((t) => t.visibility === 'public'),
        hiddenCount: spec.tests.filter((t) => t.visibility !== 'public').length,
@@ -2509,7 +2515,7 @@ index 9a19ccb..e040e9b 100644
      },
      startedAt: c.candidateStartedAt ?? undefined,
      submittedAt: c.candidateSubmittedAt ?? undefined,
-@@ -315,58 +350,118 @@ export const toView = (c: CandidateRow): CandidateView => {
+@@ -315,58 +356,119 @@ export const toView = (c: CandidateRow): CandidateView => {
      declaredTools: json<string[]>(c.candidateTools) ?? [],
      files: json<CandidateFiles>(c.candidateFiles) ?? {},
      savedAt: c.candidateSavedAt ?? undefined,
@@ -2517,6 +2523,7 @@ index 9a19ccb..e040e9b 100644
      preparation: json(c.candidatePreparation),
 -    questionsStartedAt: c.candidateQuestionsStartedAt ?? undefined,
 +    interviewStartedAt: c.candidateInterviewStartedAt ?? undefined,
++    interviewInterrupted: readIntegrity(c).interrupted || undefined,
      finishedAt: c.candidateFinishedAt ?? undefined,
 -    answeredCount: Object.values(answers).filter((a) => a.sentAt).length,
    }
@@ -2626,12 +2633,12 @@ index 9a19ccb..e040e9b 100644
 +  kindOf(specOf(assessmentOf(c))) === 'program'
 +    ? checkProgram(languageOf(c), files)
 +    : checkTypes(files)
-+
+ 
+-/* ---------- submission (C3) → preparation (C4) ---------- */
 +/* ---------- submission and preparation of the interview ---------- */
 +
 +const PREPARATION_STEPS = 3
- 
--/* ---------- submission (C3) → preparation (C4) ---------- */
++
 +const saveProgress = (c: CandidateRow, progress: Progress) => {
 +  Candidate.update({
 +    candidateId: c.candidateId,
@@ -2647,7 +2654,7 @@ index 9a19ccb..e040e9b 100644
  
  export const submitCode = (
    c: CandidateRow,
-@@ -376,261 +471,237 @@ export const submitCode = (
+@@ -376,261 +478,241 @@ export const submitCode = (
      auto?: boolean
    },
  ) => {
@@ -2876,7 +2883,8 @@ index 9a19ccb..e040e9b 100644
 +
 +/** the interview opens: the clock of the interview starts, once */
 +export const startInterview = (c: CandidateRow) => {
-+  if (c.candidateInterviewStartedAt) return
++  c = Candidate.require(c.candidateId)
++  if (c.candidateInterviewStartedAt || c.candidateFinishedAt) return false
    Candidate.update({
      candidateId: c.candidateId,
 -    candidateAnswers: answers,
@@ -2899,6 +2907,7 @@ index 9a19ccb..e040e9b 100644
 -    buildReport(c.candidateId)
 -  }
 -  return { finished }
++  return true
  }
  
 -/* ---------- documentation assistant (C6) ---------- */
@@ -2953,6 +2962,7 @@ index 9a19ccb..e040e9b 100644
 +    copies: stored.copies ?? 0,
 +    extendedScreen: stored.extendedScreen,
 +    away: stored.away,
++    interrupted: stored.interrupted,
    }
  }
  
@@ -3063,8 +3073,7 @@ index 9a19ccb..e040e9b 100644
 +
 +/**
 + * The interview is over. The transcript is kept either way; the candidate is
-+ * finished only when the interviewer closed it, otherwise they may start over
-+ * (connection lost, page closed).
++ * finished on either outcome. A closed connection cannot be resumed.
 + */
 +export const finishInterview = (
 +  c: CandidateRow,
@@ -3076,9 +3085,11 @@ index 9a19ccb..e040e9b 100644
 +  Candidate.update({
 +    candidateId: c.candidateId,
 +    candidateInterview: transcript,
-+    ...(completed ? { candidateFinishedAt: Date.now() } : {}),
++    candidateFinishedAt: Date.now(),
++    ...(!completed
++      ? { candidateIntegrity: { ...readIntegrity(c), interrupted: true } }
++      : {}),
 +  })
-+  if (!completed) return
 +  Entry.insert.CANDIDATE_FINISHED({
      companyId: companyOfAssessment(c.assessmentId),
      assessmentId: c.assessmentId,
@@ -6764,7 +6775,7 @@ index 8d00735..4e73220 100644
    }
    pending.set(email, (pending.get(email) ?? 0) + 1)
 diff --git a/api/recovery.ts b/api/recovery.ts
-index 952c4db..9626751 100644
+index 952c4db..074d5cc 100644
 --- a/api/recovery.ts
 +++ b/api/recovery.ts
 @@ -1,14 +1,14 @@
@@ -6785,7 +6796,7 @@ index 952c4db..9626751 100644
    ...progress,
    steps: (progress?.steps ?? []).map((s) =>
      s.state === 'run' ? { state: 'error' } : s
-@@ -22,24 +22,26 @@ const generating = Assessment.sql`
+@@ -22,24 +22,46 @@ const generating = Assessment.sql`
  
  const preparing = Candidate.sql`
    SELECT * FROM candidate
@@ -6807,6 +6818,27 @@ index 952c4db..9626751 100644
 -      assessmentId: a.assessmentId,
 -      assessmentStatus: a.assessmentSpec ? 'draft' : 'failed',
 -      assessmentGeneration: interrupt(json<Progress>(a.assessmentGeneration)),
++  const interviews = Candidate.sql`
++    SELECT * FROM candidate WHERE candidateInterviewStartedAt IS NOT NULL
++    AND candidateFinishedAt IS NULL
++  `.all()
++  for (const c of interviews) {
++    Candidate.update({
++      candidateId: c.candidateId,
++      candidateFinishedAt: Date.now(),
++      candidateIntegrity: {
++        ...(json<Record<string, unknown>>(c.candidateIntegrity) ?? {}),
++        interrupted: true,
++      },
++      candidateReport: {
++        status: 'failed',
++        error:
++          'The interview was interrupted by a server restart and cannot be resumed.',
++        at: new Date().toISOString(),
++      },
+     })
+-    log.warn('job-interrupted', { assessmentId: a.assessmentId })
++  }
 +  for (const c of reporting()) {
 +    const stored = json<{ status: string }>(c.candidateReport)
 +    if (stored?.status !== 'pending') continue
@@ -6817,13 +6849,12 @@ index 952c4db..9626751 100644
 +        error: INTERRUPTED,
 +        at: new Date().toISOString(),
 +      },
-     })
--    log.warn('job-interrupted', { assessmentId: a.assessmentId })
++    })
 +    log.warn('job-interrupted', { candidateId: c.candidateId })
    }
    for (const c of preparing()) {
      const progress = json<Progress>(c.candidatePreparation)
-@@ -48,13 +50,15 @@ export const recoverInterruptedJobs = () => {
+@@ -48,13 +70,15 @@ export const recoverInterruptedJobs = () => {
        candidateId: c.candidateId,
        candidatePreparation: interrupt(progress),
      })
@@ -7132,10 +7163,10 @@ index 58b4786..777e643 100644
    log.info('reference-check', {
      passed: results.filter((r) => r.passed).length,
 diff --git a/api/report.test.js b/api/report.test.js
-index f8db3f1..35714ff 100644
+index f8db3f1..605bec7 100644
 --- a/api/report.test.js
 +++ b/api/report.test.js
-@@ -1,161 +1,782 @@
+@@ -1,161 +1,791 @@
 +// The report on the real routes, against a local mock of the model: the facts
 +// the server measures, the evidence of the model checked against what exists,
 +// the failure and its retry, the human decision, and the start of the report
@@ -7677,17 +7708,26 @@ index f8db3f1..35714ff 100644
    })
 +
 +  await step(
-+    'a candidate who leaves gets no report by themselves',
++    'a disconnected candidate gets a final report with an interrupted interview',
 +    async () => {
 +      const other = await setup('Leaves')
 +      const req = new Request('http://localhost/api/voice', {
 +        headers: { cookie: `dfd_candidate=${other.cookies.dfd_candidate}` },
 +      })
-+      candidateVoice.onFinish(req, TRANSCRIPT.slice(0, 3), false)
-+      await new Promise((r) => setTimeout(r, 200))
++      await withModel(answer(skillNames(other.assessment)), async () => {
++        candidateVoice.onFinish(req, TRANSCRIPT.slice(0, 3), false)
++        for (let i = 0; i < 100; i++) {
++          if (
++            (await view(other.member, other.candidateId)).status === 'ready'
++          ) break
++          await new Promise((r) => setTimeout(r, 50))
++        }
++      })
 +      const v = await view(other.member, other.candidateId)
-+      eq(v.status, 'waiting')
++      eq(v.status, 'ready')
 +      eq(v.facts.interviewCompleted, false)
++      eq(v.facts.integrity.interrupted, true)
++      eq(!!Candidate.require(other.candidateId).candidateFinishedAt, true)
 +      eq(v.transcript.length, 3)
 +    },
 +  )
@@ -8045,10 +8085,10 @@ index f8db3f1..35714ff 100644
 +  )
 +})
 diff --git a/api/report.ts b/api/report.ts
-index 75d54dc..a8dec92 100644
+index 75d54dc..d90dffb 100644
 --- a/api/report.ts
 +++ b/api/report.ts
-@@ -1,1032 +1,789 @@
+@@ -1,1032 +1,792 @@
 -import { contentLang, tc, withContentLang } from '/api/lib/content-lang.ts'
 -import { demoOf } from '/fixtures/demos.ts'
 -import { companyOfAssessment } from '/api/schema.ts'
@@ -8345,12 +8385,13 @@ index 75d54dc..a8dec92 100644
 +    ),
 +    declaredTools: json<string[]>(c.candidateTools) ?? [],
 +    autoSubmitted: !!c.candidateAutoSubmitted,
-+    interviewCompleted: !!c.candidateFinishedAt,
++    interviewCompleted: !!c.candidateFinishedAt &&
++      !readIntegrity(c).interrupted,
 +    integrity: readIntegrity(c),
 +    answers: answersOf(
 +      transcriptOf(c),
 +      readIntegrity(c).away,
-+      !!c.candidateFinishedAt,
++      !!c.candidateFinishedAt && !readIntegrity(c).interrupted,
 +    ),
 +    candidateTurns: lines.length,
 +    candidateWords: lines.reduce(
@@ -8798,7 +8839,9 @@ index 75d54dc..a8dec92 100644
 -  const demoReport = demoOf(contentLang()).report
 +  const limits = [...raw.limits]
 +  if (!facts.interviewCompleted) {
-+    limits.unshift('The candidate left before Oracle closed the interview.')
++    limits.unshift(
++      'The interview connection ended before Oracle closed it. The session cannot be resumed; a closed page, refresh or network failure can cause this.',
++    )
 +  }
 +  if (facts.candidateTurns < 3) {
 +    limits.unshift('The conversation is short: there are few answers to read.')
@@ -9180,12 +9223,14 @@ index 75d54dc..a8dec92 100644
  }
  
 -/* ---------- job ---------- */
--
++/* ---------- the job ---------- */
+ 
 -const pace = (trace: AiTrace) =>
 -  trace.replay && APP_ENV !== 'test'
 -    ? new Promise((r) => setTimeout(r, 800))
 -    : Promise.resolve()
-+/* ---------- the job ---------- */
++const store = (candidateId: number, report: StoredReport) =>
++  Candidate.update({ candidateId, candidateReport: report })
  
 -const LIMITS = () => [
 -  tc(
@@ -9205,13 +9250,11 @@ index 75d54dc..a8dec92 100644
 -    'A skill assessed by questions only does not go beyond medium confidence.',
 -  ),
 -]
-+const store = (candidateId: number, report: StoredReport) =>
-+  Candidate.update({ candidateId, candidateReport: report })
++const storedOf = (c: CandidateRow) => json<StoredReport>(c.candidateReport)
  
 -const sectionOf = (methods: string[]) =>
 -  methods[0] === 'Tests' ? 's2' : methods[0] === 'Analyse du code' ? 's3' : 's4'
-+const storedOf = (c: CandidateRow) => json<StoredReport>(c.candidateReport)
- 
+-
 -/** R6 job, in the language of the assessment */
 -export const buildReport = (candidateId: number) =>
 -  withContentLang(
@@ -9761,10 +9804,10 @@ index 75d54dc..a8dec92 100644
 -
 -export type { Question }
 diff --git a/api/routes.ts b/api/routes.ts
-index 20228a8..45fb559 100644
+index 20228a8..6ad29ce 100644
 --- a/api/routes.ts
 +++ b/api/routes.ts
-@@ -3,25 +3,18 @@ import type { RequestContext } from '@01edu/api/context'
+@@ -3,25 +3,19 @@ import type { RequestContext } from '@01edu/api/context'
  import { makeRouter, route } from '@01edu/api/router'
  import { respond } from '@01edu/api/response'
  import { metrics } from '@01edu/db'
@@ -9788,6 +9831,7 @@ index 20228a8..45fb559 100644
 +import { type LinkSent, sendCandidateLink } from '/api/email.ts'
 +import { reportView, saveDecision, startReport } from '/api/report.ts'
 +import { prepareGuidedDemo } from '/api/guided-demo.ts'
++import { bindDemoRecordingOwner } from '/api/recordings.ts'
  import {
    Assessment,
    Candidate,
@@ -9796,7 +9840,7 @@ index 20228a8..45fb559 100644
    demoMemberId,
    entryInsertListeners,
    type EntryListener,
-@@ -49,86 +42,97 @@ import {
+@@ -49,86 +43,97 @@ import {
    updateAssessment,
  } from '/api/assessment.ts'
  import {
@@ -9927,7 +9971,7 @@ index 20228a8..45fb559 100644
  // Same host only: behind a TLS proxy the server sees http:// while the
  // browser sends Origin: https://, so the scheme is not compared.
  const checkOrigin = (ctx: RequestContext) => {
-@@ -138,13 +142,13 @@ const checkOrigin = (ctx: RequestContext) => {
+@@ -138,13 +143,13 @@ const checkOrigin = (ctx: RequestContext) => {
      host = origin ? new URL(origin).host : undefined
    } catch { /* malformed Origin: refused below */ }
    if (origin && host !== ctx.url.host) {
@@ -9943,7 +9987,7 @@ index 20228a8..45fb559 100644
    }
    const response = respond.OK(memberView(session.memberId))
    setCookie(response.headers, {
-@@ -160,32 +164,13 @@ const sessionResponse = async (token: string) => {
+@@ -160,32 +165,13 @@ const sessionResponse = async (token: string) => {
    return response
  }
  
@@ -9977,7 +10021,7 @@ index 20228a8..45fb559 100644
  // The framework's default validator report echoes invalid values. Auth fields
  // must never be echoed, even when a password has an unexpected JSON type.
  const signupInput = {
-@@ -246,7 +231,7 @@ const defs = {
+@@ -246,7 +232,7 @@ const defs = {
    'POST/api/demo/session': route({
      fn: async (ctx) => {
        if (!demoAccess()) {
@@ -9986,7 +10030,7 @@ index 20228a8..45fb559 100644
        }
        checkOrigin(ctx)
        return sessionResponse(await generateSession(demoMemberId))
-@@ -256,7 +241,13 @@ const defs = {
+@@ -256,7 +242,13 @@ const defs = {
    'GET/api/demo': route({
      fn: () => ({ available: demoAccess() }),
      output: OBJ({ available: BOOL('Demo account available (DEMO_ACCESS)') }),
@@ -10001,7 +10045,7 @@ index 20228a8..45fb559 100644
    }),
    'GET/api/health': route({
      fn: () => ({ status: 'ok', env: APP_ENV }),
-@@ -267,13 +258,13 @@ const defs = {
+@@ -267,13 +259,13 @@ const defs = {
      description: 'Healthcheck used by docker and the dev tooling',
    }),
  
@@ -10017,7 +10061,7 @@ index 20228a8..45fb559 100644
    }),
  
    'GET/api/assessment': route({
-@@ -281,7 +272,7 @@ const defs = {
+@@ -281,7 +273,7 @@ const defs = {
      fn: (ctx, { id: value }) => getAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: STR('Assessment id') }),
      output: ASSESSMENT,
@@ -10026,7 +10070,7 @@ index 20228a8..45fb559 100644
    }),
  
    'POST/api/assessment/prefill': route({
-@@ -293,35 +284,35 @@ const defs = {
+@@ -293,35 +285,35 @@ const defs = {
        skills: ARR(STR('Skill name'), 'Suggested skills, 5 at most'),
        trace: TRACE,
      }),
@@ -10070,7 +10114,7 @@ index 20228a8..45fb559 100644
          memberOf(ctx),
        )
      },
-@@ -330,21 +321,21 @@ const defs = {
+@@ -330,21 +322,21 @@ const defs = {
        level: LEVEL,
        durationMin: NUM('60, 90 or 120 minutes'),
        skills: ARR(STR('Skill name'), '1 to 5 skills'),
@@ -10098,7 +10142,7 @@ index 20228a8..45fb559 100644
    }),
  
    'POST/api/assessment/update': route({
-@@ -360,7 +351,7 @@ const defs = {
+@@ -360,7 +352,7 @@ const defs = {
        mission: optional(STR('New mission, as the candidate reads it')),
      }),
      output: ASSESSMENT,
@@ -10107,7 +10151,7 @@ index 20228a8..45fb559 100644
    }),
  
    'POST/api/assessment/deleted-tests': route({
-@@ -374,7 +365,7 @@ const defs = {
+@@ -374,7 +366,7 @@ const defs = {
        testIds: ARR(STR('Test id'), 'Tests removed before approval'),
      }),
      output: ASSESSMENT,
@@ -10116,7 +10160,7 @@ index 20228a8..45fb559 100644
    }),
  
    'POST/api/assessment/regenerate': route({
-@@ -385,7 +376,7 @@ const defs = {
+@@ -385,7 +377,7 @@ const defs = {
        id: NUM('Assessment id'),
        instruction: STR('Recruiter instruction'),
      }),
@@ -10125,7 +10169,7 @@ index 20228a8..45fb559 100644
    }),
  
    'POST/api/assessment/approve': route({
-@@ -393,10 +384,10 @@ const defs = {
+@@ -393,10 +385,10 @@ const defs = {
      fn: (ctx, { id: value }) => approveAssessment(ownedAssessment(ctx, value)),
      input: OBJ({ id: NUM('Assessment id') }),
      output: ASSESSMENT,
@@ -10138,7 +10182,15 @@ index 20228a8..45fb559 100644
  
    'POST/api/candidate/invite': route({
      authorize: withMember,
-@@ -418,15 +409,18 @@ const defs = {
+@@ -406,6 +398,7 @@ const defs = {
+         memberOf(ctx).memberId,
+         { ...identity, source: fromCv ? 'cv' : 'manual' },
+       )
++      bindDemoRecordingOwner(invited.candidateId, memberOf(ctx))
+       const email = sendEmail
+         ? await sendCandidateLink(Candidate.require(invited.candidateId))
+         : undefined
+@@ -418,15 +411,18 @@ const defs = {
        email: STR('Email'),
        profileUrl: optional(STR('LinkedIn, GitHub or portfolio (https://)')),
        note: optional(STR('Internal note, never shown to the candidate')),
@@ -10159,7 +10211,7 @@ index 20228a8..45fb559 100644
    }),
  
    'POST/api/candidate/send-link': route({
-@@ -435,7 +429,7 @@ const defs = {
+@@ -435,7 +431,7 @@ const defs = {
        sendCandidateLink(Candidate.require(ownedCandidate(ctx, candidate))),
      input: OBJ({ candidate: NUM('Candidate id') }),
      output: JSON_OF<LinkSent>('Sent, or the reason of the failure'),
@@ -10168,7 +10220,7 @@ index 20228a8..45fb559 100644
    }),
  
    'POST/api/candidate/cv': route({
-@@ -445,75 +439,50 @@ const defs = {
+@@ -445,75 +441,50 @@ const defs = {
        // base64 of 5 MB at most: the file never leaves this request
        if (data.length > Math.ceil(CV_MAX_BYTES / 3) * 4 + 4) {
          throw new respond.BadRequestError({
@@ -10262,7 +10314,7 @@ index 20228a8..45fb559 100644
        const response = respond.OK(toView(findCandidate(token)))
        setCookie(response.headers, {
          name: CANDIDATE_COOKIE,
-@@ -528,10 +497,12 @@ const defs = {
+@@ -528,10 +499,12 @@ const defs = {
      },
      input: OBJ({
        invitation: STR('Token of the candidate link'),
@@ -10277,7 +10329,7 @@ index 20228a8..45fb559 100644
    }),
  
    'GET/api/candidate/me': route({
-@@ -545,18 +516,36 @@ const defs = {
+@@ -545,18 +518,36 @@ const defs = {
      authorize: withCandidate,
      fn: (ctx, { files }) => saveFiles(candidateOf(ctx), files),
      input: OBJ({ files: FILES }),
@@ -10320,7 +10372,7 @@ index 20228a8..45fb559 100644
        files: FILES,
      }),
      output: JSON_OF<{
-@@ -565,15 +554,15 @@ const defs = {
+@@ -565,15 +556,15 @@ const defs = {
        own?: OwnTestsRun
        results?: TestResult[]
      }>('Output of the sandbox'),
@@ -10339,7 +10391,7 @@ index 20228a8..45fb559 100644
    }),
  
    'POST/api/candidate/submit': route({
-@@ -582,7 +571,7 @@ const defs = {
+@@ -582,7 +573,7 @@ const defs = {
        const c = candidateOf(ctx)
        if (!tools.length) {
          throw new respond.BadRequestError({
@@ -10348,7 +10400,7 @@ index 20228a8..45fb559 100644
          })
        }
        if (files && !c.candidateSubmittedAt) saveFiles(c, files)
-@@ -594,76 +583,54 @@ const defs = {
+@@ -594,76 +585,54 @@ const defs = {
      },
      input: OBJ({
        tools: ARR(STR('AI tool'), 'Declared AI tools'),
@@ -10456,7 +10508,7 @@ index 20228a8..45fb559 100644
    }),
  
    /* ---------- events ---------- */
-@@ -675,27 +642,22 @@ const defs = {
+@@ -675,27 +644,22 @@ const defs = {
            message: 'Must accept event-stream',
          })
        }
@@ -10491,7 +10543,7 @@ index 20228a8..45fb559 100644
          }
        }
        let listener: EntryListener
-@@ -705,9 +667,9 @@ const defs = {
+@@ -705,9 +669,9 @@ const defs = {
            controller.enqueue(ACK_PAYLOAD)
            ackInterval = setInterval(async () => {
              try {
@@ -10503,7 +10555,7 @@ index 20228a8..45fb559 100644
                ) {
                  clearInterval(ackInterval)
                  entryInsertListeners.delete(listener)
-@@ -737,7 +699,6 @@ const defs = {
+@@ -737,7 +701,6 @@ const defs = {
            entryInsertListeners.delete(listener)
          },
        })
@@ -10511,7 +10563,7 @@ index 20228a8..45fb559 100644
        return new Response(body, {
          headers: {
            'Content-Type': 'text/event-stream',
-@@ -748,11 +709,38 @@ const defs = {
+@@ -748,11 +711,38 @@ const defs = {
      },
      input: OBJ({
        assessment: optional(STR('Followed assessment')),
@@ -15690,7 +15742,7 @@ index a8ac71c..0ee92d2 100644
          </footer>
        </article>
 diff --git a/web/pages/candidate/done-page.tsx b/web/pages/candidate/done-page.tsx
-index bd86fb1..ead6195 100644
+index bd86fb1..4295243 100644
 --- a/web/pages/candidate/done-page.tsx
 +++ b/web/pages/candidate/done-page.tsx
 @@ -1,8 +1,7 @@
@@ -15726,12 +15778,14 @@ index bd86fb1..ead6195 100644
    return (
      <main tw='flex-1 flex items-center justify-center px-4 sm:px-6 py-12'>
        <article tw='w-[560px] max-w-full p-6 sm:p-8 card rounded-[14px] shadow-[var(--shadow)] flex flex-col gap-[18px]'>
-@@ -33,29 +30,21 @@ export const DonePage = () => {
+@@ -33,29 +30,25 @@ export const DonePage = () => {
            data-test='done-title'
            tw='m-0 text-[22px] sm:text-[24px] font-semibold'
          >
 -          {t('Évaluation terminée. Merci.', 'Assessment finished. Thank you.')}
-+          Assessment finished. Thank you.
++          {s?.interviewInterrupted
++            ? 'Interview interrupted.'
++            : 'Assessment finished. Thank you.'}
          </h1>
          <dl tw='m-0 grid grid-cols-1 sm:grid-cols-2 gap-2.5'>
 +          <Stat label='Building' value={formatMinutes(buildMin)} />
@@ -15754,6 +15808,8 @@ index bd86fb1..ead6195 100644
 -            'Le recruteur reçoit un rapport. La décision finale est prise par une personne, pas par l’IA.',
 -            'The recruiter receives a report. The final decision is made by a person, not by AI.',
 -          )}
++          {s?.interviewInterrupted &&
++            'The interview connection ended. This assessment is closed and cannot be resumed. '}
 +          The recruiter receives a report. The final decision is made by a
 +          person, not by AI.
          </p>
@@ -18979,10 +19035,10 @@ index a38b80c..f87ba5a 100644
              )}
            </AnchorLink>
 diff --git a/web/pages/report/report-page.tsx b/web/pages/report/report-page.tsx
-index 6370463..274eb09 100644
+index 6370463..19f04e0 100644
 --- a/web/pages/report/report-page.tsx
 +++ b/web/pages/report/report-page.tsx
-@@ -1,222 +1,721 @@
+@@ -1,222 +1,728 @@
 +// The report of a candidate. Two kinds of content, never mixed: what the
 +// server measured (verified facts) and what the AI read (interpretations, each
 +// with the evidence that was checked and a confidence). There is no global
@@ -19512,6 +19568,13 @@ index 6370463..274eb09 100644
 +        <Stat label='Answers spoken'>{f.candidateTurns}</Stat>
 +        <Stat label='Words spoken'>{f.candidateWords}</Stat>
 +      </div>
++      {f.integrity?.interrupted && (
++        <p role='status' tw='m-0 p-3 rounded-lg bg-warn-soft text-[13px]'>
++          Interview interrupted — no further attempt is allowed. The connection
++          ended before Oracle closed the conversation. A closed page, refresh or
++          network failure can cause this. The final decision remains yours.
++        </p>
++      )}
 +      {f.integrity && <Conditions integrity={f.integrity} />}
 +      {f.answers && f.answers.length > 0 && <AnswerTimes answers={f.answers} />}
 +      {failed.length > 0 && (
@@ -21494,7 +21557,7 @@ index d2f40f2..e8db200 100644
    // surface
    'surface-page': ['oklch(0.975 0.004 272)', '#161826'],
 diff --git a/web/types.ts b/web/types.ts
-index 83f3535..93bd7b6 100644
+index 83f3535..7b11535 100644
 --- a/web/types.ts
 +++ b/web/types.ts
 @@ -1,9 +1,15 @@
@@ -21769,7 +21832,7 @@ index 83f3535..93bd7b6 100644
  export type Invitation = {
    invitation: string
    title: string
-@@ -208,15 +241,74 @@ export type Invitation = {
+@@ -208,15 +241,76 @@ export type Invitation = {
    durationMin: number
    firstName?: string
    state: InvitationState
@@ -21816,6 +21879,8 @@ index 83f3535..93bd7b6 100644
 + * say how it went, not what the candidate understands).
 + */
 +export type InterviewIntegrity = {
++  /** The connection ended before Oracle closed the interview; no restart. */
++  interrupted?: boolean
 +  /** times the candidate came back to an interview already begun */
 +  resumes: number
 +  /** times the page was left (tab hidden, window out of focus), and for how long */
@@ -21846,7 +21911,7 @@ index 83f3535..93bd7b6 100644
    assessment: {
      title: string
      company: string
-@@ -228,162 +320,138 @@ export type CandidateView = {
+@@ -228,162 +322,139 @@ export type CandidateView = {
      constraints: string[]
      publicTests: TestCase[]
      hiddenCount: number
@@ -21865,6 +21930,7 @@ index 83f3535..93bd7b6 100644
    preparation?: Progress
 -  questionsStartedAt?: number
 +  interviewStartedAt?: number
++  interviewInterrupted?: boolean
    finishedAt?: number
 -  answeredCount: number
  }

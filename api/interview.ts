@@ -5,7 +5,6 @@ import {
   findCandidate,
   finishInterview,
   preparation,
-  recordResume,
   startInterview,
   type StoredResults,
 } from '/api/candidate.ts'
@@ -99,7 +98,8 @@ export const candidateVoice = {
       const c = candidateOf(req)
       const recording = new URL(req.url).searchParams.get('recording') ?? ''
       return Promise.resolve(
-        !c.candidateFinishedAt && !c.candidateRevokedAt && !!factsOf(c) &&
+        !c.candidateFinishedAt && !c.candidateInterviewStartedAt &&
+          !c.candidateRevokedAt && !!factsOf(c) &&
           !!activeRecording(c.candidateId, recording),
       )
     } catch {
@@ -109,19 +109,16 @@ export const candidateVoice = {
   facts: (req: Request) => Promise.resolve(factsOf(candidateOf(req))!),
   onStart: (req: Request) => {
     const c = candidateOf(req)
-    // words were already said: this is a return, not a beginning
-    if (json<InterviewLine[]>(c.candidateInterview)?.length) recordResume(c)
-    startInterview(c)
+    return startInterview(c)
   },
   onFinish: (
     req: Request,
     transcript: InterviewLine[],
     completed: boolean,
   ) => {
-    if (!transcript.length) return
     const c = candidateOf(req)
     finishInterview(c, transcript, completed)
     // the interview is over: the report is written in the background
-    if (completed) startReport(c.candidateId)
+    startReport(c.candidateId)
   },
 }
