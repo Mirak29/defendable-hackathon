@@ -93,6 +93,8 @@ cannot run.
 Docker only. The image is built and published by GitHub at every push to
 `main`.
 
+First, create the environment file in a folder of your choice:
+
 ```bash
 cat > defendable.env <<'ENV'
 REDIRECT_URI=http://localhost:8000
@@ -100,7 +102,16 @@ DEMO_ACCESS=1
 MODEL_API_KEY=
 BASETEN_API_KEY=
 ENV
-# Fill in both keys in defendable.env before starting for the full AI experience.
+```
+
+**Before running Docker, open `defendable.env` in a text editor, fill in
+`MODEL_API_KEY` with your Meta Model API key and `BASETEN_API_KEY` with your
+Baseten key, then save the file.** Keep the other two lines as shown. The empty
+values above create the file; they do not configure the full AI experience.
+
+Then run the following commands from the **same folder as `defendable.env`**:
+
+```bash
 docker run -d --name defendable -p 8000:8000 -v defendable-data:/data \
   --env-file defendable.env ghcr.io/mirak29/defendable:latest
 docker logs -f defendable   # ready at "server-start"
@@ -111,7 +122,8 @@ volume.
 
 ### 2. Clone the repository and run it with Docker
 
-The same image, built on your machine from the code.
+The same image, built on your machine from the code. First, download the source,
+reconstruct the app and copy the environment template:
 
 ```bash
 git clone https://github.com/Mirak29/defendable-hackathon.git
@@ -119,9 +131,24 @@ cd defendable-hackathon
 bash ./setup.sh   # the full app, in ./app
 cd app
 cp .env.production.example .env.production
-# Edit .env.production before starting:
-# REDIRECT_URI=http://localhost:8000, DEMO_ACCESS=1
-# MODEL_API_KEY=<your Meta key>, BASETEN_API_KEY=<your Baseten key>
+```
+
+**Before building or starting Docker, open `app/.env.production` in a text
+editor**, set the following values, then save the file:
+
+```dotenv
+REDIRECT_URI=http://localhost:8000
+DEMO_ACCESS=1
+MODEL_API_KEY=<your Meta Model API key>
+BASETEN_API_KEY=<your Baseten key>
+```
+
+Replace the two key placeholders with your actual keys. The optional e-mail
+settings can stay empty: you can open candidate links directly.
+
+Then build and start the app from the **`app/` directory**:
+
+```bash
 docker compose up -d --build
 docker compose logs -f app   # ready at "server-start"
 ```
@@ -147,8 +174,12 @@ BASETEN_API_KEY=
 ENV
 ```
 
-Fill in both keys in **`app/.env`** (the file just created, ignored by Git), then
-start the app from the `app/` directory:
+**Before starting Deno, open `app/.env` in a text editor** (the file just
+created, ignored by Git), fill in `MODEL_API_KEY` with your Meta Model API key
+and `BASETEN_API_KEY` with your Baseten key, then save the file. The local
+address and demo access are already configured in `.env-dev`.
+
+Then start the app from the **`app/` directory**:
 
 ```bash
 deno task dev    # http://localhost:8000
