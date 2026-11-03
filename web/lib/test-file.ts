@@ -8,3 +8,10 @@
 export const isTestFile = (path: string) =>
   /(^|\/)(test_[^/]+\.py|[^/]+_test\.py|([^/]*[._])?test\.(ts|tsx|js|jsx|mjs))$/
     .test(path)
+
+/** Stable identity of executable files and config; notes do not affect runs. */
+export const codeFilesKey = (files: Record<string, string>) =>
+  JSON.stringify(
+    Object.entries(files).filter(([path]) => !path.endsWith('.md'))
+      .sort(([a], [b]) => a.localeCompare(b)),
+  )

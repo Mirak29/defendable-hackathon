@@ -19,7 +19,10 @@ import type { InterviewLine } from '/web/types.ts'
 import { decodeSession } from '/api/member.ts'
 import {
   END_MARKER,
+  INTERVIEW_NO_RESPONSE,
+  INTERVIEW_NUDGE,
   INTERVIEW_RESUME,
+  INTERVIEW_SKIP,
   INTERVIEW_START,
   INTERVIEW_TIME_UP,
   type InterviewFacts,
@@ -50,6 +53,15 @@ export const voiceConfig = {
   graceMs: Number(ENV('INTERVIEW_GRACE_MS', '45000')),
   /** a candidate who is still speaking is heard out, at most this long */
   patienceMs: 60_000,
+  /**
+   * After a question, the candidate says nothing this long (from the end of the
+   * interviewer's voice): it offers, once, to repeat. Not a new question.
+   */
+  nudgeMs: Number(ENV('INTERVIEW_NUDGE_MS', '10000')),
+  /** still nothing this long after the question: the interviewer moves on */
+  skipMs: Number(ENV('INTERVIEW_SKIP_MS', '30000')),
+  /** how fast the browser's voice reads, to tell when a question ends */
+  charsPerSecond: 14,
 }
 
 /**
@@ -78,10 +90,27 @@ export type VoiceEvent =
   | { type: 'speech-end' }
   /** what is being said, replaced at each update */
   | { type: 'partial'; text: string }
-  /** the final words of a turn of the candidate */
-  | { type: 'heard'; turnId: number; text: string; merge?: boolean }
+  /** the final words of a turn of the candidate; `at`, `endAt`: their first and last word (server clock, ms) */
+  | {
+    type: 'heard'
+    turnId: number
+    text: string
+    merge?: boolean
+    at?: number
+    endAt?: number
+  }
   | { type: 'ai-delta'; text: string }
-  | { type: 'ai-done'; text: string; interrupted: boolean }
+  /** `at`: its first word; `endAt`: when its voice should end, refined by `ai-voice-end`; `silence`: a prompt or a move on after a silence */
+  | {
+    type: 'ai-done'
+    text: string
+    interrupted: boolean
+    at?: number
+    endAt?: number
+    silence?: 'nudge' | 'skip'
+  }
+  /** the last sound of the interviewer's answer was sent: when it should stop playing */
+  | { type: 'ai-voice-end'; endAt: number }
   | { type: 'metrics'; metrics: TurnMetrics }
   | { type: 'end' }
   | { type: 'error'; message: string }
@@ -97,6 +126,25 @@ export type TurnMetrics = {
   silenceToFirstWordMs: number
   /** the whole answer of the interviewer */
   answerMs: number
+}
+
+/**
+ * The first words of the interviewer (the greeting and an open question on the
+ * approach), written before the interview opens so it starts at once. The same
+ * model and rules as the conversation; undefined without a key.
+ */
+export const writeOpening = async (facts: InterviewFacts) => {
+  if (!hasAiKey()) return undefined
+  const { text } = await converse({
+    task: 'interview',
+    model: llmConfig.interviewModel,
+    system: interviewSystem(facts),
+    messages: [{ role: 'user', content: INTERVIEW_START }],
+    effort: 'minimal',
+    maxTokens: 1_200,
+    timeoutMs: 30_000,
+  })
+  return text.replace(END_MARKER, '').trim() || undefined
 }
 
 /** the words of the code the recogniser should expect (identifiers, routes) */
@@ -221,6 +269,20 @@ export class VoiceInterview {
   #asked = 0
   #speechEndAt = 0
   #transcriptAt = 0
+  /** server clock (ms): when the interviewer's voice should stop playing */
+  #voiceEndAt = 0
+  /** server clock: the last sound heard, and the first words of this turn */
+  #soundAt = 0
+  #turnAt = 0
+  #lastWordAt = 0
+  /** words of the candidate since the last question: no silence to watch */
+  #heardSince = false
+  /** consecutive questions left unanswered; a spoken answer resets the count */
+  #unansweredQuestions = 0
+  /** end of the original question, so a nudge does not restart its deadline */
+  #questionEndAt = 0
+  /** the silence after a question is watched */
+  #watch?: ReturnType<typeof setTimeout>
 
   /** what the interviewer is told when the interview opens */
   #opening: string
@@ -254,6 +316,7 @@ export class VoiceInterview {
     this.#history.push({ role: 'user', content: INTERVIEW_START })
     for (const line of lines) {
       if (line.who === 'candidate') {
+        if (line.text.trim()) this.#unansweredQuestions = 0
         this.#history.push({ role: 'user', content: line.text })
         continue
       }
@@ -263,8 +326,12 @@ export class VoiceInterview {
           ? `${line.text} [the candidate interrupted here]`
           : line.text,
       })
-      if (!line.interrupted) this.#asked++
+      if (line.silence === 'skip' && !line.interrupted) {
+        this.#unansweredQuestions++
+      }
+      if (!line.interrupted && line.silence !== 'nudge') this.#asked++
     }
+    if (unanswered.trim()) this.#unansweredQuestions = 0
     return INTERVIEW_RESUME(unanswered)
   }
 
@@ -297,6 +364,9 @@ export class VoiceInterview {
         log.warn('voice-asr-message', { message: String(err) })
       }
     }
+    // the interviewer speaks at once: the transcription connects meanwhile,
+    // and the microphone is kept until it is ready
+    this.#begin()
     asr.onerror = () => this.#fail('The transcription is unreachable.')
     asr.onclose = (e) => {
       if (this.#closed) return
@@ -305,6 +375,37 @@ export class VoiceInterview {
         this.#fail(`The transcription closed (${e.code} ${e.reason}).`)
       }
     }
+  }
+
+  /** the interview opens: the browser is told who speaks, then the first words */
+  #begin() {
+    this.#serverVoice = tts.loaded()
+    this.#send({
+      type: 'ready',
+      voice: this.#serverVoice ? 'server' : 'browser',
+      rate: this.#serverVoice ? tts.rate() : undefined,
+      history: this.#facts.previous,
+    })
+    // back after the time was over: it closes at once
+    const left = this.#deadline - Date.now()
+    this.#timer = setTimeout(
+      () => this.#timeUp(),
+      Math.max(0, left) + voiceConfig.graceMs,
+    )
+    // the words written during the preparation, for a first opening only
+    const prepared = this.#facts.previous?.length
+      ? undefined
+      : this.#facts.opening
+    this.#running = left > 0
+      ? this.#answer(
+        this.#opening,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        prepared,
+      )
+      : this.#closeTurn()
   }
 
   /** a frame of the microphone: PCM 16-bit mono 24 kHz */
@@ -346,6 +447,7 @@ export class VoiceInterview {
   close() {
     this.#closed = true
     clearTimeout(this.#timer)
+    clearTimeout(this.#watch)
     this.#dropSpeech()
     this.#withdraw?.()
     this.#controller?.abort()
@@ -367,20 +469,6 @@ export class VoiceInterview {
       for (const frame of this.#queue) this.#asr!.send(frame)
       this.#queue = []
       this.#queued = 0
-      this.#serverVoice = tts.loaded()
-      this.#send({
-        type: 'ready',
-        voice: this.#serverVoice ? 'server' : 'browser',
-        rate: this.#serverVoice ? tts.rate() : undefined,
-        history: this.#facts.previous,
-      })
-      // back after the time was over: it closes at once
-      const left = this.#deadline - Date.now()
-      this.#timer = setTimeout(
-        () => this.#timeUp(),
-        Math.max(0, left) + voiceConfig.graceMs,
-      )
-      this.#running = left > 0 ? this.#answer(this.#opening) : this.#closeTurn()
       return
     }
     switch (msg.type) {
@@ -388,12 +476,14 @@ export class VoiceInterview {
         // a sound is not yet a voice: a breath, a click, the room, or the
         // interviewer itself through the speakers. It stops nothing.
         this.#speaking = true
+        this.#soundAt = Date.now()
         this.#send({ type: 'speech-start' })
         break
       case 'transcript':
         if (!msg.final) {
           const heard = String(msg.transcript ?? '')
           this.#send({ type: 'partial', text: heard })
+          if (heard.trim()) this.#wordsHeard()
           if (this.#withdraw && heard.trim()) {
             // the interviewer has not spoken yet: the candidate is still
             // answering, so what was written is dropped
@@ -412,6 +502,7 @@ export class VoiceInterview {
       case 'speechEnd':
         this.#speaking = false
         this.#speechEndAt = performance.now()
+        this.#lastWordAt = Date.now()
         this.#send({ type: 'speech-end' })
         break
       case 'speechComplete':
@@ -439,7 +530,17 @@ export class VoiceInterview {
     const merge = !!this.#carry && !!text
     const full = merge ? `${this.#carry} ${text}` : text || this.#carry
     this.#carry = ''
-    this.#send({ type: 'heard', turnId, text: full, merge })
+    if (text) this.#wordsHeard()
+    const at = this.#turnAt || Date.now()
+    this.#turnAt = 0
+    this.#send({
+      type: 'heard',
+      turnId,
+      text: full,
+      merge,
+      at,
+      endAt: Math.max(at, this.#lastWordAt || Date.now()),
+    })
     // the time is over: this turn is answered by the closing
     const over = Date.now() >= this.#deadline
     this.#running = this.#answer(
@@ -455,6 +556,65 @@ export class VoiceInterview {
       over,
     )
     await this.#running
+  }
+
+  /**
+   * Words of the candidate: the silence after the question is over, and their
+   * turn started with the sound just before (a breath, a click is not a turn).
+   */
+  #wordsHeard() {
+    this.#heardSince = true
+    this.#unansweredQuestions = 0
+    clearTimeout(this.#watch)
+    if (this.#turnAt) return
+    const now = Date.now()
+    this.#turnAt = this.#soundAt && now - this.#soundAt < 5_000
+      ? this.#soundAt
+      : now
+  }
+
+  /**
+   * After a question, the silence is watched: a prompt after `nudgeMs`, once,
+   * then the interviewer moves on `skipMs` after the question. Any words of
+   * the candidate stop the watch: someone answering is never cut.
+   */
+  #watchSilence(voiceEndAt: number, nudged: boolean) {
+    clearTimeout(this.#watch)
+    if (!nudged) this.#questionEndAt = voiceEndAt
+    const { nudgeMs, skipMs } = voiceConfig
+    const dueAt = this.#questionEndAt + (nudged ? skipMs : nudgeMs)
+    const check = () => {
+      if (this.#closed || this.#heardSince || this.#busy) return
+      if (Date.now() >= this.#deadline) return
+      // a sound, not yet words: they may be starting to answer
+      if (this.#speaking) {
+        this.#watch = setTimeout(check, 1_000)
+        return
+      }
+      this.#running = this.#running.then(() => {
+        if (this.#closed || this.#heardSince) return
+        if (nudged && ++this.#unansweredQuestions >= 3) {
+          return this.#answer(
+            INTERVIEW_NO_RESPONSE,
+            undefined,
+            '',
+            true,
+            undefined,
+            INTERVIEW_NO_RESPONSE,
+          )
+        }
+        return this.#answer(
+          nudged
+            ? INTERVIEW_SKIP(Math.round(skipMs / 1000))
+            : INTERVIEW_NUDGE(Math.round(nudgeMs / 1000)),
+          undefined,
+          '',
+          false,
+          nudged ? 'skip' : 'nudge',
+        )
+      })
+    }
+    this.#watch = setTimeout(check, Math.max(0, dueAt - Date.now()))
   }
 
   #deliver(text: string) {
@@ -499,6 +659,12 @@ export class VoiceInterview {
         // dropped (the candidate spoke over it) or over: nobody hears it
         if (epoch !== this.#epoch || this.#closed) return
         this.#send({ type: 'speech', text, pcm })
+        // the browser plays the sentences one after the other, without a gap
+        const seconds = pcm
+          ? pcm.length * 3 / 4 / 2 / tts.rate()
+          : text.length / voiceConfig.charsPerSecond
+        this.#voiceEndAt = Math.max(Date.now(), this.#voiceEndAt) +
+          seconds * 1000
       })
     }
   }
@@ -509,7 +675,14 @@ export class VoiceInterview {
     turnId?: number,
     heardText = userText,
     closing = false,
+    silence?: 'nudge' | 'skip',
+    /** words already written (the opening): said without asking the model */
+    prepared?: string,
   ) {
+    clearTimeout(this.#watch)
+    // The previous answer must not suppress the watch for this new question.
+    // Words heard while this question is being spoken will set it again.
+    this.#heardSince = false
     this.#history.push({ role: 'user', content: userText })
     this.#dropSpeech()
     const controller = new AbortController()
@@ -545,7 +718,12 @@ export class VoiceInterview {
       }
     }
     try {
-      const result = await converse({
+      if (prepared) {
+        this.#said = prepared
+        firstWordAt = performance.now()
+        this.#deliver(prepared)
+      }
+      const result = prepared ? { text: prepared } : await converse({
         task: 'interview',
         model: llmConfig.interviewModel,
         system: interviewSystem(this.#facts),
@@ -576,6 +754,12 @@ export class VoiceInterview {
       const ended = result.text.includes(END_MARKER) && !isUnclear(heardText)
       const interrupted = controller.signal.aborted
       const spoken = result.text.replace(END_MARKER, '').trim()
+      const at = Date.now() - Math.round(performance.now() - firstWordAt)
+      // the browser's voice reads it: when it should end, from its length
+      if (!this.#serverVoice) {
+        this.#voiceEndAt = Math.max(Date.now(), this.#voiceEndAt, at) +
+          spoken.length / voiceConfig.charsPerSecond * 1000
+      }
       this.#history.push({
         role: 'assistant',
         content: interrupted
@@ -583,8 +767,19 @@ export class VoiceInterview {
           : spoken,
       })
       if (!interrupted) this.#say('', true)
-      this.#send({ type: 'ai-done', text: spoken, interrupted })
-      if (!interrupted && !isUnclear(heardText)) this.#asked++
+      this.#send({
+        type: 'ai-done',
+        text: spoken,
+        interrupted,
+        at,
+        endAt: Math.max(at, this.#voiceEndAt),
+        silence,
+      })
+      // a prompt after a silence is not a question; moving on asks a new one
+      if (
+        !interrupted &&
+        (silence ? silence === 'skip' : !isUnclear(heardText))
+      ) this.#asked++
       if (turnId !== undefined && firstWordAt) {
         this.#send({
           type: 'metrics',
@@ -606,6 +801,14 @@ export class VoiceInterview {
         await this.#sentences
         this.#send({ type: 'end' })
         this.close()
+      } else if (!interrupted) {
+        // once its last sound is out, the silence after the question is watched
+        this.#sentences.then(() => {
+          if (this.#closed || this.#heardSince) return
+          const endAt = Math.max(Date.now(), this.#voiceEndAt)
+          this.#send({ type: 'ai-voice-end', endAt })
+          this.#watchSilence(endAt, silence === 'nudge')
+        })
       }
     } catch (err) {
       log.warn('voice-answer-failed', { message: String(err) })
@@ -667,14 +870,29 @@ export const handleVoice = async (
   const interview = new VoiceInterview(facts, (event) => {
     if (event.type === 'heard') {
       const last = transcript.at(-1)
-      if (event.merge && last?.who === 'candidate') last.text = event.text
-      else transcript.push({ who: 'candidate', text: event.text })
+      if (event.merge && last?.who === 'candidate') {
+        last.text = event.text
+        last.endAt = event.endAt
+      } else {
+        transcript.push({
+          who: 'candidate',
+          text: event.text,
+          at: event.at,
+          endAt: event.endAt,
+        })
+      }
     } else if (event.type === 'ai-done' && event.text) {
       transcript.push({
         who: 'ai',
         text: event.text,
         interrupted: event.interrupted || undefined,
+        at: event.at,
+        endAt: event.endAt,
+        silence: event.silence,
       })
+    } else if (event.type === 'ai-voice-end') {
+      const last = transcript.findLast((l) => l.who === 'ai')
+      if (last) last.endAt = event.endAt
     } else if (event.type === 'end') completed = true
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event))
     // the end is final even if the browser keeps the socket open
