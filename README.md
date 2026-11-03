@@ -46,6 +46,12 @@ event is stored in this repository or in its history.
 1. Open the [live app](https://defendableapp.com) and choose **Try with the demo
    account** on the sign-in page. No account or API key is needed to use the
    hosted demo.
+   Choose **Start guided demo** for a step-by-step path through a prepared
+   assessment, a fictional candidate, an optional example solution, the spoken
+   interview and that candidate’s report. The guide can be exited at any time.
+   The prepared scenario and solution are labelled examples; tests execute in
+   the sandbox and the interview and report use the configured models. Choose
+   **New assessment** to try live generation instead.
 2. Create a **New assessment** from a job offer (examples in
    [fixtures/offers/](fixtures/offers/)), review the brief and automatic checks,
    then approve it and create a candidate link.
