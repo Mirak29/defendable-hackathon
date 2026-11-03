@@ -43,26 +43,44 @@ event is stored in this repository or in its history.
 
 ## Try the product
 
-1. Open the [live app](https://defendableapp.com) and choose **Try with the demo
-   account** on the sign-in page. No account or API key is needed to use the
-   hosted demo.
-2. Create a **New assessment** from a job offer (examples in
-   [fixtures/offers/](fixtures/offers/)), review the brief and automatic checks,
-   then approve it and create a candidate link.
-3. Open the candidate link, build and submit the solution, then talk with Oracle
-   using a microphone and headphones. Return to the recruiter space to inspect
-   the report: test results, quotes, code evidence and follow-up questions.
+Open the [live app](https://defendableapp.com) and choose **Try with the demo
+account** on the sign-in page. No account or API key is needed to use the
+hosted demo. Then choose either path:
 
-The full journey takes longer than the demo video. Generation and the interview
-use live model calls. A fresh local installation starts with an empty company
-space.
+### Guided demo — recommended for a first visit
+
+Choose **Start guided demo** and follow the five steps: prepared assessment,
+fictional candidate invitation, coding, spoken interview and that candidate’s
+report. You can load an example solution to try the coding tools quickly.
+Allow about **10–15 minutes**, with a microphone and headphones. You can exit
+the guide at any time.
+
+The prepared scenario and solution are labelled examples. Tests execute in the
+sandbox; the interview and report use the configured models.
+
+### Generate your own assessment
+
+1. Choose **New assessment** and paste a job offer (examples in
+   [fixtures/offers/](fixtures/offers/)). Review the brief and automatic checks,
+   approve the assessment, then create a candidate link.
+2. Open the candidate link, build and submit the solution, then talk with Oracle
+   using a microphone and headphones.
+3. Return to the recruiter space to inspect the report: test results, quotes,
+   code evidence and follow-up questions.
+
+Generation and the interview use live model calls. A fresh local installation
+starts with an empty company space; **Start guided demo** prepares its example
+when you choose it.
 
 ## Run it
 
 Three ways, from the quickest to the most hackable. Each one opens
 <http://localhost:8000>: on the sign-in page, **Try with the demo account**
-enters a company space with no password. Start with **New assessment** and paste
-a job offer (examples in [`fixtures/offers/`](fixtures/offers/)).
+enters a company space with no password. Choose **Start guided demo** for the
+recommended walkthrough, or **New assessment** to generate your own task.
+
+The shell commands below use Bash (Git Bash on Windows). Methods 2 and 3 also
+need Git to download and reconstruct the app.
 
 The Meta model keys make the app call the models live: `MODEL_API_KEY` (Meta
 Model API: reports, Oracle, listening) and `BASETEN_API_KEY` (Muse Spark Open:
@@ -75,6 +93,8 @@ cannot run.
 Docker only. The image is built and published by GitHub at every push to
 `main`.
 
+First, create the environment file in a folder of your choice:
+
 ```bash
 cat > defendable.env <<'ENV'
 REDIRECT_URI=http://localhost:8000
@@ -82,6 +102,16 @@ DEMO_ACCESS=1
 MODEL_API_KEY=
 BASETEN_API_KEY=
 ENV
+```
+
+**Before running Docker, open `defendable.env` in a text editor, fill in
+`MODEL_API_KEY` with your Meta Model API key and `BASETEN_API_KEY` with your
+Baseten key, then save the file.** Keep the other two lines as shown. The empty
+values above create the file; they do not configure the full AI experience.
+
+Then run the following commands from the **same folder as `defendable.env`**:
+
+```bash
 docker run -d --name defendable -p 8000:8000 -v defendable-data:/data \
   --env-file defendable.env ghcr.io/mirak29/defendable:latest
 docker logs -f defendable   # ready at "server-start"
@@ -92,15 +122,33 @@ volume.
 
 ### 2. Clone the repository and run it with Docker
 
-The same image, built on your machine from the code.
+The same image, built on your machine from the code. First, download the source,
+reconstruct the app and copy the environment template:
 
 ```bash
 git clone https://github.com/Mirak29/defendable-hackathon.git
 cd defendable-hackathon
-./setup.sh   # the full app, in ./app
+bash ./setup.sh   # the full app, in ./app
 cd app
 cp .env.production.example .env.production
-# in .env.production: REDIRECT_URI=http://localhost:8000, the keys, DEMO_ACCESS=1
+```
+
+**Before building or starting Docker, open `app/.env.production` in a text
+editor**, set the following values, then save the file:
+
+```dotenv
+REDIRECT_URI=http://localhost:8000
+DEMO_ACCESS=1
+MODEL_API_KEY=<your Meta Model API key>
+BASETEN_API_KEY=<your Baseten key>
+```
+
+Replace the two key placeholders with your actual keys. The optional e-mail
+settings can stay empty: you can open candidate links directly.
+
+Then build and start the app from the **`app/` directory**:
+
+```bash
 docker compose up -d --build
 docker compose logs -f app   # ready at "server-start"
 ```
@@ -110,16 +158,36 @@ For a server with HTTPS, backups and updates:
 
 ### 3. Clone the repository and run it with Deno (development)
 
-Deno 2 only (no Node), hot reload, a local SQLite file.
+Deno **2.9.8** (the version used in CI), no Node, hot reload, a local SQLite file.
 
 ```bash
 git clone https://github.com/Mirak29/defendable-hackathon.git
 cd defendable-hackathon
-./setup.sh   # the full app, in ./app
+bash ./setup.sh   # the full app, in ./app
 cd app
-deno install
-echo 'MODEL_API_KEY=LLM_…' > .env   # git-ignored; add BASETEN_API_KEY= too
+
+deno install --frozen
+
+cat > .env <<'ENV'
+MODEL_API_KEY=
+BASETEN_API_KEY=
+ENV
+```
+
+**Before starting Deno, open `app/.env` in a text editor** (the file just
+created, ignored by Git), fill in `MODEL_API_KEY` with your Meta Model API key
+and `BASETEN_API_KEY` with your Baseten key, then save the file. The local
+address and demo access are already configured in `.env-dev`.
+
+Then start the app from the **`app/` directory**:
+
+```bash
 deno task dev    # http://localhost:8000
+```
+
+To run the tests, open another terminal in `app/`:
+
+```bash
 deno task test   # all tests, in-memory SQLite, no network
 ```
 
