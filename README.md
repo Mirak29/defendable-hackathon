@@ -52,7 +52,7 @@ hosted demo. Then choose either path:
 Choose **Start guided demo** and follow the five steps: prepared assessment,
 fictional candidate invitation, coding, spoken interview and that candidate’s
 report. You can load an example solution to try the coding tools quickly.
-Allow about **10–15 minutes**, with a microphone and headphones. You can exit
+Allow about **10–15 minutes**, with a camera, microphone and headphones. You can exit
 the guide at any time.
 
 The prepared scenario and solution are labelled examples. Tests execute in the
@@ -64,7 +64,7 @@ sandbox; the interview and report use the configured models.
    [fixtures/offers/](fixtures/offers/)). Review the brief and automatic checks,
    approve the assessment, then create a candidate link.
 2. Open the candidate link, build and submit the solution, then talk with Oracle
-   using a microphone and headphones.
+   using a camera, microphone and headphones, after accepting the recording notice.
 3. Return to the recruiter space to inspect the report: test results, quotes,
    code evidence and follow-up questions.
 
@@ -82,8 +82,11 @@ analysis still reads the transcript and code only.
 
 MediaRecorder uploads ordered chunks while the interview runs. The final page
 waits for the last chunk to save. A lost device or failed upload stops the
-conversation with an explanation; resumed attempts are kept separately, and
-incomplete recordings are labelled. Recorded interviews require the server
+conversation with an explanation. Once the interview starts, closing or
+refreshing the page, losing the connection or losing a device ends the attempt
+permanently. Switching tabs or windows does not end it. The report marks an
+interruption separately from a completed conversation; incomplete recordings
+are labelled. Recorded interviews require the server
 voice: browser speech synthesis cannot be mixed into the recorded audio. The
 developer voice lab still supports unrecorded audio and its fallback.
 
@@ -93,9 +96,16 @@ These positions are not word-aligned audio evidence. Older interviews without
 recordings still open normally. A pause or camera event is never interpreted as
 dishonesty or used as a skill score.
 
-Recordings are kept in two separate SQLite tables, so existing candidate tables
-need no reset. Access requires a current recruiter session in the owning
-company. Video requests support byte ranges for seeking and are never publicly
+Media is kept in two separate SQLite tables; a third table isolates demo
+sessions, so existing candidate tables need no reset. Access requires a current
+recruiter session in the owning company. In the shared demo account, only the
+login session that created a candidate invitation can list, play or delete
+that candidate's recordings. Other demo visitors cannot access them. Signing
+out or losing that login session ends access. Older demo recordings without a
+known owner stay hidden unless the browser can prove participation using the
+completed candidate's private session cookie; that one-time recovery binds
+them to the current demo login. Regular company spaces keep their team-wide access.
+Video requests support byte ranges for seeking and are never publicly
 cached. Uploads are capped at 2 MiB per request, 100 MiB per attempt, 20 minutes
 and five attempts per candidate. Media is unavailable after 30 days and purged
 on startup, on recording requests and every six hours while the server runs. The
@@ -232,7 +242,7 @@ deno task test   # all tests, in-memory SQLite, no network
 - **A working candidate environment:** a file editor, sandboxed execution, type
   checks and candidate-written tests. AI tools are allowed and declared.
 - **A code-aware voice interview:** Oracle asks about the submitted solution,
-  follows up on explanations and resumes after a connection loss.
+  follows up on explanations. An interrupted interview cannot be resumed.
 - **An evidence-based report:** measured results stay separate from AI
   interpretations. Quotes, code references and test IDs are checked; a second
   model call checks whether evidence supports the interpretation.
@@ -408,8 +418,8 @@ prompt, without the rule on absences, doubted 31 % of the right readings
 - **One clock, kept by the server.** The interview lasts 10 minutes from the
   first time it opened (`INTERVIEW_MS`); reloading the page does not restart it.
   When time is over, Oracle hears out a candidate who is speaking, answers them
-  in a few words, thanks them and closes. A page reloaded mid-interview resumes
-  from the saved conversation instead of restarting the interview.
+  in a few words, thanks them and closes. Closing or refreshing the interview
+  page ends the attempt permanently; the report records the interruption.
 - **Facts about the session, never a verdict.** The report shows how many times
   the page was left and for how long (building and interview), whether a second
   display was seen (Chromium only, otherwise "unknown"), reloads, and copy
