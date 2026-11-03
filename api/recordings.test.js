@@ -343,6 +343,12 @@ test('demo recordings: private to the login session that invited the candidate',
           404,
         )
         eq((await send('HEAD', media, owner)).status, 200)
+        eq((await send('GET', `${media}&analysis=1`, visitor)).status, 404)
+        eq(
+          (await send('POST', `${media}&analysis=1`, visitor, { frames: [] }))
+            .status,
+          404,
+        )
       },
     )
     await step(

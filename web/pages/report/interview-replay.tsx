@@ -4,6 +4,7 @@ import { paths } from '/web/paths.ts'
 import { member } from '/web/lib/member-store.ts'
 import type { InterviewLine, RecordingView, ReportView } from '/web/types.ts'
 import { formatDateTime } from '/web/lib/format.ts'
+import { useReplayAnnotations } from './replay-annotations.tsx'
 
 const target = signal<{ id: string; atMs: number; nonce: number } | null>(null)
 const available = signal<string[]>([])
@@ -61,8 +62,23 @@ export const InterviewReplay = ({ v }: { v: ReportView }) => {
   const [position, setPosition] = useState(0)
   const [refresh, setRefresh] = useState(0)
   const video = useRef<HTMLVideoElement>(null)
+  const playerContainer = useRef<HTMLDivElement>(null)
+  const [fullscreen, setFullscreen] = useState(false)
+  useEffect(() => {
+    const changed = () =>
+      setFullscreen(document.fullscreenElement === playerContainer.current)
+    document.addEventListener('fullscreenchange', changed)
+    return () => document.removeEventListener('fullscreenchange', changed)
+  }, [])
   const request = target.value
   const selected = recordings.find((r) => r.id === selectedId)
+  const annotations = useReplayAnnotations(
+    v,
+    selected,
+    position,
+    video,
+    endpoint(v.candidateId, selectedId),
+  )
   useEffect(() => {
     const abort = new AbortController()
     available.value = []
@@ -187,27 +203,65 @@ export const InterviewReplay = ({ v }: { v: ReportView }) => {
         <>
           {selected.bytes > 0
             ? (
-              <video
-                key={selected.id}
-                ref={video}
-                controls
-                playsInline
-                preload='metadata'
-                aria-label='Interview replay'
-                src={endpoint(v.candidateId, selected.id)}
-                onLoadedMetadata={seek}
-                onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
-                onError={() =>
-                  setError(
-                    'This recording could not be played. It may be incomplete or use a format this browser cannot play.',
-                  )}
+              <div
+                ref={playerContainer}
                 style={{
-                  width: '100%',
-                  maxHeight: '420px',
+                  position: 'relative',
                   background: '#000',
                   borderRadius: '8px',
                 }}
-              />
+              >
+                <video
+                  key={selected.id}
+                  ref={video}
+                  controls
+                  playsInline
+                  preload='metadata'
+                  aria-label='Interview replay'
+                  src={endpoint(v.candidateId, selected.id)}
+                  onLoadedMetadata={seek}
+                  onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
+                  onError={() =>
+                    setError(
+                      'This recording could not be played. It may be incomplete or use a format this browser cannot play.',
+                    )}
+                  style={{
+                    width: '100%',
+                    maxHeight: fullscreen ? '100vh' : '420px',
+                    background: '#000',
+                    borderRadius: '8px',
+                  }}
+                />
+                {annotations.overlay}
+                {typeof document.documentElement.requestFullscreen ===
+                    'function' && (
+                  <button
+                    type='button'
+                    onClick={() => {
+                      const action = fullscreen
+                        ? document.exitFullscreen()
+                        : playerContainer.current?.requestFullscreen()
+                      action?.catch(() => {})
+                    }}
+                    style={{
+                      position: 'absolute',
+                      top: '10px',
+                      right: '10px',
+                      border: 0,
+                      borderRadius: '6px',
+                      padding: '6px 9px',
+                      background: 'rgba(13,19,35,.85)',
+                      color: '#fff',
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {fullscreen
+                      ? 'Exit full screen'
+                      : 'Full screen with annotations'}
+                  </button>
+                )}
+              </div>
             )
             : <p>No video data was received for this attempt.</p>}
           {selected.bytes > 0 && selected.durationMs > 0 && (
@@ -239,8 +293,9 @@ export const InterviewReplay = ({ v }: { v: ReportView }) => {
             {member.value?.demo
               ? 'This demo recording is private to your current login session. Signing out ends access. '
               : 'Only members of your company space can access this recording. '}
-            Camera images are not analysed by AI.
+            Visual observations require the candidate’s separate agreement.
           </p>
+          {selected.bytes > 0 && annotations.panel}
           {!confirmDelete
             ? (
               <button

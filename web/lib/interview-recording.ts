@@ -1,5 +1,5 @@
 // Record camera + microphone + Oracle's actual server audio in one video.
-// The camera is never sent to an AI model. Chunks are uploaded in order.
+// Visual sampling requires a separate opt-in. Chunks are uploaded in order.
 import { signal } from '@preact/signals'
 import { paths } from '/web/paths.ts'
 import type { RecordingView } from '/web/types.ts'
@@ -52,6 +52,7 @@ export const beginRecording = async (
   context: AudioContext,
   oracle: GainNode,
   onFailure: (message: string) => void,
+  visualAnalysisAccepted = false,
 ) => {
   if (capture) throw Error('A recording is already being saved. Please wait.')
   recording.error.value = ''
@@ -82,7 +83,7 @@ export const beginRecording = async (
     const response = await request(paths.candidateRecording, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ accepted: true, mime }),
+      body: JSON.stringify({ accepted: true, mime, visualAnalysisAccepted }),
     })
     const info: RecordingView = await response.json()
     let stopped!: () => void

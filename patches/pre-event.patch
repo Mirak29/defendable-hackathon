@@ -5146,7 +5146,7 @@ index 03637a4..2a31101 100644
 +  })
  })
 diff --git a/api/llm.ts b/api/llm.ts
-index 76404e9..5707168 100644
+index 76404e9..46add75 100644
 --- a/api/llm.ts
 +++ b/api/llm.ts
 @@ -1,189 +1,99 @@
@@ -5462,8 +5462,20 @@ index 76404e9..5707168 100644
      public readonly failures: AiFailure[] = [],
    ) {
      super(message)
-@@ -226,70 +132,36 @@ export class AiError extends Error {
- export type Message = { role: 'system' | 'user' | 'assistant'; content: string }
+@@ -223,73 +129,49 @@ export class AiError extends Error {
+   }
+ }
+ 
+-export type Message = { role: 'system' | 'user' | 'assistant'; content: string }
++export type Message = {
++  role: 'system' | 'user' | 'assistant'
++  content:
++    | string
++    | ({ type: 'text'; text: string } | {
++      type: 'image_url'
++      image_url: { url: string }
++    })[]
++}
  
  export type AskOptions<T> = {
 -  /** short name of the step, also the cache file prefix: "generation" */
@@ -5472,6 +5484,8 @@ index 76404e9..5707168 100644
 -  tier: Tier
    system: string
    prompt: string
++  /** Consented image data URLs, used only by explicit multimodal tasks. */
++  images?: string[]
    /** validates the model answer, throws a readable error otherwise */
    parse: (value: unknown) => T
 -  /** answer of the brief, served as a replay when nothing else works */
@@ -5548,7 +5562,7 @@ index 76404e9..5707168 100644
  /** from the first [ or { to the last ] or }, undefined when there is none */
  const jsonSlice = (body: string) => {
    const start = body.search(/[[{]/)
-@@ -312,15 +184,15 @@ const parseRelaxed = (json: string) => {
+@@ -312,15 +194,15 @@ const parseRelaxed = (json: string) => {
  /** JSON of a model answer: without <think> blocks nor ```json fences */
  export const extractJson = (content: string) => {
    const text = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
@@ -5567,7 +5581,7 @@ index 76404e9..5707168 100644
    let error: unknown
    try {
      return parseRelaxed(main)
-@@ -328,266 +200,170 @@ export const extractJson = (content: string) => {
+@@ -328,415 +210,516 @@ export const extractJson = (content: string) => {
      error = err
    }
    for (const body of [outer, text]) {
@@ -5949,8 +5963,20 @@ index 76404e9..5707168 100644
 +  const label = modelLabel(model)
    const messages: Message[] = [
      { role: 'system', content: o.system },
-     { role: 'user', content: o.prompt },
-@@ -595,148 +371,334 @@ const attempt = async <T>(
+-    { role: 'user', content: o.prompt },
++    {
++      role: 'user',
++      content: o.images?.length
++        ? [
++          { type: 'text', text: o.prompt },
++          ...o.images.map((url) => ({
++            type: 'image_url' as const,
++            image_url: { url },
++          })),
++        ]
++        : o.prompt,
++    },
+   ]
    const started = performance.now()
    let tokensIn = 0
    let tokensOut = 0
@@ -11619,7 +11645,7 @@ index 97f3f12..390aa29 100644
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
 diff --git a/deno.json b/deno.json
-index 5f704a5..1600af9 100644
+index 5f704a5..70ad42e 100644
 --- a/deno.json
 +++ b/deno.json
 @@ -5,24 +5,26 @@
@@ -11659,7 +11685,7 @@ index 5f704a5..1600af9 100644
      ]
    },
    "compilerOptions": {
-@@ -45,41 +47,42 @@
+@@ -45,41 +47,44 @@
      "@01edu/time": "jsr:@01edu/time@^0.1.0",
      "@01edu/types": "jsr:@01edu/types@^0.2.6",
      "@db/sqlite": "jsr:@cd/sqlite@^0.13.1",
@@ -11675,7 +11701,9 @@ index 5f704a5..1600af9 100644
 +    "@huggingface/transformers": "npm:@huggingface/transformers@3.8.1",
 +    "pyodide": "npm:pyodide@0.28.2",
 +    "unpdf": "npm:unpdf@^1.8.1",
-+    "preact/": "npm:/preact@10.29.8/",
++    "preact/hooks": "npm:preact@10.29.8/hooks",
++    "preact/debug": "npm:preact@10.29.8/debug",
++    "preact/jsx-runtime": "npm:preact@10.29.8/jsx-runtime",
 +    "npm:@preact/signals@^2.9.0": "npm:@preact/signals@2.11.4",
 +    "npm:preact@^10.29.1": "npm:preact@10.29.8",
 +    "npm:preact@^10.29.1/jsx-runtime": "npm:preact@10.29.8/jsx-runtime"
@@ -15941,7 +15969,7 @@ index 08078d9..bf1cc01 100644
      </main>
    )
 diff --git a/web/pages/landing/landing-sections.tsx b/web/pages/landing/landing-sections.tsx
-index b232fd7..cc00609 100644
+index b232fd7..e73d109 100644
 --- a/web/pages/landing/landing-sections.tsx
 +++ b/web/pages/landing/landing-sections.tsx
 @@ -3,124 +3,89 @@ import {
@@ -16057,7 +16085,7 @@ index b232fd7..cc00609 100644
 -      'The recruiter picks 60, 90 or 120 minutes for building. A timed question phase follows the code submission.',
 -    ),
 +    'What data is kept?',
-+    'The code, the runs, declared AI use, the interview transcript, answer times and session events such as leaving the page. With your explicit agreement, the interview camera and audio are recorded for replay by the recruiting team and available for 30 days. Camera images are not sent to AI models. No screen recording.',
++    'The code, the runs, declared AI use, the interview transcript, answer times and session events such as leaving the page. With your explicit agreement, the interview camera and audio are recorded for replay by the recruiting team and available for 30 days. Only with a separate optional agreement, up to 12 sampled camera images may be sent to Muse Spark for visibility and image-quality observations. No emotion, gaze or honesty assessment. No screen recording.',
 +  ],
 +  [
 +    'Do I need a camera and microphone?',
@@ -16237,7 +16265,7 @@ index b232fd7..cc00609 100644
 -              'L’entreprise vous invite avec votre nom et votre e-mail, par un lien personnel. Votre identité n’est jamais envoyée aux modèles d’IA : ils ne voient que votre code et vos réponses.',
 -              'The company invites you by name and e-mail, through a personal link. Your identity is never sent to the AI models: they only see your code and your answers.',
 -            )}
-+            {'The company invites you by name and e-mail, through a personal link. Your identity is never sent to the AI models: they only see your code and what you say in the interview.'}
++            {'The company invites you by name and e-mail, through a personal link. Your name and email are not included in AI prompts. Models read your code and interview transcript. Only with your separate optional agreement, sampled camera images may also be analyzed for visibility and image quality; those images may show your face.'}
            </p>
          </div>
          <div tw='card p-6'>

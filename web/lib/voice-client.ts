@@ -352,9 +352,13 @@ const onEvent = (event: VoiceEvent) => {
 /* ---------- start and stop ---------- */
 
 export const startVoice = () => openVoice(false)
-export const startRecordedVoice = () => openVoice(true)
+export const startRecordedVoice = (visualAnalysisAccepted = false) =>
+  openVoice(true, visualAnalysisAccepted)
 
-const openVoice = async (recordInterview: boolean) => {
+const openVoice = async (
+  recordInterview: boolean,
+  visualAnalysisAccepted = false,
+) => {
   if (session || opening || releasePending) return
   opening = true
   const attempt = ++generation
@@ -413,6 +417,7 @@ const openVoice = async (recordInterview: boolean) => {
           voice.status.value = 'error'
           stopVoice()
         },
+        visualAnalysisAccepted,
       )
       ensureCurrent()
       url.searchParams.set('recording', recordingId)
