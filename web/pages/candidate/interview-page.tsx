@@ -144,7 +144,6 @@ export const InterviewPage = () => {
   const live = voice.status.value
   const captureStatus = recording.status.value
   const [recordingAccepted, setRecordingAccepted] = useState(false)
-  const [visualAnalysisAccepted, setVisualAnalysisAccepted] = useState(false)
   // An interview that Oracle closes live is marked finished at once: the page
   // then waits for its last words (below) instead of leaving here.
   const closingLive = live === 'live' || live === 'ended'
@@ -199,7 +198,7 @@ export const InterviewPage = () => {
   const begin = () => {
     mic.stop()
     if (url.params.demo === '1') startVoice()
-    else startRecordedVoice(visualAnalysisAccepted)
+    else startRecordedVoice()
   }
   useEffect(() => {
     if (captureStatus !== 'recording' && captureStatus !== 'saving') return
@@ -407,29 +406,13 @@ export const InterviewPage = () => {
                 <p tw='m-0 text-[12.5px]' style={{ opacity: 0.65 }}>
                   Your camera, microphone and Oracle’s voice will be recorded
                   for replay by the recruiting team. The recording is available
-                  for 30 days. Images are sent to Muse Spark only if you
-                  separately opt in below, to review camera visibility and image
-                  quality. No emotion, gaze, personality or honesty assessment.
-                  Use headphones. If you cannot use a camera, contact the
-                  recruiter for an adjustment before starting. Once the
-                  interview starts, closing or refreshing this page, or losing
-                  the connection, ends it permanently. Switching tabs does not
-                  end it.
+                  for 30 days. No camera image is sent to an AI model, and there
+                  is no emotion, gaze, personality or honesty assessment. Use
+                  headphones. If you cannot use a camera, contact the recruiter
+                  for an adjustment before starting. Once the interview starts,
+                  closing or refreshing this page, or losing the connection,
+                  ends it permanently. Switching tabs does not end it.
                 </p>
-                {!demo && (
-                  <label tw='flex items-start gap-2 text-left text-[13px]'>
-                    <input
-                      type='checkbox'
-                      checked={visualAnalysisAccepted}
-                      onChange={(e) =>
-                        setVisualAnalysisAccepted(e.currentTarget.checked)}
-                    />
-                    Optional: I allow up to 12 sampled camera images to be sent
-                    to Muse Spark via the configured Meta or Baseten provider
-                    for visibility and image-quality observations. I can take
-                    the interview without agreeing to this.
-                  </label>
-                )}
                 {!demo && (
                   <label tw='flex items-start gap-2 text-left text-[13px]'>
                     <input

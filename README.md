@@ -77,10 +77,11 @@ when you choose it.
 The interview starts after an explicit camera/audio recording agreement. The
 candidate sees their muted camera preview at the bottom left, plus a recording
 indicator. One video combines their camera and microphone with Oracle's actual
-server-generated voice. The main evidence report reads the transcript and code.
-An optional, separate agreement lets the recruiter send up to 12 sampled camera
-images to Muse Spark for visibility and image-quality observations. Declining
-this option does not prevent taking the interview.
+server-generated voice. The report reads the transcript and the code; no camera
+image is ever sent to a model. (A first version could send sampled images to
+Muse Spark for camera visibility. Measured, it added 60 % latency, sometimes
+missed the key transcript moment, and only told what the replay already shows:
+it was removed.)
 
 MediaRecorder uploads ordered chunks while the interview runs. The final page
 waits for the last chunk to save. A lost device or failed upload stops the
@@ -120,24 +121,23 @@ for an adjustment; an alternate assessment workflow is not implemented here.
 
 #### Interactive key moments
 
-In the recording section of a completed interview report, choose **Analyze key
-moments**. Muse Spark identifies technical explanations and points to verify
-against the transcript, submitted code and existing report. Clicking a timecode
-starts playback three seconds before the passage; markers and an optional
-on-video overlay show the annotations. Quotes and code ranges are checked against
-the source, and transcript positions remain approximate.
+The replay has its own player: a browser recording (MediaRecorder WebM) has no
+duration in its header, so the native scrubber is unusable; the track is drawn
+from the duration measured by the server and shows when the candidate speaks.
+Captions follow the transcript, **N**/**P** jump between answers, and every
+replay link of the report (quotes, transcript) jumps there 1.5 s early.
 
-When the candidate separately opted in, the browser samples up to 12 low-resolution
-JPEG images across the replay. Muse Spark may flag a visibility or image-quality
-issue at a sampled frame. Sparse sampling cannot establish what happened between
-images. It does not assess gaze, emotions, personality, honesty or technical
-ability from appearance, and no observation establishes cheating. Older recordings
-without that agreement support transcript-and-code analysis only.
+Choose **Find key moments**: Muse Spark (about 15 s) reads the transcript
+against the submitted code and the report, and marks claims to verify and
+explanations that match the code. Quotes, lines and code ranges are checked
+against the source; transcript positions remain approximate. The moments sit on
+the track and in a list that follows the playback. They point to passages and
+decide nothing.
 
 This step uses the existing `MODEL_API_KEY` and model configuration, with no
-recorded fallback analysis. Images are transient model inputs and are not saved
-separately by the application. Annotations are cached, private under the same
-company/demo-session rules as the replay, and removed with its deletion or expiry.
+recorded fallback analysis. Moments are cached, private under the same
+company/demo-session rules as the replay, and removed with its deletion or
+expiry.
 The original video, main report and human decision remain unchanged. Model-provider
 retention is governed by the configured provider's policies.
 

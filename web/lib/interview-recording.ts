@@ -52,7 +52,6 @@ export const beginRecording = async (
   context: AudioContext,
   oracle: GainNode,
   onFailure: (message: string) => void,
-  visualAnalysisAccepted = false,
 ) => {
   if (capture) throw Error('A recording is already being saved. Please wait.')
   recording.error.value = ''
@@ -83,7 +82,7 @@ export const beginRecording = async (
     const response = await request(paths.candidateRecording, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ accepted: true, mime, visualAnalysisAccepted }),
+      body: JSON.stringify({ accepted: true, mime }),
     })
     const info: RecordingView = await response.json()
     let stopped!: () => void

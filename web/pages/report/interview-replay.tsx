@@ -1,12 +1,42 @@
-import { signal } from '@preact/signals'
-import { useEffect, useRef, useState } from 'preact/hooks'
+// The interview replay of the report: the recording with both voices, its
+// captions, the key moments found by the AI, and the conversation in sync.
+import { signal, useComputed } from '@preact/signals'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { paths } from '/web/paths.ts'
 import { member } from '/web/lib/member-store.ts'
 import type { InterviewLine, RecordingView, ReportView } from '/web/types.ts'
-import { formatDateTime } from '/web/lib/format.ts'
-import { useReplayAnnotations } from './replay-annotations.tsx'
+import { formatDate } from '/web/lib/format.ts'
+import {
+  clock,
+  LEAD_MS,
+  type Span,
+  spanAt,
+  spansOf,
+} from '/web/lib/replay-timeline.ts'
+import {
+  pendingReplay,
+  playhead,
+  replayAt,
+  ReplayPlayer,
+} from './replay-player.tsx'
+import {
+  type CodeView,
+  KeyMoments,
+  useReplayAnalysis,
+} from './replay-annotations.tsx'
+import {
+  CalendarClock,
+  CloudCheck,
+  Lock,
+  MessagesSquare,
+  Play,
+  RefreshCw,
+  Sparkles,
+  Trash2,
+  TriangleAlert,
+} from '/web/assets/icons.tsx'
 
-const target = signal<{ id: string; atMs: number; nonce: number } | null>(null)
+/** recordings with a video, for the replay links of the report */
 const available = signal<string[]>([])
 const endpoint = (candidate: number, id?: string) =>
   `${paths.recruiterRecording}?${new URLSearchParams({
@@ -20,101 +50,146 @@ export const ReplayLink = ({ line }: { line?: InterviewLine }) =>
     ? (
       <button
         type='button'
-        tw='btn btn-ghost text-[12px] ml-2'
-        onClick={() => {
-          target.value = {
-            id: line.recordingId!,
-            atMs: line.atMs!,
-            nonce: Date.now(),
-          }
-          document.getElementById('interview-replay')?.scrollIntoView({
-            behavior: 'smooth',
-            block: 'center',
-          })
-        }}
+        aria-label={`Replay from ${clock(line.atMs)}`}
+        title='Replay this passage'
+        tw='ml-2 inline-flex items-center gap-1 h-[22px] px-2 rounded-md border border-border-primary bg-surface-elevated text-[11.5px] font-mono not-italic text-content-secondary cursor-pointer hover:bg-surface-hover hover:text-content-primary'
+        style={{ verticalAlign: '1px' }}
+        onClick={() => replayAt(line.recordingId!, line.atMs!)}
       >
-        Replay this passage
+        <Play tw='w-2.5 h-2.5' />
+        {clock(line.atMs)}
       </button>
     )
     : null
 
-export const ReplayQuote = ({ quote, v }: { quote: string; v: ReportView }) => {
-  const normalized = (value: string) =>
-    value.toLowerCase().replace(/\s+/g, ' ').trim()
+const fold = (value: string) => value.toLowerCase().replace(/\s+/g, ' ').trim()
+export const ReplayQuote = ({ quote, v }: { quote: string; v: ReportView }) => (
+  <ReplayLink
+    line={v.transcript.find((line) =>
+      line.who === 'candidate' && fold(line.text).includes(fold(quote))
+    )}
+  />
+)
+
+/** the transcript of this recording, following the playback */
+const Conversation = ({ spans, id }: { spans: Span[]; id: string }) => {
+  const list = useRef<HTMLOListElement>(null)
+  const touched = useRef(0)
+  const active = useComputed(() => spanAt(spans, playhead.value)?.index)
+  useEffect(() => {
+    const box = list.current
+    const item = box?.querySelector<HTMLElement>(
+      `[data-line="${active.value}"]`,
+    )
+    // follow the playback, unless the reader scrolled a moment ago
+    if (!box || !item || Date.now() - touched.current < 4000) return
+    box.scrollTo({
+      top: item.offsetTop - box.clientHeight / 3,
+      behavior: 'smooth',
+    })
+  }, [active.value])
+  const manual = () => (touched.current = Date.now())
   return (
-    <ReplayLink
-      line={v.transcript.find((line) =>
-        line.who === 'candidate' &&
-        normalized(line.text).includes(normalized(quote))
-      )}
-    />
+    <ol
+      ref={list}
+      onWheel={manual}
+      onTouchMove={manual}
+      tw='relative m-0 p-0 list-none flex flex-col gap-0.5 overflow-auto'
+      style={{ maxHeight: '320px', overscrollBehavior: 'contain' }}
+    >
+      {spans.map((s) => (
+        <li key={s.index} data-line={s.index}>
+          <button
+            type='button'
+            onClick={() => replayAt(id, s.from + LEAD_MS - 500)}
+            tw={[
+              'w-full flex gap-2.5 px-2.5 py-1.5 rounded-lg border-0 text-left cursor-pointer text-[13px] leading-[1.5] transition-colors',
+              active.value === s.index
+                ? 'bg-accent-soft text-content-primary'
+                : 'bg-transparent text-content-secondary hover:bg-surface-hover',
+            ]}
+          >
+            <span
+              tw='font-mono text-[11.5px] text-content-tertiary min-w-[38px] pt-px'
+              style={{ fontVariantNumeric: 'tabular-nums' }}
+            >
+              {clock(s.from)}
+            </span>
+            <span tw='flex-1 min-w-0'>
+              <strong
+                tw={[
+                  'font-semibold',
+                  s.who === 'ai' ? 'text-ai' : 'text-content-primary',
+                ]}
+              >
+                {s.who === 'ai' ? 'Oracle' : 'Candidate'}
+              </strong>{' '}
+              {s.text}
+            </span>
+          </button>
+        </li>
+      ))}
+    </ol>
   )
 }
 
-/** Original webcam video, with both voices. No emotion or gaze assessment. */
-export const InterviewReplay = ({ v }: { v: ReportView }) => {
+type Tab = 'moments' | 'conversation'
+
+/** The camera and both voices. No emotion, gaze or honesty assessment. */
+export const InterviewReplay = (
+  { v, Code }: { v: ReportView; Code: CodeView },
+) => {
   const [recordings, setRecordings] = useState<RecordingView[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [position, setPosition] = useState(0)
   const [refresh, setRefresh] = useState(0)
-  const video = useRef<HTMLVideoElement>(null)
-  const playerContainer = useRef<HTMLDivElement>(null)
-  const [fullscreen, setFullscreen] = useState(false)
-  useEffect(() => {
-    const changed = () =>
-      setFullscreen(document.fullscreenElement === playerContainer.current)
-    document.addEventListener('fullscreenchange', changed)
-    return () => document.removeEventListener('fullscreenchange', changed)
-  }, [])
-  const request = target.value
+  const [tab, setTab] = useState<Tab>('moments')
   const selected = recordings.find((r) => r.id === selectedId)
-  const annotations = useReplayAnnotations(
-    v,
-    selected,
-    position,
-    video,
+  const analysis = useReplayAnalysis(
     endpoint(v.candidateId, selectedId),
+    selected,
   )
+  const spans = useMemo(
+    () =>
+      selected ? spansOf(v.transcript, selected.id, selected.durationMs) : [],
+    [v.transcript, selected],
+  )
+
   useEffect(() => {
     const abort = new AbortController()
     available.value = []
-    target.value = null
     setLoading(true)
     setError('')
-    fetch(endpoint(v.candidateId), { signal: abort.signal }).then(
-      async (response) => {
-        if (!response.ok) throw Error('The recording list could not be loaded.')
-        let list: RecordingView[] = await response.json()
-        if (!list.length && member.peek()?.demo) {
-          // Recover older recordings only when this browser can prove it was
-          // the candidate. The server refuses other visitors and reassignment.
-          const recovered = await fetch(`${endpoint(v.candidateId)}&claim=1`, {
-            method: 'POST',
-            signal: abort.signal,
-          })
-          if (recovered.ok) {
-            const retry = await fetch(endpoint(v.candidateId), {
-              signal: abort.signal,
-            })
-            if (!retry.ok) {
-              throw Error('The recording list could not be loaded.')
-            }
-            list = await retry.json()
-          }
-        }
-        setRecordings(list)
-        available.value = list.filter((r) => r.bytes > 0).map((r) => r.id)
-        setSelectedId(
-          list.findLast((r) => r.status === 'complete')?.id ??
-            list.at(-1)?.id ?? '',
-        )
-      },
-    ).catch((error) => {
-      if (!abort.signal.aborted) setError(String(error.message ?? error))
+    const list = async () => {
+      const response = await fetch(endpoint(v.candidateId), {
+        signal: abort.signal,
+      })
+      if (!response.ok) throw Error('The recordings could not be loaded.')
+      return await response.json() as RecordingView[]
+    }
+    ;(async () => {
+      let found = await list()
+      if (!found.length && member.peek()?.demo) {
+        // Recover older recordings only when this browser can prove it was
+        // the candidate. The server refuses other visitors and reassignment.
+        const claimed = await fetch(`${endpoint(v.candidateId)}&claim=1`, {
+          method: 'POST',
+          signal: abort.signal,
+        })
+        if (claimed.ok) found = await list()
+      }
+      if (abort.signal.aborted) return
+      setRecordings(found)
+      available.value = found.filter((r) => r.bytes > 0).map((r) => r.id)
+      setSelectedId(
+        found.findLast((r) => r.status === 'complete')?.id ??
+          found.at(-1)?.id ?? '',
+      )
+    })().catch((e) => {
+      if (!abort.signal.aborted) setError(String(e?.message ?? e))
     }).finally(() => {
       if (!abort.signal.aborted) setLoading(false)
     })
@@ -123,27 +198,21 @@ export const InterviewReplay = ({ v }: { v: ReportView }) => {
       available.value = []
     }
   }, [v.candidateId, refresh])
-  const seek = () => {
-    if (!video.current || !request || request.id !== selectedId) return
-    // Server event times are approximate. Include context before the passage.
-    const seconds = Math.max(0, request.atMs / 1000 - 3)
-    video.current.currentTime = Number.isFinite(video.current.duration)
-      ? Math.min(seconds, video.current.duration)
-      : seconds
-  }
+
+  // a replay link of another attempt selects it; its player then jumps
+  const asked = pendingReplay.value
   useEffect(() => {
-    if (!request || !recordings.some((r) => r.id === request.id)) return
-    if (selectedId !== request.id) setSelectedId(request.id)
-    else if (video.current?.readyState) seek()
-  }, [request, selectedId, recordings])
+    if (
+      asked && asked.id !== selectedId &&
+      recordings.some((r) => r.id === asked.id)
+    ) setSelectedId(asked.id)
+  }, [asked, selectedId, recordings])
+
   if (!loading && !error && !recordings.length) {
     if (!member.value?.demo) return null
     return (
-      <section
-        aria-label='Interview recording'
-        tw='card p-4 flex flex-col gap-2'
-      >
-        <h2 tw='m-0 text-[17px] font-semibold'>Interview recording</h2>
+      <section aria-label='Interview replay' tw='card p-4 flex flex-col gap-2'>
+        <h2 tw='m-0 text-[17px] font-semibold'>Interview replay</h2>
         <p tw='m-0 text-[13px] text-content-secondary'>
           No replay is available in this demo session. Open the report in the
           browser session that created the invitation or completed this
@@ -152,209 +221,254 @@ export const InterviewReplay = ({ v }: { v: ReportView }) => {
       </section>
     )
   }
+
+  const remove = async () => {
+    if (!selected) return
+    setDeleting(true)
+    try {
+      const response = await fetch(endpoint(v.candidateId, selected.id), {
+        method: 'DELETE',
+      })
+      if (!response.ok) throw Error('The recording could not be deleted.')
+      const remaining = recordings.filter((r) => r.id !== selected.id)
+      setRecordings(remaining)
+      available.value = remaining.filter((r) => r.bytes > 0).map((r) => r.id)
+      setSelectedId(remaining.at(-1)?.id ?? '')
+      setConfirmDelete(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  const moments = analysis.analysis?.status === 'ready'
+    ? analysis.analysis.moments
+    : []
+  const tabs: [Tab, string, number | undefined][] = [
+    ['moments', 'Key moments', moments.length || undefined],
+    ['conversation', 'Conversation', spans.length || undefined],
+  ]
   return (
     <section
       id='interview-replay'
-      aria-label='Interview recording'
-      tw='card p-4 flex flex-col gap-3'
+      aria-label='Interview replay'
+      tw='card p-4 sm:p-5 flex flex-col gap-4'
+      style={{ scrollMarginTop: '72px' }}
     >
-      <h2 tw='m-0 text-[17px] font-semibold'>Interview recording</h2>
-      <p tw='m-0 text-[13px] text-content-secondary'>
-        Camera and audio from the candidate’s browser, including Oracle’s voice.
-        Replay links use approximate positions. A pause or a camera incident is
-        not evidence of dishonesty or lack of understanding.
-      </p>
-      {loading && <p role='status'>Loading recordings…</p>}
-      {error && <p role='alert' tw='m-0 text-err text-[13px]'>{error}</p>}
-      {(error || recordings.some((r) => r.status === 'recording')) && (
-        <button
-          type='button'
-          tw='btn btn-secondary self-start'
-          disabled={loading}
-          onClick={() => setRefresh((n) => n + 1)}
-        >
-          Refresh recordings
-        </button>
-      )}
-      {recordings.length > 1 && (
-        <label tw='flex flex-col gap-1 text-[13px]'>
-          Recording attempt
-          <select
-            tw='input'
-            value={selectedId}
-            onChange={(e) => {
-              target.value = null
-              setSelectedId(e.currentTarget.value)
-              setError('')
-              setConfirmDelete(false)
-            }}
+      <header tw='flex items-start gap-3 flex-wrap'>
+        <div tw='flex flex-col gap-0.5 flex-1 min-w-[220px]'>
+          <h2 tw='m-0 text-[17px] font-semibold'>Interview replay</h2>
+          <p tw='m-0 text-[12.5px] text-content-secondary'>
+            Camera and both voices, as recorded in the candidate’s browser. A
+            pause or a camera incident is not evidence of anything.
+          </p>
+        </div>
+        {recordings.length > 1 && (
+          <div
+            role='group'
+            aria-label='Recording attempt'
+            tw='flex gap-1 flex-wrap'
           >
             {recordings.map((r, i) => (
-              <option key={r.id} value={r.id}>
-                Attempt {i + 1} ·{' '}
-                {formatDateTime(new Date(r.createdAt).toISOString())} ·{' '}
-                {r.status}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      {selected && (
-        <>
-          {selected.bytes > 0
-            ? (
-              <div
-                ref={playerContainer}
-                style={{
-                  position: 'relative',
-                  background: '#000',
-                  borderRadius: '8px',
+              <button
+                key={r.id}
+                type='button'
+                aria-pressed={r.id === selectedId}
+                title={`${
+                  formatDate(new Date(r.createdAt).toISOString())
+                } · ${r.status}`}
+                onClick={() => {
+                  setSelectedId(r.id)
+                  setError('')
+                  setConfirmDelete(false)
                 }}
+                tw={[
+                  'h-7 px-2.5 rounded-md border text-[12px] cursor-pointer inline-flex items-center gap-1',
+                  r.id === selectedId
+                    ? 'bg-accent-soft border-accent text-accent-text'
+                    : 'bg-transparent border-border-primary text-content-secondary hover:bg-surface-hover',
+                ]}
               >
-                <video
-                  key={selected.id}
-                  ref={video}
-                  controls
-                  playsInline
-                  preload='metadata'
-                  aria-label='Interview replay'
-                  src={endpoint(v.candidateId, selected.id)}
-                  onLoadedMetadata={seek}
-                  onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
-                  onError={() =>
-                    setError(
-                      'This recording could not be played. It may be incomplete or use a format this browser cannot play.',
-                    )}
-                  style={{
-                    width: '100%',
-                    maxHeight: fullscreen ? '100vh' : '420px',
-                    background: '#000',
-                    borderRadius: '8px',
-                  }}
+                Attempt {i + 1}
+                {r.status !== 'complete' && (
+                  <TriangleAlert
+                    tw='w-3 h-3 text-warn'
+                    aria-label='incomplete'
+                  />
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </header>
+
+      {loading && (
+        <div
+          tw='rounded-[12px] bg-surface-sunken animate-pulse'
+          style={{ aspectRatio: '16 / 9', maxHeight: '420px' }}
+        />
+      )}
+      {error && (
+        <p
+          role='alert'
+          tw='m-0 text-[13px] text-err flex items-center gap-2 flex-wrap'
+        >
+          {error}
+          <button
+            type='button'
+            tw='btn btn-ghost h-7 px-2 text-[12.5px]'
+            onClick={() => setRefresh((n) => n + 1)}
+          >
+            <RefreshCw tw='w-3.5 h-3.5' /> Retry
+          </button>
+        </p>
+      )}
+
+      {selected && (selected.bytes > 0
+        ? (
+          <ReplayPlayer
+            key={selected.id}
+            id={selected.id}
+            src={endpoint(v.candidateId, selected.id)}
+            durationMs={selected.durationMs}
+            spans={spans}
+            moments={moments}
+            onError={setError}
+          />
+        )
+        : (
+          <p tw='m-0 px-4 py-8 rounded-[12px] bg-surface-sunken text-center text-[13px] text-content-secondary'>
+            No video was received for this attempt.
+          </p>
+        ))}
+
+      {selected && selected.bytes > 0 && (
+        <div tw='flex flex-col gap-2'>
+          <div
+            role='tablist'
+            aria-label='Replay panels'
+            tw='flex gap-1 border-b border-border-primary'
+          >
+            {tabs.map(([key, label, count]) => (
+              <button
+                key={key}
+                type='button'
+                role='tab'
+                id={`replay-tab-${key}`}
+                aria-selected={tab === key}
+                aria-controls='replay-panel'
+                onClick={() => setTab(key)}
+                tw={[
+                  'h-9 px-3 border-0 border-b-2 bg-transparent text-[13px] font-medium cursor-pointer inline-flex items-center gap-1.5',
+                  tab === key
+                    ? 'border-accent text-content-primary'
+                    : 'border-transparent text-content-tertiary hover:text-content-primary',
+                ]}
+                style={{ marginBottom: '-1px' }}
+              >
+                {key === 'moments'
+                  ? <Sparkles tw='w-3.5 h-3.5 text-ai' />
+                  : <MessagesSquare tw='w-3.5 h-3.5' />}
+                {label}
+                {count !== undefined && (
+                  <span tw='text-[11.5px] text-content-tertiary font-mono'>
+                    {count}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <div
+            id='replay-panel'
+            role='tabpanel'
+            aria-labelledby={`replay-tab-${tab}`}
+          >
+            {tab === 'moments'
+              ? (
+                <KeyMoments
+                  state={analysis}
+                  recording={selected}
+                  files={v.files}
+                  Code={Code}
                 />
-                {annotations.overlay}
-                {typeof document.documentElement.requestFullscreen ===
-                    'function' && (
+              )
+              : <Conversation spans={spans} id={selected.id} />}
+          </div>
+        </div>
+      )}
+
+      {selected && (
+        <footer tw='pt-3 border-t border-border-primary flex items-center gap-x-4 gap-y-2 flex-wrap text-[12px] text-content-tertiary'>
+          {selected.status === 'complete'
+            ? (
+              <span tw='inline-flex items-center gap-1.5'>
+                <CloudCheck tw='w-3.5 h-3.5 text-ok' /> Recording complete
+              </span>
+            )
+            : (
+              <span tw='inline-flex items-center gap-1.5 text-warn'>
+                <TriangleAlert tw='w-3.5 h-3.5' />
+                {selected.status === 'recording'
+                  ? 'Upload in progress'
+                  : 'Recording interrupted'}
+                {selected.status === 'recording' && (
                   <button
                     type='button'
-                    onClick={() => {
-                      const action = fullscreen
-                        ? document.exitFullscreen()
-                        : playerContainer.current?.requestFullscreen()
-                      action?.catch(() => {})
-                    }}
-                    style={{
-                      position: 'absolute',
-                      top: '10px',
-                      right: '10px',
-                      border: 0,
-                      borderRadius: '6px',
-                      padding: '6px 9px',
-                      background: 'rgba(13,19,35,.85)',
-                      color: '#fff',
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                    }}
+                    tw='btn btn-ghost h-6 px-1.5 text-[12px]'
+                    onClick={() => setRefresh((n) => n + 1)}
                   >
-                    {fullscreen
-                      ? 'Exit full screen'
-                      : 'Full screen with annotations'}
+                    <RefreshCw tw='w-3 h-3' /> Refresh
                   </button>
                 )}
-              </div>
-            )
-            : <p>No video data was received for this attempt.</p>}
-          {selected.bytes > 0 && selected.durationMs > 0 && (
-            <label tw='flex flex-col gap-1 text-[12px]'>
-              Replay position · {Math.floor(position)} s /{' '}
-              {Math.ceil(selected.durationMs / 1000)} s
-              <input
-                type='range'
-                min={0}
-                max={selected.durationMs / 1000}
-                step={0.1}
-                value={position}
-                onInput={(e) => {
-                  if (video.current) {
-                    video.current.currentTime = Number(e.currentTarget.value)
-                  }
-                }}
-              />
-            </label>
-          )}
-          <p tw='m-0 text-[12px] text-content-secondary'>
-            {selected.status === 'complete'
-              ? '✓ Recording saved'
-              : '⚠ Incomplete recording or upload still in progress'}
-            {' · Available until '}
-            {formatDateTime(new Date(selected.expiresAt).toISOString())}
-          </p>
-          <p tw='m-0 text-[12px] text-content-tertiary'>
+              </span>
+            )}
+          <span tw='inline-flex items-center gap-1.5'>
+            <CalendarClock tw='w-3.5 h-3.5' />
+            Kept until {formatDate(new Date(selected.expiresAt).toISOString())}
+          </span>
+          <span tw='inline-flex items-center gap-1.5'>
+            <Lock tw='w-3.5 h-3.5' />
             {member.value?.demo
-              ? 'This demo recording is private to your current login session. Signing out ends access. '
-              : 'Only members of your company space can access this recording. '}
-            Visual observations require the candidate’s separate agreement.
-          </p>
-          {selected.bytes > 0 && annotations.panel}
+              ? 'This login session only'
+              : 'Your company space only'}
+          </span>
+          <span tw='flex-1' />
           {!confirmDelete
             ? (
               <button
                 type='button'
-                tw='btn btn-ghost self-start text-[12px]'
+                tw='btn btn-ghost h-7 px-2 text-[12px]'
                 onClick={() => setConfirmDelete(true)}
               >
-                Delete this recording
+                <Trash2 tw='w-3.5 h-3.5' /> Delete recording
               </button>
             )
             : (
-              <div tw='flex flex-wrap items-center gap-2 text-[13px]'>
-                <span>
-                  Delete this recording permanently from the application?
-                </span>
+              <span
+                role='alert'
+                tw='inline-flex items-center gap-2 text-content-primary'
+              >
+                Delete this recording for good?
                 <button
                   type='button'
-                  tw='btn btn-secondary'
+                  tw='btn btn-danger h-7 px-2.5 text-[12px]'
                   disabled={deleting}
-                  onClick={async () => {
-                    setDeleting(true)
-                    try {
-                      const response = await fetch(
-                        endpoint(v.candidateId, selected.id),
-                        { method: 'DELETE' },
-                      )
-                      if (!response.ok) {
-                        throw Error('The recording could not be deleted.')
-                      }
-                      const remaining = recordings.filter((r) =>
-                        r.id !== selected.id
-                      )
-                      setRecordings(remaining)
-                      available.value = remaining.filter((r) => r.bytes > 0)
-                        .map((r) => r.id)
-                      setSelectedId(remaining.at(-1)?.id ?? '')
-                      setConfirmDelete(false)
-                    } catch (error) {
-                      setError(
-                        error instanceof Error ? error.message : String(error),
-                      )
-                    } finally {
-                      setDeleting(false)
-                    }
-                  }}
+                  onClick={remove}
                 >
-                  Confirm deletion
+                  Delete
                 </button>
                 <button
                   type='button'
-                  tw='btn btn-ghost'
+                  tw='btn btn-ghost h-7 px-2 text-[12px]'
                   disabled={deleting}
                   onClick={() => setConfirmDelete(false)}
                 >
                   Cancel
                 </button>
-              </div>
+              </span>
             )}
-        </>
+        </footer>
       )}
     </section>
   )

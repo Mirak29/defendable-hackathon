@@ -1,21 +1,18 @@
 import type { AiTrace } from '/web/types.ts'
 
-export type ReplayFrame = { atMs: number; image: string }
+/** a passage worth replaying, read by the AI from the transcript and the code */
 export type ReplayMoment = {
   atMs: number
-  kind: 'point-to-check' | 'strength' | 'camera-obscured' | 'frame-unreadable'
+  kind: 'point-to-check' | 'strength'
   title: string
   detail: string
-  source: 'transcript' | 'image'
   quote?: string
   lineIndex?: number
   code?: { path: string; from: number; to: number }
 }
 export type ReplayAnalysis = {
   status: 'idle' | 'pending' | 'ready' | 'failed'
-  visualAllowed: boolean
   moments: ReplayMoment[]
-  sampledAtMs: number[]
   trace?: AiTrace
   error?: string
 }

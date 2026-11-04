@@ -8,11 +8,9 @@ import {
   submittedCandidate,
 } from '/api/lib/journey-test.js'
 import { handleRecording } from './recordings.ts'
-import { parseReplayMoments, validateFrames } from './replay-analysis.ts'
-import { frameTimes } from '/web/lib/replay-frames.ts'
+import { parseReplayMoments } from './replay-analysis.ts'
 
-const image = 'data:image/jpeg;base64,/9j/2Q=='
-test('replay moments: ground positions, quotes and code; restrict image observations', async (step) => {
+test('replay moments: grounded in the transcript, the quotes and the code', async (step) => {
   const report = {
     transcript: [{
       who: 'candidate',
@@ -26,7 +24,6 @@ test('replay moments: ground positions, quotes and code; restrict image observat
     'timestamps come from evidence, invented quotes and other recordings are rejected',
     () => {
       const valid = {
-        source: 'transcript',
         kind: 'point-to-check',
         lineIndex: 0,
         quote: 'validate the protocol',
@@ -44,81 +41,53 @@ test('replay moments: ground positions, quotes and code; restrict image observat
         },
         report,
         'r',
-        [],
       )
       eq(result.length, 1)
       eq(result[0].atMs, 12000)
       eq(result[0].code, valid.code)
-      eq(parseReplayMoments({ moments: [valid] }, report, 'other', []), [])
+      eq(parseReplayMoments({ moments: [valid] }, report, 'other'), [])
     },
   )
   await step(
-    'visual wording cannot contain emotion, gaze or intent judgments',
+    'the word filter drops judgments of the person, never words about code',
     () => {
-      const frames = [{ atMs: 5000, image }]
-      const result = parseReplayMoments(
-        {
-          moments: [
-            { source: 'image', kind: 'cheating', frameIndex: 0 },
-            { source: 'image', kind: 'camera-obscured', frameIndex: 99 },
-            {
-              source: 'image',
-              kind: 'camera-obscured',
-              frameIndex: 0,
-              title: 'Cheater',
-              detail: 'Looks nervous',
-              atMs: 99999,
-            },
-          ],
-        },
-        report,
-        'r',
-        frames,
-      )
-      eq(result.length, 1)
-      eq(result[0].atMs, 5000)
-      eq(result[0].title, 'Camera visibility to verify')
-      eq(result[0].detail.includes('nervous'), false)
-      eq(
+      const keep = (detail) =>
         parseReplayMoments(
           {
             moments: [{
-              source: 'image',
-              kind: 'camera-obscured',
-              frameIndex: 0,
+              kind: 'point-to-check',
+              lineIndex: 0,
+              quote: 'validate the protocol',
+              title: 'Validation to verify',
+              detail,
             }],
           },
           report,
           'r',
-          [],
-        ),
-        [],
-      )
-    },
-  )
-  await step(
-    'sample count, sizes, formats and timeline bounds are enforced',
-    () => {
-      eq(frameTimes(1200000).length, 12)
-      eq(frameTimes(0), [])
-      eq(frameTimes(1000), [0])
-      eq(validateFrames([{ atMs: 500, image }], 1000).length, 1)
-      throws(() => validateFrames([{ atMs: 1001, image }], 1000))
-      throws(() =>
-        validateFrames(
-          [{ atMs: 0, image: 'https://external.invalid/image' }],
-          1000,
-        )
-      )
-      throws(() =>
-        validateFrames(
-          Array.from({ length: 13 }, () => ({ atMs: 0, image })),
-          1000,
-        )
-      )
-      throws(() =>
-        validateFrames([{ atMs: 0, image: image + 'A'.repeat(180000) }], 1000)
-      )
+        ).length === 1
+      for (
+        const detail of [
+          'The error message is not checked in src/app.ts.',
+          'A stack trace would show where the request fails.',
+          'The health check route returns 200 before validation.',
+          'Read the next page of results.',
+          'Two writes could cause a race condition.',
+          'The underlying store is a Map.',
+          'Ask how the average latency was measured.',
+        ]
+      ) eq([detail, keep(detail)], [detail, true])
+      for (
+        const detail of [
+          'The candidate looks nervous here.',
+          'The candidate is confident about the cache.',
+          'Their age may matter.',
+          'Mentions a health issue.',
+          'A racial remark.',
+          'The candidate may be lying.',
+          'He seems 40 years old.',
+          'Avoids eye contact.',
+        ]
+      ) eq([detail, keep(detail)], [detail, false])
     },
   )
 })
@@ -139,39 +108,33 @@ const send = (method, path, cookies, body) =>
     }),
   )
 
-test('replay analysis: consent, private access, multimodal request, caching and deletion', async (step) => {
+test('replay analysis: private access, text-only request, caching and deletion', async (step) => {
   const member = await signup('ReplayAnalysis')
   const stranger = await signup('ReplayAnalysisOther')
   const assessment = await approvedAssessment(member)
   const { cookies, candidateId } = await submittedCandidate(member, assessment)
-  const recordings = []
-  for (const allowed of [false, true]) {
-    const r = await (await send('POST', '/api/candidate/recording', cookies, {
-      accepted: true,
-      mime: 'video/webm',
-      visualAnalysisAccepted: allowed,
-    })).json()
-    recordings.push(r)
-    eq(
-      (await send(
-        'PUT',
-        `/api/candidate/recording?id=${r.id}&sequence=0`,
-        cookies,
-        new Uint8Array([1]),
-      )).status,
-      200,
-    )
-    eq(
-      (await send('POST', `/api/candidate/recording?id=${r.id}`, cookies, {
-        status: 'complete',
-        durationMs: 20000,
-      })).status,
-      200,
-    )
-  }
-  const [legacy, visual] = recordings
-  const endpoint = (id) =>
-    `/api/recruiter/recording?candidate=${candidateId}&id=${id}&analysis=1`
+  const r = await (await send('POST', '/api/candidate/recording', cookies, {
+    accepted: true,
+    mime: 'video/webm',
+  })).json()
+  eq(
+    (await send(
+      'PUT',
+      `/api/candidate/recording?id=${r.id}&sequence=0`,
+      cookies,
+      new Uint8Array([1]),
+    )).status,
+    200,
+  )
+  eq(
+    (await send('POST', `/api/candidate/recording?id=${r.id}`, cookies, {
+      status: 'complete',
+      durationMs: 20000,
+    })).status,
+    200,
+  )
+  const endpoint =
+    `/api/recruiter/recording?candidate=${candidateId}&id=${r.id}&analysis=1`
   Candidate.update({
     candidateId,
     candidateFinishedAt: Date.now(),
@@ -179,60 +142,36 @@ test('replay analysis: consent, private access, multimodal request, caching and 
       {
         who: 'candidate',
         text: 'I validate the protocol.',
-        recordingId: visual.id,
+        recordingId: r.id,
         atMs: 12000,
       },
     ],
   })
   await step(
-    'ownership, origin and consent are checked before any model request',
+    'another company sees nothing, before any model request',
     async () => {
-      eq((await send('GET', endpoint(visual.id), stranger)).status, 404)
-      eq(
-        (await send('POST', endpoint(visual.id), stranger, { frames: [] }))
-          .status,
-        404,
-      )
-      eq(
-        (await send('POST', endpoint(legacy.id), member, {
-          frames: [{ atMs: 5000, image }],
-        })).status,
-        403,
-      )
-      eq(
-        (await send('POST', endpoint(visual.id), member, {
-          frames: [{ atMs: 50000, image }],
-        })).status,
-        400,
-      )
-      const state = await (await send('GET', endpoint(legacy.id), member))
-        .json()
-      eq(state.visualAllowed, false)
-      eq(state.status, 'idle')
+      eq((await send('GET', endpoint, stranger)).status, 404)
+      eq((await send('POST', endpoint, stranger)).status, 404)
+      eq((await (await send('GET', endpoint, member)).json()).status, 'idle')
     },
   )
   await step(
-    'images reach only the model; results persist and cached requests do not call it again',
+    'the model gets text only; the result persists, a second request does not call it again',
     async () => {
       const requests = []
       const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
-        const body = await req.json()
-        requests.push(body)
+        requests.push(await req.json())
         return Response.json({
           choices: [{
             message: {
               content: JSON.stringify({
-                moments: [
-                  { source: 'image', kind: 'frame-unreadable', frameIndex: 0 },
-                  {
-                    source: 'transcript',
-                    kind: 'point-to-check',
-                    lineIndex: 0,
-                    quote: 'validate the protocol',
-                    title: 'Validation to verify',
-                    detail: 'Compare with the implementation.',
-                  },
-                ],
+                moments: [{
+                  kind: 'point-to-check',
+                  lineIndex: 0,
+                  quote: 'validate the protocol',
+                  title: 'Validation to verify',
+                  detail: 'Compare with the implementation.',
+                }],
               }),
             },
             finish_reason: 'stop',
@@ -248,46 +187,33 @@ test('replay analysis: consent, private access, multimodal request, caching and 
         retries: 0,
       })
       try {
-        const response = await send('POST', endpoint(visual.id), member, {
-          frames: [{ atMs: 5000, image }],
-        })
+        const response = await send('POST', endpoint, member)
         eq(response.status, 200)
         const result = await response.json()
         eq(result.status, 'ready')
-        eq(result.moments.length, 2)
-        eq(result.sampledAtMs, [5000])
+        eq(result.moments.length, 1)
         const user = requests[0].messages[1].content
-        eq(user[1], { type: 'image_url', image_url: { url: image } })
-        eq(user[0].text.includes('identity'), false)
-        eq(user[0].text.includes('email'), false)
-        const stored =
-          sql`SELECT result FROM interviewReplayAnalysis WHERE recordingId = ?`
-            .get(visual.id)
-        eq(JSON.stringify(stored).includes(image), false)
+        eq(typeof user, 'string')
+        eq(user.includes('identity'), false)
+        eq(user.includes('email'), false)
         eq(
-          (await (await send('GET', endpoint(visual.id), member)).json())
-            .moments.length,
-          2,
+          (await (await send('GET', endpoint, member)).json()).moments.length,
+          1,
         )
-        await send('POST', endpoint(visual.id), member, { frames: [] })
+        await send('POST', endpoint, member)
         eq(requests.length, 1)
-        const textOnly = await send('POST', endpoint(legacy.id), member, {
-          frames: [],
-        })
-        eq((await textOnly.json()).status, 'ready')
-        eq(typeof requests[1].messages[1].content, 'string')
         eq(
           (await send(
             'DELETE',
-            `/api/recruiter/recording?candidate=${candidateId}&id=${visual.id}`,
+            `/api/recruiter/recording?candidate=${candidateId}&id=${r.id}`,
             member,
           )).status,
           200,
         )
-        eq((await send('GET', endpoint(visual.id), member)).status, 404)
+        eq((await send('GET', endpoint, member)).status, 404)
         eq(
-          sql`SELECT COUNT(*) AS n FROM interviewReplayAnalysis WHERE recordingId = ?`
-            .get(visual.id).n,
+          sql`SELECT COUNT(*) AS n FROM interviewReplayMoments WHERE recordingId = ?`
+            .get(r.id).n,
           0,
         )
       } finally {

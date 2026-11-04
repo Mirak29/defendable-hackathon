@@ -12,8 +12,6 @@ import {
   deleteReplayAnalysis,
   purgeReplayAnalyses,
   readReplayAnalysis,
-  registerReplayAnalysis,
-  validateFrames,
 } from '/api/replay-analysis.ts'
 
 const Recording = createTable('interviewRecording', {
@@ -212,7 +210,6 @@ const upload = async (req: Request, url: URL) => {
       nextSequence: 0,
       status: 'recording',
     })
-    registerReplayAnalysis(recordingId, body.visualAnalysisAccepted === true)
     return Response.json(viewOf(requireRecording(recordingId)))
   }
   const r = getRecording(recordingId)
@@ -354,27 +351,8 @@ const replay = async (req: Request, url: URL) => {
     if (!c!.candidateFinishedAt || r!.status === 'recording' || !r!.bytes) {
       fail(409, 'Wait for the interview recording to finish saving.')
     }
-    let frames
     try {
-      const body = JSON.parse(new TextDecoder().decode(await readBytes(req)))
-      frames = validateFrames(body.frames ?? [], r!.durationMs)
-    } catch (error) {
-      if (error instanceof Response) throw error
-      return fail(
-        400,
-        'Invalid analysis request. Use up to 12 JPEG images within this recording.',
-      )
-    }
-    if (frames.length && !readReplayAnalysis(recordingId!).visualAllowed) {
-      fail(
-        403,
-        'The candidate did not agree to visual analysis for this recording.',
-      )
-    }
-    try {
-      return Response.json(
-        await analyzeReplay(recordingId!, reportView(c!), frames),
-      )
+      return Response.json(await analyzeReplay(recordingId!, reportView(c!)))
     } catch {
       return fail(503, 'Replay analysis needs a configured model API key.')
     }

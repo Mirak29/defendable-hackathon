@@ -74,10 +74,10 @@ index 9a23581..fcf427f 100644
 +# production secrets (see .env.production.example)
 +.env.production
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 395848d..c5320e3 100644
+index 395848d..ffe2c19 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -5,153 +5,144 @@ code in this repository.
+@@ -5,153 +5,147 @@ code in this repository.
  
  ## What this is
  
@@ -271,7 +271,10 @@ index 395848d..c5320e3 100644
 -  `web/pages/questions/questions-state.ts`. Pages never hold server data
 -  themselves.
 +  `@01edu/signal-router`. `app.tsx` maps paths to pages; every URL lives in
-+  `web/paths.ts`, never hard-code a path. Server state lives in module-level
++  `web/paths.ts`, never hard-code a path. The candidate and recruiter pages load on
++  demand (`web/lib/lazy-page.tsx`, esbuild `splitting`): a page of a journey
++  prefetches the others while idle; a chunk missing after a deployment reloads
++  once. Server state lives in module-level
 +  stores (`web/lib/*-store.ts`) refetched on the server events
 +  (`web/lib/events.ts`). The interview page shows Oracle as an orb
 +  (`web/ui/oracle-orb.tsx`) beside a message panel, and starts by itself.
@@ -3934,7 +3937,7 @@ index 6639d7b..5eaae82 100644
 +  )
  })
 diff --git a/api/email.ts b/api/email.ts
-index 711bdb9..7b7fa21 100644
+index 711bdb9..68ec88f 100644
 --- a/api/email.ts
 +++ b/api/email.ts
 @@ -1,24 +1,21 @@
@@ -4072,7 +4075,7 @@ index 711bdb9..7b7fa21 100644
 -  const text = `${w.hello(i.firstName)}
 +  const until = dateOf(i.expiresAt)
 +  const how =
-+    `${i.durationMin} min to build ${i.task}, with the AI of your choice, then a short spoken interview with an AI interviewer about your own code. No webcam and no screen recording; the microphone is used only during the interview.`
++    `${i.durationMin} min to build ${i.task}, with the AI of your choice, then a short spoken interview with an AI interviewer about your own code. With your agreement, the interview is recorded (camera and audio) for the recruiting team for 30 days. No screen recording.`
 +  const keep =
 +    'This link opens the assessment without a password: do not forward it. You can resume on another device with the same link.'
 +  const ignore =
@@ -5146,7 +5149,7 @@ index 03637a4..2a31101 100644
 +  })
  })
 diff --git a/api/llm.ts b/api/llm.ts
-index 76404e9..46add75 100644
+index 76404e9..496f20e 100644
 --- a/api/llm.ts
 +++ b/api/llm.ts
 @@ -1,189 +1,99 @@
@@ -5462,19 +5465,14 @@ index 76404e9..46add75 100644
      public readonly failures: AiFailure[] = [],
    ) {
      super(message)
-@@ -223,73 +129,49 @@ export class AiError extends Error {
+@@ -223,73 +129,42 @@ export class AiError extends Error {
    }
  }
  
 -export type Message = { role: 'system' | 'user' | 'assistant'; content: string }
 +export type Message = {
 +  role: 'system' | 'user' | 'assistant'
-+  content:
-+    | string
-+    | ({ type: 'text'; text: string } | {
-+      type: 'image_url'
-+      image_url: { url: string }
-+    })[]
++  content: string
 +}
  
  export type AskOptions<T> = {
@@ -5484,8 +5482,6 @@ index 76404e9..46add75 100644
 -  tier: Tier
    system: string
    prompt: string
-+  /** Consented image data URLs, used only by explicit multimodal tasks. */
-+  images?: string[]
    /** validates the model answer, throws a readable error otherwise */
    parse: (value: unknown) => T
 -  /** answer of the brief, served as a replay when nothing else works */
@@ -5562,7 +5558,7 @@ index 76404e9..46add75 100644
  /** from the first [ or { to the last ] or }, undefined when there is none */
  const jsonSlice = (body: string) => {
    const start = body.search(/[[{]/)
-@@ -312,15 +194,15 @@ const parseRelaxed = (json: string) => {
+@@ -312,15 +187,15 @@ const parseRelaxed = (json: string) => {
  /** JSON of a model answer: without <think> blocks nor ```json fences */
  export const extractJson = (content: string) => {
    const text = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
@@ -5581,7 +5577,7 @@ index 76404e9..46add75 100644
    let error: unknown
    try {
      return parseRelaxed(main)
-@@ -328,415 +210,516 @@ export const extractJson = (content: string) => {
+@@ -328,266 +203,170 @@ export const extractJson = (content: string) => {
      error = err
    }
    for (const body of [outer, text]) {
@@ -5823,13 +5819,13 @@ index 76404e9..46add75 100644
 +    content += delta
 +    finish = choice?.finish_reason ?? finish
 +    usage = chunk.usage ?? usage
-+  }
+   }
 +  for await (const part of res.body!) {
 +    buffer += decoder.decode(part, { stream: true })
 +    const lines = buffer.split('\n')
 +    buffer = lines.pop()!
 +    lines.forEach(line)
-   }
++  }
 +  line(buffer)
 +  return { content, finish, usage }
  }
@@ -5963,20 +5959,8 @@ index 76404e9..46add75 100644
 +  const label = modelLabel(model)
    const messages: Message[] = [
      { role: 'system', content: o.system },
--    { role: 'user', content: o.prompt },
-+    {
-+      role: 'user',
-+      content: o.images?.length
-+        ? [
-+          { type: 'text', text: o.prompt },
-+          ...o.images.map((url) => ({
-+            type: 'image_url' as const,
-+            image_url: { url },
-+          })),
-+        ]
-+        : o.prompt,
-+    },
-   ]
+     { role: 'user', content: o.prompt },
+@@ -595,148 +374,334 @@ const attempt = async <T>(
    const started = performance.now()
    let tokensIn = 0
    let tokensOut = 0
@@ -11644,6 +11628,20 @@ index 97f3f12..390aa29 100644
      const [head, ...rest] = request.split(' ')
      const path = rest[0] ?? ''
      const renamed = path.split('/').map((segment) => {
+diff --git a/build-config.ts b/build-config.ts
+index 3f70509..cfd9994 100644
+--- a/build-config.ts
++++ b/build-config.ts
+@@ -8,6 +8,9 @@ export const config: BuildOptions = {
+   plugins: [...denoPlugins()],
+   format: 'esm',
+   bundle: true,
++  // pages load on demand (web/lib/lazy-page.tsx); shared code goes to chunks
++  splitting: true,
++  chunkNames: 'chunks/[name]-[hash]',
+   jsxFactory: 'h',
+   jsxFragment: 'Fragment',
+   outdir: 'dist',
 diff --git a/deno.json b/deno.json
 index 5f704a5..70ad42e 100644
 --- a/deno.json
@@ -13578,7 +13576,7 @@ index ad9d7a5..3d89c96 100644
  
  console.log('\nduration:', `${yellow(String((Date.now() - start) / 1000))}s`)
 diff --git a/web/app.tsx b/web/app.tsx
-index da0b0a9..576b8fe 100644
+index da0b0a9..9661f0f 100644
 --- a/web/app.tsx
 +++ b/web/app.tsx
 @@ -1,6 +1,6 @@
@@ -13590,7 +13588,7 @@ index da0b0a9..576b8fe 100644
  import { buildPreflightTokens, customClasses, semanticColors } from './theme.ts'
  import { url } from '/web/lib/router-signal.ts'
  import { tailwindColors } from '/web/tailwind-colors.ts'
-@@ -13,32 +13,30 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
+@@ -13,32 +13,20 @@ import { NotFoundPage } from '/web/pages/not-found-page.tsx'
  import { makePlaceholder } from '/web/pages/placeholder-page.tsx'
  import { screens } from '/web/screens.ts'
  import { Notifications } from '/web/ui/notifications.tsx'
@@ -13600,23 +13598,18 @@ index da0b0a9..576b8fe 100644
  import { LandingPage } from '/web/pages/landing/landing-page.tsx'
  import { landingPaths } from '/web/lib/section-scroll.ts'
  import { LoginPage, SignupPage } from '/web/pages/auth/auth-pages.tsx'
-+import { VoiceLabPage } from '/web/pages/voice/voice-lab.tsx'
-+import { OrbLabPage } from '/web/pages/voice/orb-lab.tsx'
  import { memberStatus } from '/web/lib/member-store.ts'
-+import { ConsentPage } from '/web/pages/candidate/consent-page.tsx'
-+import { InterviewPage } from '/web/pages/candidate/interview-page.tsx'
- import { AssessmentsPage } from '/web/pages/recruiter/assessments-page.tsx'
- import { NewAssessmentPage } from '/web/pages/recruiter/new-assessment-page.tsx'
- import { ReviewPage } from '/web/pages/recruiter/review-page.tsx'
- import { AssessmentPage } from '/web/pages/recruiter/assessment-page.tsx'
+-import { AssessmentsPage } from '/web/pages/recruiter/assessments-page.tsx'
+-import { NewAssessmentPage } from '/web/pages/recruiter/new-assessment-page.tsx'
+-import { ReviewPage } from '/web/pages/recruiter/review-page.tsx'
+-import { AssessmentPage } from '/web/pages/recruiter/assessment-page.tsx'
 -import { ConsentPage } from '/web/pages/candidate/consent-page.tsx'
 -import { WorkspacePage } from '/web/pages/workspace/workspace-page.tsx'
 -import { RulesPage } from '/web/pages/candidate/rules-page.tsx'
 -import { QuestionsPage } from '/web/pages/questions/questions-page.tsx'
 -import { DonePage } from '/web/pages/candidate/done-page.tsx'
- import { ReportPage } from '/web/pages/report/report-page.tsx'
-+import { DonePage } from '/web/pages/candidate/done-page.tsx'
-+import { WorkspacePage } from '/web/pages/workspace/workspace-page.tsx'
+-import { ReportPage } from '/web/pages/report/report-page.tsx'
++import { lazyPages } from '/web/lib/lazy-page.tsx'
 +import { DesktopOnly } from '/web/ui/desktop-only.tsx'
  import '/web/ui/themetoggle.tsx'
 +import { GuidedDemo } from '/web/ui/guided-demo.tsx'
@@ -13631,7 +13624,7 @@ index da0b0a9..576b8fe 100644
      ...customClasses,
      // `@apply placeholder:…` gives an invalid `:placeholder` selector
      '.input::placeholder': { color: 'var(--color-content-tertiary)' },
-@@ -54,7 +52,7 @@ setup({
+@@ -54,7 +42,7 @@ setup({
          'wide-narrow': 'minmax(0,1.3fr) minmax(0,1fr)',
          'split': 'minmax(0,1.4fr) minmax(0,1fr)',
          'nav-main': '168px minmax(0,1fr)',
@@ -13640,11 +13633,50 @@ index da0b0a9..576b8fe 100644
          'report': '168px minmax(0,880px) 280px',
          'report-md': 'minmax(0,1fr) 264px',
          'cards': 'repeat(auto-fill, minmax(min(340px, 100%), 1fr))',
-@@ -75,23 +73,27 @@ setup({
+@@ -75,24 +63,67 @@ setup({
    },
  })
  
 -// Screens replace their placeholder as they get implemented.
++// Each journey is its own code: a candidate never downloads the company space.
++const candidate = lazyPages({
++  consent: () =>
++    import('/web/pages/candidate/consent-page.tsx').then((m) => m.ConsentPage),
++  workspace: () =>
++    import('/web/pages/workspace/workspace-page.tsx').then((m) =>
++      m.WorkspacePage
++    ),
++  interview: () =>
++    import('/web/pages/candidate/interview-page.tsx').then((m) =>
++      m.InterviewPage
++    ),
++  done: () =>
++    import('/web/pages/candidate/done-page.tsx').then((m) => m.DonePage),
++})
++const recruiter = lazyPages({
++  assessments: () =>
++    import('/web/pages/recruiter/assessments-page.tsx').then((m) =>
++      m.AssessmentsPage
++    ),
++  newAssessment: () =>
++    import('/web/pages/recruiter/new-assessment-page.tsx').then((m) =>
++      m.NewAssessmentPage
++    ),
++  review: () =>
++    import('/web/pages/recruiter/review-page.tsx').then((m) => m.ReviewPage),
++  assessment: () =>
++    import('/web/pages/recruiter/assessment-page.tsx').then((m) =>
++      m.AssessmentPage
++    ),
++  report: () =>
++    import('/web/pages/report/report-page.tsx').then((m) => m.ReportPage),
++})
++const labs = lazyPages({
++  voice: () =>
++    import('/web/pages/voice/voice-lab.tsx').then((m) => m.VoiceLabPage),
++  orb: () => import('/web/pages/voice/orb-lab.tsx').then((m) => m.OrbLabPage),
++})
++
 +// Screens replace their placeholder as they get built.
  const routes: { [key: string]: () => JSX.Element | null } = {
    ...Object.fromEntries(screens.map((s) => [s.path, makePlaceholder(s)])),
@@ -13653,28 +13685,35 @@ index da0b0a9..576b8fe 100644
    ...Object.fromEntries(landingPaths.map((path) => [path, LandingPage])),
    [paths.login]: LoginPage,
    [paths.signup]: SignupPage,
-+  [paths.voiceLab]: VoiceLabPage,
-+  [paths.orbLab]: OrbLabPage,
-+  [paths.candidate]: ConsentPage,
-+  [paths.workspace]: () => (
-+    <DesktopOnly>
-+      <WorkspacePage />
-+    </DesktopOnly>
-+  ),
-+  [paths.interview]: InterviewPage,
-   [paths.recruiter]: AssessmentsPage,
-   [paths.newAssessment]: NewAssessmentPage,
-   [paths.review]: ReviewPage,
-   [paths.assessment]: AssessmentPage,
-   [paths.report]: ReportPage,
+-  [paths.recruiter]: AssessmentsPage,
+-  [paths.newAssessment]: NewAssessmentPage,
+-  [paths.review]: ReviewPage,
+-  [paths.assessment]: AssessmentPage,
+-  [paths.report]: ReportPage,
 -  [paths.candidate]: ConsentPage,
 -  [paths.workspace]: WorkspacePage,
 -  [paths.rules]: RulesPage,
 -  [paths.questions]: QuestionsPage,
-   [paths.done]: DonePage,
+-  [paths.done]: DonePage,
++  [paths.voiceLab]: labs.voice,
++  [paths.orbLab]: labs.orb,
++  [paths.candidate]: candidate.consent,
++  [paths.workspace]: () => (
++    <DesktopOnly>
++      <candidate.workspace />
++    </DesktopOnly>
++  ),
++  [paths.interview]: candidate.interview,
++  [paths.recruiter]: recruiter.assessments,
++  [paths.newAssessment]: recruiter.newAssessment,
++  [paths.review]: recruiter.review,
++  [paths.assessment]: recruiter.assessment,
++  [paths.report]: recruiter.report,
++  [paths.done]: candidate.done,
  }
  
-@@ -111,14 +113,8 @@ const App = () => {
+ const App = () => {
+@@ -111,14 +142,8 @@ const App = () => {
          : screen?.space === 'candidate'
          ? <CandidateTopBar />
          : <PublicHeader />)}
@@ -13692,7 +13731,7 @@ index da0b0a9..576b8fe 100644
      </div>
    )
 diff --git a/web/assets/icons.tsx b/web/assets/icons.tsx
-index 5beb73a..45e6acb 100644
+index 5beb73a..33a21a0 100644
 --- a/web/assets/icons.tsx
 +++ b/web/assets/icons.tsx
 @@ -1,8 +1,8 @@
@@ -13770,7 +13809,21 @@ index 5beb73a..45e6acb 100644
  export const Building2 = (props: IconProps) => (
    <Icon {...props}>
      <path d='M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z' />
-@@ -139,14 +96,6 @@ export const ChevronUp = (props: IconProps) => (
+@@ -109,6 +66,13 @@ export const CalendarClock = (props: IconProps) => (
+   </Icon>
+ )
+ 
++export const Captions = (props: IconProps) => (
++  <Icon {...props}>
++    <rect width='18' height='14' x='3' y='5' rx='2' ry='2' />
++    <path d='M7 15h4M15 15h2M7 11h2M13 11h4' />
++  </Icon>
++)
++
+ export const Check = (props: IconProps) => (
+   <Icon {...props}>
+     <path d='M20 6 9 17l-5-5' />
+@@ -139,14 +103,6 @@ export const ChevronUp = (props: IconProps) => (
    </Icon>
  )
  
@@ -13785,7 +13838,7 @@ index 5beb73a..45e6acb 100644
  export const CircleCheck = (props: IconProps) => (
    <Icon {...props}>
      <circle cx='12' cy='12' r='10' />
-@@ -162,13 +111,6 @@ export const CircleHelp = (props: IconProps) => (
+@@ -162,13 +118,6 @@ export const CircleHelp = (props: IconProps) => (
    </Icon>
  )
  
@@ -13799,7 +13852,7 @@ index 5beb73a..45e6acb 100644
  export const CircleX = (props: IconProps) => (
    <Icon {...props}>
      <circle cx='12' cy='12' r='10' />
-@@ -196,15 +138,6 @@ export const ClipboardPaste = (props: IconProps) => (
+@@ -196,15 +145,6 @@ export const ClipboardPaste = (props: IconProps) => (
    </Icon>
  )
  
@@ -13815,7 +13868,7 @@ index 5beb73a..45e6acb 100644
  export const Clock = (props: IconProps) => (
    <Icon {...props}>
      <circle cx='12' cy='12' r='10' />
-@@ -359,15 +292,6 @@ export const FolderOpen = (props: IconProps) => (
+@@ -359,15 +299,6 @@ export const FolderOpen = (props: IconProps) => (
    </Icon>
  )
  
@@ -13831,7 +13884,7 @@ index 5beb73a..45e6acb 100644
  export const Hammer = (props: IconProps) => (
    <Icon {...props}>
      <path d='m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9' />
-@@ -421,17 +345,6 @@ export const ListChecks = (props: IconProps) => (
+@@ -421,17 +352,6 @@ export const ListChecks = (props: IconProps) => (
    </Icon>
  )
  
@@ -13849,7 +13902,7 @@ index 5beb73a..45e6acb 100644
  export const LoaderCircle = (props: IconProps) => (
    <Icon {...props}>
      <path d='M21 12a9 9 0 1 1-6.219-8.56' />
-@@ -453,13 +366,6 @@ export const LogOut = (props: IconProps) => (
+@@ -453,13 +373,6 @@ export const LogOut = (props: IconProps) => (
    </Icon>
  )
  
@@ -13863,62 +13916,47 @@ index 5beb73a..45e6acb 100644
  export const MailCheck = (props: IconProps) => (
    <Icon {...props}>
      <path d='M22 13V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2h8' />
-@@ -477,23 +383,6 @@ export const MailX = (props: IconProps) => (
+@@ -486,18 +399,18 @@ export const Maximize = (props: IconProps) => (
    </Icon>
  )
  
--export const Maximize = (props: IconProps) => (
--  <Icon {...props}>
--    <path d='M8 3H5a2 2 0 0 0-2 2v3' />
--    <path d='M21 8V5a2 2 0 0 0-2-2h-3' />
--    <path d='M3 16v3a2 2 0 0 0 2 2h3' />
--    <path d='M16 21h3a2 2 0 0 0 2-2v-3' />
--  </Icon>
--)
--
 -export const MessageCircleQuestion = (props: IconProps) => (
--  <Icon {...props}>
++export const MessagesSquare = (props: IconProps) => (
+   <Icon {...props}>
 -    <path d='M7.9 20A9 9 0 1 0 4 16.1L2 22Z' />
 -    <path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3' />
 -    <path d='M12 17h.01' />
--  </Icon>
--)
--
- export const MessagesSquare = (props: IconProps) => (
-   <Icon {...props}>
-     <path d='M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z' />
-@@ -501,12 +390,11 @@ export const MessagesSquare = (props: IconProps) => (
++    <path d='M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z' />
++    <path d='M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1' />
    </Icon>
  )
  
--export const Minimize = (props: IconProps) => (
+-export const MessagesSquare = (props: IconProps) => (
 +export const Mic = (props: IconProps) => (
    <Icon {...props}>
--    <path d='M8 3v3a2 2 0 0 1-2 2H3' />
--    <path d='M21 8h-3a2 2 0 0 1-2-2V3' />
--    <path d='M3 16h3a2 2 0 0 1 2 2v3' />
--    <path d='M16 21v-3a2 2 0 0 1 2-2h3' />
+-    <path d='M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z' />
+-    <path d='M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1' />
 +    <path d='M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z' />
 +    <path d='M19 10v2a7 7 0 0 1-14 0v-2' />
 +    <line x1='12' x2='12' y1='19' y2='22' />
    </Icon>
  )
  
-@@ -556,13 +444,6 @@ export const PanelRightOpen = (props: IconProps) => (
+@@ -556,10 +469,10 @@ export const PanelRightOpen = (props: IconProps) => (
    </Icon>
  )
  
 -export const PenLine = (props: IconProps) => (
--  <Icon {...props}>
++export const Pause = (props: IconProps) => (
+   <Icon {...props}>
 -    <path d='M12 20h9' />
 -    <path d='M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z' />
--  </Icon>
--)
--
- export const Pencil = (props: IconProps) => (
-   <Icon {...props}>
-     <path d='M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z' />
-@@ -583,14 +464,6 @@ export const Plus = (props: IconProps) => (
++    <rect x='14' y='4' width='4' height='16' rx='1' />
++    <rect x='6' y='4' width='4' height='16' rx='1' />
+   </Icon>
+ )
+ 
+@@ -583,14 +496,6 @@ export const Plus = (props: IconProps) => (
    </Icon>
  )
  
@@ -13933,7 +13971,7 @@ index 5beb73a..45e6acb 100644
  export const RefreshCw = (props: IconProps) => (
    <Icon {...props}>
      <path d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8' />
-@@ -615,16 +488,6 @@ export const Save = (props: IconProps) => (
+@@ -615,16 +520,6 @@ export const Save = (props: IconProps) => (
    </Icon>
  )
  
@@ -13950,7 +13988,28 @@ index 5beb73a..45e6acb 100644
  export const Scissors = (props: IconProps) => (
    <Icon {...props}>
      <circle cx='6' cy='6' r='3' />
-@@ -697,13 +560,6 @@ export const Terminal = (props: IconProps) => (
+@@ -666,6 +561,20 @@ export const SignalMedium = (props: IconProps) => (
+   </Icon>
+ )
+ 
++export const SkipBack = (props: IconProps) => (
++  <Icon {...props}>
++    <polygon points='19 20 9 12 19 4 19 20' />
++    <line x1='5' x2='5' y1='19' y2='5' />
++  </Icon>
++)
++
++export const SkipForward = (props: IconProps) => (
++  <Icon {...props}>
++    <polygon points='5 4 15 12 5 20 5 4' />
++    <line x1='19' x2='19' y1='5' y2='19' />
++  </Icon>
++)
++
+ export const Sparkles = (props: IconProps) => (
+   <Icon {...props}>
+     <path d='M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z' />
+@@ -697,13 +606,6 @@ export const Terminal = (props: IconProps) => (
    </Icon>
  )
  
@@ -13964,7 +14023,7 @@ index 5beb73a..45e6acb 100644
  export const Timer = (props: IconProps) => (
    <Icon {...props}>
      <line x1='10' x2='14' y1='2' y2='2' />
-@@ -747,13 +603,6 @@ export const Undo2 = (props: IconProps) => (
+@@ -747,13 +649,6 @@ export const Undo2 = (props: IconProps) => (
    </Icon>
  )
  
@@ -13978,20 +14037,25 @@ index 5beb73a..45e6acb 100644
  export const UserCheck = (props: IconProps) => (
    <Icon {...props}>
      <path d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' />
-@@ -780,27 +629,6 @@ export const UserX = (props: IconProps) => (
+@@ -780,24 +675,19 @@ export const UserX = (props: IconProps) => (
    </Icon>
  )
  
 -export const VideoOff = (props: IconProps) => (
--  <Icon {...props}>
++export const Volume2 = (props: IconProps) => (
+   <Icon {...props}>
 -    <path d='M10.66 6H14a2 2 0 0 1 2 2v2.5l5.248-3.062A.5.5 0 0 1 22 7.87v8.196' />
 -    <path d='M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2' />
 -    <path d='m2 2 20 20' />
--  </Icon>
--)
--
++    <path d='M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z' />
++    <path d='M16 9a5 5 0 0 1 0 6' />
++    <path d='M19.364 18.364a9 9 0 0 0 0-12.728' />
+   </Icon>
+ )
+ 
 -export const WandSparkles = (props: IconProps) => (
--  <Icon {...props}>
++export const VolumeX = (props: IconProps) => (
+   <Icon {...props}>
 -    <path d='m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72' />
 -    <path d='m14 7 3 3' />
 -    <path d='M5 6v4' />
@@ -14000,12 +14064,12 @@ index 5beb73a..45e6acb 100644
 -    <path d='M7 8H3' />
 -    <path d='M21 16h-4' />
 -    <path d='M11 3H9' />
--  </Icon>
--)
--
- export const X = (props: IconProps) => (
-   <Icon {...props}>
-     <path d='M18 6 6 18' />
++    <path d='M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z' />
++    <line x1='22' x2='16' y1='9' y2='15' />
++    <line x1='16' x2='22' y1='9' y2='15' />
+   </Icon>
+ )
+ 
 diff --git a/web/assets/styles/style.css b/web/assets/styles/style.css
 index 3381905..a273815 100644
 --- a/web/assets/styles/style.css
@@ -15969,7 +16033,7 @@ index 08078d9..bf1cc01 100644
      </main>
    )
 diff --git a/web/pages/landing/landing-sections.tsx b/web/pages/landing/landing-sections.tsx
-index b232fd7..e73d109 100644
+index b232fd7..b39e71a 100644
 --- a/web/pages/landing/landing-sections.tsx
 +++ b/web/pages/landing/landing-sections.tsx
 @@ -3,124 +3,89 @@ import {
@@ -16085,7 +16149,7 @@ index b232fd7..e73d109 100644
 -      'The recruiter picks 60, 90 or 120 minutes for building. A timed question phase follows the code submission.',
 -    ),
 +    'What data is kept?',
-+    'The code, the runs, declared AI use, the interview transcript, answer times and session events such as leaving the page. With your explicit agreement, the interview camera and audio are recorded for replay by the recruiting team and available for 30 days. Only with a separate optional agreement, up to 12 sampled camera images may be sent to Muse Spark for visibility and image-quality observations. No emotion, gaze or honesty assessment. No screen recording.',
++    'The code, the runs, declared AI use, the interview transcript, answer times and session events such as leaving the page. With your explicit agreement, the interview camera and audio are recorded for replay by the recruiting team and available for 30 days. Camera images are never sent to an AI model. No emotion, gaze or honesty assessment. No screen recording.',
 +  ],
 +  [
 +    'Do I need a camera and microphone?',
@@ -16265,7 +16329,7 @@ index b232fd7..e73d109 100644
 -              'L’entreprise vous invite avec votre nom et votre e-mail, par un lien personnel. Votre identité n’est jamais envoyée aux modèles d’IA : ils ne voient que votre code et vos réponses.',
 -              'The company invites you by name and e-mail, through a personal link. Your identity is never sent to the AI models: they only see your code and your answers.',
 -            )}
-+            {'The company invites you by name and e-mail, through a personal link. Your name and email are not included in AI prompts. Models read your code and interview transcript. Only with your separate optional agreement, sampled camera images may also be analyzed for visibility and image quality; those images may show your face.'}
++            {'The company invites you by name and e-mail, through a personal link. Your name and email are not included in AI prompts. Models read your code and interview transcript. Camera images are never sent to them.'}
            </p>
          </div>
          <div tw='card p-6'>
@@ -19063,7 +19127,7 @@ index a38b80c..f87ba5a 100644
              )}
            </AnchorLink>
 diff --git a/web/pages/report/report-page.tsx b/web/pages/report/report-page.tsx
-index 6370463..19f04e0 100644
+index 6370463..f10a402 100644
 --- a/web/pages/report/report-page.tsx
 +++ b/web/pages/report/report-page.tsx
 @@ -1,222 +1,728 @@
@@ -19959,7 +20023,7 @@ index 6370463..19f04e0 100644
 +      <div tw='grid grid-cols-1 lg:grid-cols-report-md gap-6 items-start'>
 +        <div tw='flex flex-col gap-7 min-w-0'>
 +          <Facts v={v} />
-+          <InterviewReplay key={v.candidateId} v={v} />
++          <InterviewReplay key={v.candidateId} v={v} Code={CodeExcerpt} />
 +          {v.reading ? <Reading v={v} /> : <Waiting v={v} />}
 +          {v.transcript.length > 0 && <Transcript v={v} />}
 +        </div>
