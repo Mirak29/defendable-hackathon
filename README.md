@@ -3,7 +3,7 @@
 **AI can write the code. Can the candidate defend it?**
 
 [**Try the live app**](https://defendableapp.com) ·
-[**Watch the demo (2:39)**](https://www.youtube.com/watch?v=qP4XjzuXGFY)
+[**Watch the demo (2:38)**](https://www.youtube.com/watch?v=AVUCziFmDYo)
 
 A recruiter pastes a job offer. Defendable generates a practical task and its
 tests, checks them in a sandbox, and lets the candidate build it with any AI
