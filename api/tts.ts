@@ -41,8 +41,12 @@ const load = async () => {
     // configuration this repository does not have, which fails when offline.
     const options = { dtype: 'fp32', device: 'cpu' }
     const localFirst = <T>(from: (options: object) => Promise<T>) =>
-      from({ ...options, local_files_only: true }).catch((err) => {
-        log.info('tts-download', { reason: String(err) })
+      from({ ...options, local_files_only: true }).catch(() => {
+        // expected on a first run outside the image: not an error
+        log.info('tts-download', {
+          model: config.model,
+          note: 'voice weights not on this disk yet: downloading them once',
+        })
         downloaded = true
         return from(options)
       })

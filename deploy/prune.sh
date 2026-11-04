@@ -1,6 +1,7 @@
 #!/bin/sh
 # Run in the same layer as `deno install` (see the Dockerfile): removes what the
-# server never loads on a Linux x86-64 machine, so the image is lighter. A file
+# server never loads on this Linux machine (x86-64, or ARM64 such as a Mac with
+# Apple silicon), so the image is lighter. A file
 # is in two places (node_modules and the cache of Deno, hardlinked): both are
 # cleaned, otherwise nothing is freed. Only files inside the packages go: the
 # package folders stay, so Deno finds the same tree as after the install.
@@ -8,9 +9,14 @@ set -eu
 
 roots="/app/node_modules/.deno /deno-dir/npm"
 
-# onnxruntime-node ships the binaries of every system; the voice runs on this one
+# onnxruntime-node ships the binaries of every system; the voice runs on this
+# one: the binaries of the machine that builds the image stay, the others go
+case "$(uname -m)" in
+  aarch64 | arm64) other=x64 ;;
+  *) other=arm64 ;;
+esac
 find $roots -type d -path '*onnxruntime-node*/bin/napi-v3/*' \
-  \( -name darwin -o -name win32 -o -path '*/linux/arm64' \) -prune \
+  \( -name darwin -o -name win32 -o -path "*/linux/$other" \) -prune \
   -exec rm -rf {} +
 
 # onnxruntime-web is the browser runtime: transformers.node.mjs does not load it

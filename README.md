@@ -51,7 +51,7 @@ cannot run.
 ### 1. Pull the published image (nothing to build)
 
 Docker only. The image is built and published by GitHub at every push to
-`main`.
+`main`, for x86-64 and ARM64 (Macs with Apple silicon run it natively).
 
 First, create the environment file in a folder of your choice:
 

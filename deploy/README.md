@@ -8,7 +8,7 @@ memory** (the voice wants the cores: run
 
 ## 1. The machine
 
-Any Linux x86-64 machine with Docker and the Compose plugin (`docker compose`).
+Any Linux machine, x86-64 or ARM64, with Docker and the Compose plugin (`docker compose`).
 On a Brev VM:
 
 ```bash
