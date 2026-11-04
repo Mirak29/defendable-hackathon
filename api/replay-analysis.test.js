@@ -1,4 +1,4 @@
-import { eq, test, throws } from '/api/lib/test.ts'
+import { eq, test } from '/api/lib/test.ts'
 import { sql } from '@01edu/db'
 import { llmConfig } from '/api/llm.ts'
 import { Candidate } from '/api/schema.ts'
