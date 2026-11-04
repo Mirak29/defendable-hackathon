@@ -74,8 +74,11 @@ Then run the following commands from the **same folder as `defendable.env`**:
 ```bash
 docker run -d --name defendable -p 8000:8000 -v defendable-data:/data \
   --env-file defendable.env ghcr.io/mirak29/defendable:latest
-docker logs -f defendable   # ready at "server-start"
+docker logs -f defendable
 ```
+
+The app is ready when the logs show `server-start` (Ctrl+C leaves the logs, the
+app keeps running).
 
 Stop with `docker stop defendable`; the database stays in the `defendable-data`
 volume.
@@ -83,12 +86,13 @@ volume.
 ### 2. Clone the repository and run it with Docker
 
 The same image, built on your machine from the code. First, download the source,
-reconstruct the app and copy the environment template:
+reconstruct the app (`setup.sh` puts the full app in `./app`) and copy the
+environment template:
 
 ```bash
 git clone https://github.com/Mirak29/defendable-hackathon.git
 cd defendable-hackathon
-bash ./setup.sh   # the full app, in ./app
+bash ./setup.sh
 cd app
 cp .env.production.example .env.production
 ```
@@ -110,8 +114,10 @@ Then build and start the app from the **`app/` directory**:
 
 ```bash
 docker compose up -d --build
-docker compose logs -f app   # ready at "server-start"
+docker compose logs -f app
 ```
+
+The app is ready when the logs show `server-start`.
 
 For a server with HTTPS, backups and updates:
 [`deploy/README.md`](deploy/README.md).
@@ -119,11 +125,12 @@ For a server with HTTPS, backups and updates:
 ### 3. Clone the repository and run it with Deno (development)
 
 Deno **2.9.8** (the version used in CI), no Node, hot reload, a local SQLite file.
+`setup.sh` puts the full app in `./app`.
 
 ```bash
 git clone https://github.com/Mirak29/defendable-hackathon.git
 cd defendable-hackathon
-bash ./setup.sh   # the full app, in ./app
+bash ./setup.sh
 cd app
 
 deno install --frozen
@@ -139,16 +146,18 @@ created, ignored by Git), fill in `MODEL_API_KEY` with your Meta Model API key
 and `BASETEN_API_KEY` with your Baseten key, then save the file. The local
 address and demo access are already configured in `.env-dev`.
 
-Then start the app from the **`app/` directory**:
+Then start the app from the **`app/` directory**; it opens on
+<http://localhost:8000>:
 
 ```bash
-deno task dev    # http://localhost:8000
+deno task dev
 ```
 
-To run the tests, open another terminal in `app/`:
+To run the tests (in-memory SQLite, no network), open another terminal in
+`app/`:
 
 ```bash
-deno task test   # all tests, in-memory SQLite, no network
+deno task test
 ```
 
 ## Try the product

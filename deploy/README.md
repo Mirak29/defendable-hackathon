@@ -13,8 +13,10 @@ On a Brev VM:
 
 ```bash
 docker --version || curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER   # then log out and in again
+sudo usermod -aG docker $USER
 ```
+
+Then log out and back in, so that Docker runs without `sudo`.
 
 Disk: 40 GB is comfortable (the image is about 1.2 GB, with the voice model in
 it).
@@ -46,10 +48,16 @@ Then only a few files are needed, copied from the repository (for example with
 
 ```bash
 mkdir -p ~/defendable/deploy && cd ~/defendable
-# copy the files here (deploy/backup.sh and deploy/Caddyfile into deploy/), then:
+```
+
+Copy the files there (`deploy/backup.sh` and `deploy/Caddyfile` into
+`deploy/`), then create the environment file and fill in `REDIRECT_URI`, the
+keys and `DEMO_PASSWORD`:
+
+```bash
 cp .env.production.example .env.production
 chmod 600 .env.production
-nano .env.production   # REDIRECT_URI, the keys, DEMO_PASSWORD
+nano .env.production
 ```
 
 `REDIRECT_URI` is the public address (`https://…`, no trailing slash): the
@@ -66,8 +74,10 @@ there.)
 ```bash
 docker compose pull
 docker compose up -d
-docker compose logs -f app      # "tts-ready" then "server-start"
+docker compose logs -f app
 ```
+
+The logs show `tts-ready`, then `server-start`.
 
 The app listens on `127.0.0.1:8000` of the machine. Make it public over HTTPS in
 one of these ways:
