@@ -74,6 +74,8 @@ test('replay moments: grounded in the transcript, the quotes and the code', asyn
           'Two writes could cause a race condition.',
           'The underlying store is a Map.',
           'Ask how the average latency was measured.',
+          'A data race on the shared Map is possible.',
+          'Cache-Control max-age is not set.',
         ]
       ) eq([detail, keep(detail)], [detail, true])
       for (
@@ -153,6 +155,15 @@ test('replay analysis: private access, text-only request, caching and deletion',
       eq((await send('GET', endpoint, stranger)).status, 404)
       eq((await send('POST', endpoint, stranger)).status, 404)
       eq((await (await send('GET', endpoint, member)).json()).status, 'idle')
+      // without a key, the answer says so; with one, other failures do not
+      const saved = { key: llmConfig.key, open: llmConfig.open.key }
+      llmConfig.key = ''
+      llmConfig.open.key = ''
+      const noKey = await send('POST', endpoint, member)
+      Object.assign(llmConfig, { key: saved.key })
+      llmConfig.open.key = saved.open
+      eq(noKey.status, 503)
+      eq((await noKey.json()).error.includes('API key'), true)
     },
   )
   await step(

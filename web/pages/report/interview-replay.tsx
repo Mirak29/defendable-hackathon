@@ -8,6 +8,7 @@ import type { InterviewLine, RecordingView, ReportView } from '/web/types.ts'
 import { formatDate } from '/web/lib/format.ts'
 import {
   clock,
+  estimateDuration,
   LEAD_MS,
   type Span,
   spanAt,
@@ -152,10 +153,13 @@ export const InterviewReplay = (
     endpoint(v.candidateId, selectedId),
     selected,
   )
+  // an unclosed recording has no duration yet: estimate it from the transcript
+  const durationMs = selected
+    ? selected.durationMs || estimateDuration(v.transcript, selected.id)
+    : 0
   const spans = useMemo(
-    () =>
-      selected ? spansOf(v.transcript, selected.id, selected.durationMs) : [],
-    [v.transcript, selected],
+    () => selected ? spansOf(v.transcript, selected.id, durationMs) : [],
+    [v.transcript, selected, durationMs],
   )
 
   useEffect(() => {
@@ -331,7 +335,7 @@ export const InterviewReplay = (
             key={selected.id}
             id={selected.id}
             src={endpoint(v.candidateId, selected.id)}
-            durationMs={selected.durationMs}
+            durationMs={durationMs}
             spans={spans}
             moments={moments}
             onError={setError}

@@ -59,6 +59,28 @@ export const spansOf = (
   return spans
 }
 
+/**
+ * The length of a recording the server has not closed yet (its duration is 0
+ * until then): the end of the last line placed in it, plus a short margin.
+ */
+export const estimateDuration = (
+  lines: InterviewLine[],
+  recordingId: string,
+) =>
+  lines.reduce(
+    (end, line) =>
+      line.recordingId === recordingId && Number.isFinite(line.atMs)
+        ? Math.max(
+          end,
+          line.atMs! + (line.at !== undefined && line.endAt !== undefined
+            ? Math.max(0, line.endAt - line.at)
+            : 0) +
+            2000,
+        )
+        : end,
+    0,
+  )
+
 /** the line heard at `ms` (the latest one when two overlap), if any */
 export const spanAt = (spans: Span[], ms: number) =>
   spans.findLast((s) => ms >= s.from && ms < s.to + HOLD_MS)

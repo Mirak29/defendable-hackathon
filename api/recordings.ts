@@ -7,6 +7,7 @@ import { decodeSession, type MemberSession } from '/api/member.ts'
 import { json } from '/api/assessment.ts'
 import type { Progress, RecordingView } from '/web/types.ts'
 import { reportView } from '/api/report.ts'
+import { hasAiKey } from '/api/llm.ts'
 import {
   analyzeReplay,
   deleteReplayAnalysis,
@@ -87,6 +88,10 @@ const chunkAt =
   sql<{ data: Uint8Array }, { recordingId: string; sequence: number }>`
   SELECT data FROM interviewRecordingChunk
   WHERE recordingId = :recordingId AND sequence = :sequence`.get
+// Sizes only: SQLite reads a BLOB's length from its header, not its content.
+const chunkSizes = sql<{ sequence: number; size: number }, string>`
+  SELECT sequence, length(data) AS size FROM interviewRecordingChunk
+  WHERE recordingId = ? ORDER BY sequence`.all
 const requireRecording = (id: string) =>
   getRecording(id) ?? fail(404, 'Recording not found.')
 const cookie = (req: Request, name: string) =>
@@ -103,7 +108,66 @@ const viewOf = (r: ReturnType<typeof Recording.require>): RecordingView => ({
   status: r.status as RecordingView['status'],
 })
 
+// Expired rows are already refused by every query (expiresAt), so deleting them
+// once a minute is enough; per request it took the write lock on each chunk.
+let purgedAt = 0
+const purgeAtMostEveryMinute = () => {
+  const now = Date.now()
+  if (now - purgedAt < 60_000) return
+  purgedAt = now
+  purgeRecordings(now)
+}
+
+/** after the interview ends, the last chunks have this long to arrive */
+export const FINAL_UPLOAD_MS = 5 * 60_000
+
+/**
+ * The browser records one chunk every 2 s (`recorder.start(2000)` in
+ * web/lib/interview-recording.ts): the chunks received tell how long the video
+ * that reached the server is.
+ */
+const CHUNK_MS = 2000
+
+/**
+ * A browser that closed, crashed or lost the connection never sends the final
+ * POST: its recording would stay "recording" forever (no seeking, no key
+ * moments). Close it as interrupted once the interview has ended, or once no
+ * chunk can be accepted any more. Its duration is what reached the server,
+ * never longer than the interview itself.
+ */
+export const closeAbandonedRecordings = (now = Date.now()) => {
+  const stale = sql<
+    {
+      recordingId: string
+      createdAt: number
+      chunks: number
+      finishedAt: number | null
+    },
+    { finished: number; open: number }
+  >`
+    SELECT r.recordingId, r.createdAt, r.nextSequence AS chunks,
+      c.candidateFinishedAt AS finishedAt
+    FROM interviewRecording r JOIN candidate c ON c.candidateId = r.candidateId
+    WHERE r.status = 'recording' AND (r.createdAt <= :open
+      OR (c.candidateFinishedAt IS NOT NULL
+        AND c.candidateFinishedAt <= :finished))`
+    .all({ finished: now - FINAL_UPLOAD_MS, open: now - MAX_DURATION })
+  for (const r of stale) {
+    const interview = r.finishedAt && r.finishedAt > r.createdAt
+      ? r.finishedAt - r.createdAt
+      : MAX_DURATION
+    sql<never, { recordingId: string; durationMs: number }>`
+      UPDATE interviewRecording SET status = 'interrupted',
+      durationMs = :durationMs WHERE recordingId = :recordingId
+      AND status = 'recording'`.run({
+      recordingId: r.recordingId,
+      durationMs: Math.min(MAX_DURATION, interview, r.chunks * CHUNK_MS),
+    })
+  }
+}
+
 export const purgeRecordings = (now = Date.now()) => {
+  closeAbandonedRecordings(now)
   db.transaction(() => {
     sql<never, number>`DELETE FROM interviewRecordingChunk WHERE recordingId IN
       (SELECT recordingId FROM interviewRecording WHERE expiresAt <= ?)`
@@ -182,34 +246,37 @@ const upload = async (req: Request, url: URL) => {
     if (typeof body.mime !== 'string' || !MIME.has(body.mime)) {
       fail(400, 'Unsupported recording format.')
     }
-    const count = countRecordings(c.candidateId)!
-    if (count.count >= 5) {
-      fail(409, 'Recording attempt limit reached. Contact the recruiter.')
-    }
-    // An invitation can predate demo isolation. The browser actually recording
-    // the interview can establish ownership, but never replace an existing owner.
-    if (
-      Assessment.require(c.assessmentId).companyId === demoCompanyId &&
-      !ownerOf(c.candidateId)
-    ) {
-      const recruiter = await decodeSession(cookie(req, 'dfd_session'))
-      if (recruiter?.companyId === demoCompanyId) {
-        bindDemoRecordingOwner(c.candidateId, recruiter)
-      }
-    }
-    const now = Date.now()
+    const demo = Assessment.require(c.assessmentId).companyId === demoCompanyId
+    const recruiter = demo
+      ? await decodeSession(cookie(req, 'dfd_session'))
+      : undefined
     const recordingId = crypto.randomUUID()
-    Recording.insert({
-      recordingId,
-      candidateId: c.candidateId,
-      mime: body.mime as string,
-      createdAt: now,
-      expiresAt: now + RECORDING_TTL,
-      durationMs: 0,
-      bytes: 0,
-      nextSequence: 0,
-      status: 'recording',
-    })
+    // count and insert together: two starts at once cannot pass the limit
+    db.transaction(() => {
+      const count = countRecordings(c.candidateId)!
+      if (count.count >= 5) {
+        fail(409, 'Recording attempt limit reached. Contact the recruiter.')
+      }
+      // An invitation can predate demo isolation. The browser actually
+      // recording the interview can establish ownership, but never replace
+      // an existing owner.
+      if (
+        demo && !ownerOf(c.candidateId) &&
+        recruiter?.companyId === demoCompanyId
+      ) bindDemoRecordingOwner(c.candidateId, recruiter)
+      const now = Date.now()
+      Recording.insert({
+        recordingId,
+        candidateId: c.candidateId,
+        mime: body.mime as string,
+        createdAt: now,
+        expiresAt: now + RECORDING_TTL,
+        durationMs: 0,
+        bytes: 0,
+        nextSequence: 0,
+        status: 'recording',
+      })
+    })()
     return Response.json(viewOf(requireRecording(recordingId)))
   }
   const r = getRecording(recordingId)
@@ -351,10 +418,13 @@ const replay = async (req: Request, url: URL) => {
     if (!c!.candidateFinishedAt || r!.status === 'recording' || !r!.bytes) {
       fail(409, 'Wait for the interview recording to finish saving.')
     }
+    if (!hasAiKey()) {
+      fail(503, 'Replay analysis needs a configured model API key.')
+    }
     try {
       return Response.json(await analyzeReplay(recordingId!, reportView(c!)))
     } catch {
-      return fail(503, 'Replay analysis needs a configured model API key.')
+      return fail(500, 'Replay analysis could not start. Try again.')
     }
   }
   if (req.method === 'DELETE') {
@@ -403,9 +473,15 @@ const replay = async (req: Request, url: URL) => {
     'accept-ranges': 'bytes',
   })
   if (range) headers.set('content-range', `bytes ${start}-${end}/${size}`)
-  // Load only one bounded chunk per pull, rather than materializing the video.
+  // Start at the chunk holding `start` (found from the sizes alone), then load
+  // one bounded chunk per pull, rather than materializing the video.
   let offset = 0
   let sequence = 0
+  for (const chunk of range ? chunkSizes(recordingId!) : []) {
+    if (offset + chunk.size > start) break
+    offset += chunk.size
+    sequence = chunk.sequence + 1
+  }
   const body = new ReadableStream<Uint8Array>({
     pull(controller) {
       for (;;) {
@@ -443,7 +519,7 @@ export const handleRecording = async (req: Request): Promise<Response> => {
         fail(403, 'Origin not allowed.')
       }
     }
-    purgeRecordings()
+    purgeAtMostEveryMinute()
     const response = await (url.pathname === '/api/candidate/recording'
       ? upload(req, url)
       : replay(req, url))

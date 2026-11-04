@@ -74,10 +74,10 @@ index 9a23581..fcf427f 100644
 +# production secrets (see .env.production.example)
 +.env.production
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 395848d..ffe2c19 100644
+index 395848d..4280d0b 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -5,153 +5,147 @@ code in this repository.
+@@ -5,153 +5,156 @@ code in this repository.
  
  ## What this is
  
@@ -198,6 +198,15 @@ index 395848d..ffe2c19 100644
 +  the `rate` of the sounds, the browser's voice being the fallback). The
 +  presence of Oracle (`web/ui/oracle-orb.tsx`, test page `/dev/orb`) follows the
 +  loudness of that voice. The transcript is stored when the interview ends.
++- **Recording and replay** (`api/recordings.ts`, `api/replay-analysis.ts`,
++  `web/pages/report/interview-replay.tsx`): with the candidate's agreement the
++  browser uploads the interview video (camera, their voice, Oracle's) in
++  ordered chunks to SQLite tables of their own (30 days, private to the
++  company; in the demo, to the login session that invited). A recording the
++  browser never closed is closed by the server. The report plays it with its
++  own player (MediaRecorder WebM has no duration), captions and links from
++  quotes; **Find key moments** has Muse Spark read the transcript against the
++  code. No camera image is sent to a model.
 +- **Report** (`api/report.ts`): the facts are measured by the server (tests,
 +  type check, durations, tools, what was said). The model reads the transcript
 +  and the code; every quote, line range and test it cites is checked against
@@ -12454,7 +12463,7 @@ index de51e00..e594768 100644
 -  questionsMinutes: 17,
 -}
 diff --git a/prod-server.ts b/prod-server.ts
-index 41b95c1..cf5b5ce 100644
+index 41b95c1..9314519 100644
 --- a/prod-server.ts
 +++ b/prod-server.ts
 @@ -1,15 +1,6 @@
@@ -12473,6 +12482,29 @@ index 41b95c1..cf5b5ce 100644
  
  // DIST_DIR: the folder built by task-prod.ts (QA: dist-qa), default dist
  const dist = `${import.meta.dirname}/${Deno.env.get('DIST_DIR') || 'dist'}`
+@@ -23,6 +14,7 @@ const indexHtml = encoder.encode(html)
+ const port = Number(Deno.env.get('PORT')) || 8000
+ const serveDirOpts = { fsRoot: dist }
+ const htmlContent = { headers: { 'Content-Type': 'text/html' } }
++const IMMUTABLE = 'public, max-age=31536000, immutable'
+ Deno.serve({ port }, (req) => {
+   const { pathname } = new URL(req.url)
+ 
+@@ -30,6 +22,14 @@ Deno.serve({ port }, (req) => {
+     return api.fetch(req)
+   }
+ 
++  if (pathname.startsWith('/chunks/')) {
++    // names carry a content hash: a chunk never changes, it is replaced
++    return serveDir(req, serveDirOpts).then((res) => {
++      if (res.ok) res.headers.set('cache-control', IMMUTABLE)
++      return res
++    })
++  }
++
+   if (pathname.includes('.')) {
+     return serveDir(req, serveDirOpts)
+   }
 diff --git a/task-dev.ts b/task-dev.ts
 index 8d76471..b38b13a 100644
 --- a/task-dev.ts

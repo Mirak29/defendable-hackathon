@@ -8,6 +8,8 @@ import {
   submittedCandidate,
 } from '/api/lib/journey-test.js'
 import {
+  closeAbandonedRecordings,
+  FINAL_UPLOAD_MS,
   handleRecording,
   MAX_CHUNK,
   purgeRecordings,
@@ -408,4 +410,61 @@ test('demo recordings: private to the login session that invited the candidate',
     if (previous === undefined) Deno.env.delete('DEMO_ACCESS')
     else Deno.env.set('DEMO_ACCESS', previous)
   }
+})
+
+test('recording: an attempt the browser never closed is closed by the server', async (step) => {
+  const member = await signup('AbandonedRecordings')
+  const assessment = await approvedAssessment(member)
+  const { cookies, candidateId } = await submittedCandidate(member, assessment)
+  const path = '/api/candidate/recording'
+  const r = await (await send('POST', path, cookies, {
+    accepted: true,
+    mime: 'video/webm',
+  })).json()
+  eq(
+    (await send(
+      'PUT',
+      `${path}?id=${r.id}&sequence=0`,
+      cookies,
+      new Uint8Array([1]),
+    ))
+      .status,
+    200,
+  )
+  const row = () =>
+    sql`SELECT status, durationMs FROM interviewRecording WHERE recordingId = ?`
+      .get(r.id)
+  await step(
+    'still open while the interview runs and its last chunks arrive',
+    () => {
+      closeAbandonedRecordings(r.createdAt + 60_000)
+      eq(row().status, 'recording')
+      Candidate.update({
+        candidateId,
+        candidateFinishedAt: r.createdAt + 120_000,
+      })
+      closeAbandonedRecordings(r.createdAt + 120_000 + FINAL_UPLOAD_MS - 1)
+      eq(row().status, 'recording')
+    },
+  )
+  await step(
+    'closed as interrupted, with the length that reached the server',
+    () => {
+      closeAbandonedRecordings(r.createdAt + 120_000 + FINAL_UPLOAD_MS)
+      // one 2 s chunk arrived, in an interview of 2 min: the video is 2 s long
+      eq(row(), { status: 'interrupted', durationMs: 2000 })
+    },
+  )
+  await step('a closed recording takes no more chunks', async () => {
+    eq(
+      (await send(
+        'PUT',
+        `${path}?id=${r.id}&sequence=1`,
+        cookies,
+        new Uint8Array([2]),
+      ))
+        .status,
+      409,
+    )
+  })
 })

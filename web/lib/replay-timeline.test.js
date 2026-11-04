@@ -3,6 +3,7 @@ import {
   answerFrom,
   answerStart,
   clock,
+  estimateDuration,
   momentAt,
   percent,
   spanAt,
@@ -77,6 +78,15 @@ test('replay timeline: lines placed in their recording, current line, jumps', as
       eq(momentAt(moments, 17000), 0)
       eq(momentAt(moments, 19000), -1)
       eq(momentAt(moments, 41000), 1)
+    },
+  )
+  await step(
+    'an unclosed recording gets its length from the transcript',
+    () => {
+      // Answer two at 40 s, no measured end: 42 s. Answer one ends at 18 s.
+      eq(estimateDuration(lines, 'r'), 42000)
+      eq(estimateDuration(lines, 'x'), 3000)
+      eq(estimateDuration(lines, 'none'), 0)
     },
   )
   await step('clock and position on the track', () => {

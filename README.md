@@ -23,123 +23,14 @@ Built for the Meta Global AI Developer Hackathon, with Meta's models.
   The files this project builds on are published unchanged as an extract,
   [defendable-pre-event](https://github.com/Mirak29/defendable-pre-event), taken from the last pre-event commit of
   Defendable 1.0 (`c7bc119`, 2026-09-29).
-- **Built during the hackathon**, in this repository: 61 new files, and the
-  changes to 112 of the 122 pre-event files, 3 of them removed (one patch). Every AI step moved to
+- **Built during the hackathon**, in this repository: 80 new files, and the
+  changes to 113 of the 122 pre-event files, 3 of them removed (one patch;
+  `setup.sh` puts the two together, see
+  [How this repository is organised](#how-this-repository-is-organised)). Every AI step moved to
   Meta's models, the live voice interview with Oracle (transcription and voice),
   hidden tests checked against planted flaws, program assessments in TypeScript
   and Python, the evidence report with its second check, the product in
   English, the deployment and the evaluations.
-
-## How this repository is organised
-
-| Path | What it is |
-| --- | --- |
-| `patches/pre-event.patch` | the changes made during the event to the pre-event files |
-| every other file | created during the event |
-| `setup.sh` | rebuilds the full app in `./app`: downloads the extract at its pinned commit, applies the patch, adds the new files |
-
-The extract is pinned in `setup.sh` (`PRE_EVENT_COMMIT`); nothing from before the
-event is stored in this repository or in its history.
-
-## Try the product
-
-Open the [live app](https://defendableapp.com) and choose **Try with the demo
-account** on the sign-in page. No account or API key is needed to use the
-hosted demo. Then choose either path:
-
-### Guided demo — recommended for a first visit
-
-Choose **Start guided demo** and follow the five steps: prepared assessment,
-fictional candidate invitation, coding, spoken interview and that candidate’s
-report. You can load an example solution to try the coding tools quickly.
-Allow about **10–15 minutes**, with a camera, microphone and headphones. You can exit
-the guide at any time.
-
-The prepared scenario and solution are labelled examples. Tests execute in the
-sandbox; the interview and report use the configured models.
-
-### Generate your own assessment
-
-1. Choose **New assessment** and paste a job offer (examples in
-   [fixtures/offers/](fixtures/offers/)). Review the brief and automatic checks,
-   approve the assessment, then create a candidate link.
-2. Open the candidate link, build and submit the solution, then talk with Oracle
-   using a camera, microphone and headphones, after accepting the recording notice.
-3. Return to the recruiter space to inspect the report: test results, quotes,
-   code evidence and follow-up questions.
-
-Generation and the interview use live model calls. A fresh local installation
-starts with an empty company space; **Start guided demo** prepares its example
-when you choose it.
-
-### Recorded interviews and evidence replay
-
-The interview starts after an explicit camera/audio recording agreement. The
-candidate sees their muted camera preview at the bottom left, plus a recording
-indicator. One video combines their camera and microphone with Oracle's actual
-server-generated voice. The report reads the transcript and the code; no camera
-image is ever sent to a model. (A first version could send sampled images to
-Muse Spark for camera visibility. Measured, it added 60 % latency, sometimes
-missed the key transcript moment, and only told what the replay already shows:
-it was removed.)
-
-MediaRecorder uploads ordered chunks while the interview runs. The final page
-waits for the last chunk to save. A lost device or failed upload stops the
-conversation with an explanation. Once the interview starts, closing or
-refreshing the page, losing the connection or losing a device ends the attempt
-permanently. Switching tabs or windows does not end it. The report marks an
-interruption separately from a completed conversation; incomplete recordings
-are labelled. Recorded interviews require the server
-voice: browser speech synthesis cannot be mixed into the recorded audio. The
-developer voice lab still supports unrecorded audio and its fallback.
-
-The report has a private replay player. Transcript passages and supported quotes
-link to approximate server-event positions, with context before the passage.
-These positions are not word-aligned audio evidence. Older interviews without
-recordings still open normally. A pause or camera event is never interpreted as
-dishonesty or used as a skill score.
-
-Media is kept in two separate SQLite tables; another isolates demo sessions,
-and one stores the visual-analysis agreement and replay annotations, so existing
-candidate tables need no reset. Access requires a current
-recruiter session in the owning company. In the shared demo account, only the
-login session that created a candidate invitation can list, play or delete
-that candidate's recordings. Other demo visitors cannot access them. Signing
-out or losing that login session ends access. Older demo recordings without a
-known owner stay hidden unless the browser can prove participation using the
-completed candidate's private session cookie; that one-time recovery binds
-them to the current demo login. Regular company spaces keep their team-wide access.
-Video requests support byte ranges for seeking and are never publicly
-cached. Uploads are capped at 2 MiB per request, 100 MiB per attempt, 20 minutes
-and five attempts per candidate. Media is unavailable after 30 days and purged
-on startup, on recording requests and every six hours while the server runs. The
-recruiting team can delete a recording from its report. Backup copies have their
-own retention and must be included in the operator's deletion policy.
-
-If a candidate cannot use a camera, the interface directs them to the recruiter
-for an adjustment; an alternate assessment workflow is not implemented here.
-
-#### Interactive key moments
-
-The replay has its own player: a browser recording (MediaRecorder WebM) has no
-duration in its header, so the native scrubber is unusable; the track is drawn
-from the duration measured by the server and shows when the candidate speaks.
-Captions follow the transcript, **N**/**P** jump between answers, and every
-replay link of the report (quotes, transcript) jumps there 1.5 s early.
-
-Choose **Find key moments**: Muse Spark (about 15 s) reads the transcript
-against the submitted code and the report, and marks claims to verify and
-explanations that match the code. Quotes, lines and code ranges are checked
-against the source; transcript positions remain approximate. The moments sit on
-the track and in a list that follows the playback. They point to passages and
-decide nothing.
-
-This step uses the existing `MODEL_API_KEY` and model configuration, with no
-recorded fallback analysis. Moments are cached, private under the same
-company/demo-session rules as the replay, and removed with its deletion or
-expiry.
-The original video, main report and human decision remain unchanged. Model-provider
-retention is governed by the configured provider's policies.
 
 ## Run it
 
@@ -260,6 +151,46 @@ To run the tests, open another terminal in `app/`:
 deno task test   # all tests, in-memory SQLite, no network
 ```
 
+## Try the product
+
+Open the [live app](https://defendableapp.com) and choose **Try with the demo
+account** on the sign-in page. No account or API key is needed to use the
+hosted demo. Then choose either path:
+
+### Guided demo — recommended for a first visit
+
+Choose **Start guided demo** and follow the five steps: prepared assessment,
+fictional candidate invitation, coding, spoken interview and that candidate’s
+report. You can load an example solution to try the coding tools quickly.
+Allow about **10–15 minutes**, with a camera, microphone and headphones. You can exit
+the guide at any time.
+
+The prepared scenario and solution are labelled examples. Tests execute in the
+sandbox; the interview and report use the configured models.
+
+### Generate your own assessment
+
+1. Choose **New assessment** and paste a job offer (examples in
+   [fixtures/offers/](fixtures/offers/)). Review the brief and automatic checks,
+   approve the assessment, then create a candidate link.
+2. Open the candidate link, build and submit the solution, then talk with Oracle
+   using a camera, microphone and headphones, after accepting the recording notice.
+3. Return to the recruiter space to inspect the report: test results, quotes,
+   code evidence and follow-up questions.
+
+Generation and the interview use live model calls. A fresh local installation
+starts with an empty company space; **Start guided demo** prepares its example
+when you choose it.
+
+### Interview replay
+
+The interview is recorded, with the candidate's agreement: their camera and
+voice, and Oracle's voice. In the report, **Interview replay** plays it with
+captions; every quote and transcript line links to its moment, and **Find key
+moments** lets Muse Spark mark the claims to verify against the code (about
+15 s). No camera image is ever sent to a model. Storage, access and limits:
+[Recording and replay](#recording-and-replay).
+
 ## What it does
 
 - **Verified assessments:** turn a job offer into a task, public and hidden
@@ -274,6 +205,17 @@ deno task test   # all tests, in-memory SQLite, no network
   model call checks whether evidence supports the interpretation.
 - **Human decisions:** suggested follow-up questions and a saved recruiter
   decision, with no overall score or automatic hiring recommendation.
+
+## How this repository is organised
+
+| Path | What it is |
+| --- | --- |
+| `patches/pre-event.patch` | the changes made during the event to the pre-event files |
+| every other file | created during the event |
+| `setup.sh` | rebuilds the full app in `./app`: downloads the extract at its pinned commit, applies the patch, adds the new files |
+
+The extract is pinned in `setup.sh` (`PRE_EVENT_COMMIT`); nothing from before the
+event is stored in this repository or in its history.
 
 ## Meta models
 
@@ -480,6 +422,76 @@ prompt, without the rule on absences, doubted 31 % of the right readings
 
 <details>
 <summary><strong>Model evaluations: quality, latency and reasoning effort</strong></summary>
+
+### Recording and replay
+
+The interview starts after an explicit camera/audio recording agreement. The
+candidate sees their muted camera preview at the bottom left, plus a recording
+indicator. One video combines their camera and microphone with Oracle's actual
+server-generated voice. The report reads the transcript and the code; no camera
+image is ever sent to a model. (A first version could send sampled images to
+Muse Spark for camera visibility. Measured, it added 60 % latency, sometimes
+missed the key transcript moment, and only told what the replay already shows:
+it was removed.)
+
+MediaRecorder uploads ordered chunks while the interview runs. The final page
+waits for the last chunk to save. A lost device or failed upload stops the
+conversation with an explanation. Once the interview starts, closing or
+refreshing the page, losing the connection or losing a device ends the attempt
+permanently. Switching tabs or windows does not end it. The report marks an
+interruption separately from a completed conversation; incomplete recordings
+are labelled. Recorded interviews require the server
+voice: browser speech synthesis cannot be mixed into the recorded audio. The
+developer voice lab still supports unrecorded audio and its fallback.
+
+The report has a private replay player. Transcript passages and supported quotes
+link to approximate server-event positions, with context before the passage.
+These positions are not word-aligned audio evidence. Older interviews without
+recordings still open normally. A pause or camera event is never interpreted as
+dishonesty or used as a skill score.
+
+Media is kept in two separate SQLite tables; another isolates demo sessions,
+and one stores the key moments, so existing candidate tables need no reset. Access requires a current
+recruiter session in the owning company. In the shared demo account, only the
+login session that created a candidate invitation can list, play or delete
+that candidate's recordings. Other demo visitors cannot access them. Signing
+out or losing that login session ends access. Older demo recordings without a
+known owner stay hidden unless the browser can prove participation using the
+completed candidate's private session cookie; that one-time recovery binds
+them to the current demo login. Regular company spaces keep their team-wide access.
+Video requests support byte ranges for seeking and are never publicly
+cached. Uploads are capped at 2 MiB per request, 100 MiB per attempt, 20 minutes
+and five attempts per candidate. Media is unavailable after 30 days and purged
+on startup, every six hours, and at most once a minute on recording requests.
+A recording whose browser never sent its end (closed tab, lost connection) is
+closed as interrupted by the server, five minutes after the interview ends. The
+recruiting team can delete a recording from its report. Backup copies have their
+own retention and must be included in the operator's deletion policy.
+
+If a candidate cannot use a camera, the interface directs them to the recruiter
+for an adjustment; an alternate assessment workflow is not implemented here.
+
+#### Player and key moments
+
+The replay has its own player: a browser recording (MediaRecorder WebM) has no
+duration in its header, so the native scrubber is unusable; the track is drawn
+from the duration measured by the server and shows when the candidate speaks.
+Captions follow the transcript, **N**/**P** jump between answers, and every
+replay link of the report (quotes, transcript) jumps there 1.5 s early.
+
+Choose **Find key moments**: Muse Spark (about 15 s) reads the transcript
+against the submitted code and the report, and marks claims to verify and
+explanations that match the code. Quotes, lines and code ranges are checked
+against the source; transcript positions remain approximate. The moments sit on
+the track and in a list that follows the playback. They point to passages and
+decide nothing.
+
+This step uses the existing `MODEL_API_KEY` and model configuration, with no
+recorded fallback analysis. Moments are cached, private under the same
+company/demo-session rules as the replay, and removed with its deletion or
+expiry.
+The original video, main report and human decision remain unchanged. Model-provider
+retention is governed by the configured provider's policies.
 
 ### Model choice, measured
 
