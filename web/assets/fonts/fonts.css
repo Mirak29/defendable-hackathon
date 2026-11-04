@@ -1,5 +1,8 @@
 /* Self-hosted fonts (latin subset), all under the SIL Open Font License except
-   Nasalization, the free font of the DEFENDABLE wordmark. */
+   Nasalization, the free font of the DEFENDABLE wordmark. Reduced to what the
+   app uses (fontTools): Bricolage wght 400-700 and opsz 12-36, Unbounded wght
+   500-700, Nasalization capitals only, Space Mono without hinting. Checked by
+   pixel comparison of five pages: no reflow, sub-pixel differences only. */
 @font-face {
   font-family: 'Bricolage Grotesque';
   font-style: normal;
@@ -34,5 +37,5 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('nasalization.woff') format('woff');
+  src: url('nasalization.woff2') format('woff2');
 }

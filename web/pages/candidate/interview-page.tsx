@@ -7,7 +7,14 @@ import {
   meStatus,
   retryPreparation,
 } from '/web/lib/candidate-store.ts'
-import { startVoice, stopVoice, voice } from '/web/lib/voice-client.ts'
+import {
+  startRecordedVoice,
+  startVoice,
+  stopVoice,
+  voice,
+} from '/web/lib/voice-client.ts'
+import { recording } from '/web/lib/interview-recording.ts'
+import { GuidedDemo } from '/web/ui/guided-demo.tsx'
 import { noCopy, trackIntegrity } from '/web/lib/integrity.ts'
 import { Spinner } from '/web/ui/spinner.tsx'
 import { OracleOrb, STAGE_BACKGROUND } from '/web/ui/oracle-orb.tsx'
@@ -135,6 +142,8 @@ export const InterviewPage = () => {
   const view = me.value
   const status = meStatus.value
   const live = voice.status.value
+  const captureStatus = recording.status.value
+  const [recordingAccepted, setRecordingAccepted] = useState(false)
   // An interview that Oracle closes live is marked finished at once: the page
   // then waits for its last words (below) instead of leaving here.
   const closingLive = live === 'live' || live === 'ended'
@@ -142,22 +151,39 @@ export const InterviewPage = () => {
     if (status === 'none') navigate({ href: paths.candidate, replace: true })
     else if (view && !view.submittedAt) {
       navigate({ href: paths.workspace, replace: true })
-    } else if (view?.finishedAt && !closingLive) {
+    } else if (
+      (view?.finishedAt && !closingLive ||
+        view?.interviewStartedAt && live === 'idle') &&
+      captureStatus !== 'recording' && captureStatus !== 'saving'
+    ) {
       navigate({ href: paths.done, replace: true })
     }
-  }, [status, view?.submittedAt, view?.finishedAt, closingLive])
+  }, [
+    status,
+    view?.submittedAt,
+    view?.finishedAt,
+    view?.interviewStartedAt,
+    live,
+    captureStatus,
+    closingLive,
+  ])
 
   // The interviewer closed the interview: the server marks it finished. The
   // page stays until its last words are said, then a moment more.
   const speaking = voice.speaking.value
   useEffect(() => {
     if (live !== 'ended' || speaking) return
+    stopVoice(false, true)
+    if (
+      captureStatus === 'recording' || captureStatus === 'saving' ||
+      captureStatus === 'error'
+    ) return
     const timer = setTimeout(async () => {
       await loadMe()
       navigate({ href: paths.done })
     }, 2500)
     return () => clearTimeout(timer)
-  }, [live, speaking])
+  }, [live, speaking, captureStatus])
   // leaving the page ends the call
   useEffect(() => () => stopVoice(), [])
   // the conditions of the interview, reported as facts
@@ -171,8 +197,15 @@ export const InterviewPage = () => {
   const mic = useMicCheck(!!ready && live === 'idle')
   const begin = () => {
     mic.stop()
-    startVoice()
+    if (url.params.demo === '1') startVoice()
+    else startRecordedVoice()
   }
+  useEffect(() => {
+    if (captureStatus !== 'recording' && captureStatus !== 'saving') return
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault()
+    addEventListener('beforeunload', warn)
+    return () => removeEventListener('beforeunload', warn)
+  }, [captureStatus])
 
   // the conversation follows its latest message
   const scroller = useRef<HTMLDivElement>(null)
@@ -263,9 +296,14 @@ export const InterviewPage = () => {
       <header tw='h-12 flex-none flex items-center justify-between px-5 border-b border-border-primary'>
         <Logo />
         <span tw='text-[12.5px] text-content-tertiary'>
-          A conversation about your code
+          {captureStatus === 'recording'
+            ? '● Camera and audio recording'
+            : captureStatus === 'saving'
+            ? 'Saving the recording…'
+            : 'A conversation about your code'}
         </span>
       </header>
+      {asking && <GuidedDemo />}
       <div tw='flex-1 min-h-0 flex flex-col lg:flex-row'>
         <section
           aria-label='Oracle'
@@ -273,7 +311,14 @@ export const InterviewPage = () => {
           style={{ background: STAGE_BACKGROUND }}
         >
           <OracleOrb />
-          <div tw='absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 px-6 pb-8 pt-16'>
+          <div
+            tw='absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 px-6 pb-8 pt-16'
+            style={{
+              paddingLeft: recording.preview.value
+                ? 'clamp(120px, 18vw, 200px)'
+                : undefined,
+            }}
+          >
             {!asking && (
               <p
                 aria-live='polite'
@@ -303,8 +348,8 @@ export const InterviewPage = () => {
                   style={{ opacity: 0.85 }}
                 >
                   {live === 'error'
-                    ? 'Check that your microphone is allowed, then try again.'
-                    : 'Oracle will talk your code through with you, out loud. There are no trick questions, you can take your time, and a person reads the result afterwards.'}
+                    ? 'Check your camera, microphone and connection, then try again.'
+                    : 'Oracle has read your code and will talk it through with you, out loud. There are no trick questions, you can take your time, and a person reads the result afterwards.'}
                 </p>
                 {live !== 'error' && (
                   <ul
@@ -359,8 +404,26 @@ export const InterviewPage = () => {
                   </ul>
                 )}
                 <p tw='m-0 text-[12.5px]' style={{ opacity: 0.65 }}>
-                  Headphones help. The 10 minutes start when you click Start.
+                  Your camera, microphone and Oracle’s voice will be recorded
+                  for replay by the recruiting team. The recording is available
+                  for 30 days. No camera image is sent to an AI model, and there
+                  is no emotion, gaze, personality or honesty assessment. Use
+                  headphones. If you cannot use a camera, contact the recruiter
+                  for an adjustment before starting. Once the interview starts,
+                  closing or refreshing this page, or losing the connection,
+                  ends it permanently. Switching tabs does not end it.
                 </p>
+                {!demo && (
+                  <label tw='flex items-start gap-2 text-left text-[13px]'>
+                    <input
+                      type='checkbox'
+                      checked={recordingAccepted}
+                      onChange={(e) =>
+                        setRecordingAccepted(e.currentTarget.checked)}
+                    />
+                    I agree to the camera and audio recording described above.
+                  </label>
+                )}
               </div>
             )}
             <div tw='flex flex-col items-center gap-1'>
@@ -384,7 +447,26 @@ export const InterviewPage = () => {
                 {voice.error.value}
               </p>
             )}
-            {live !== 'ended' && (asking || demo) && (
+            {captureStatus === 'saving' && (
+              <p role='status' tw='m-0 text-[13px]'>
+                Saving the recording. Keep this page open.
+              </p>
+            )}
+            {live === 'ended' && captureStatus === 'error' && (
+              <div tw='flex flex-col gap-2 text-[13px]'>
+                <p role='alert'>
+                  {recording.error.value} The replay may be incomplete.
+                </p>
+                <button
+                  type='button'
+                  tw='btn btn-secondary'
+                  onClick={() => navigate({ href: paths.done })}
+                >
+                  Finish with a recording warning
+                </button>
+              </div>
+            )}
+            {live !== 'ended' && (
               <div tw='flex gap-2'>
                 {talking && demo
                   ? (
@@ -402,7 +484,9 @@ export const InterviewPage = () => {
                       type='button'
                       data-test='interview-start'
                       tw='btn btn-primary'
-                      disabled={mic.state === 'denied'}
+                      disabled={mic.state === 'denied' ||
+                        (!demo &&
+                          (!recordingAccepted || captureStatus === 'saving'))}
                       onClick={begin}
                     >
                       <Mic tw='w-4 h-4' />
@@ -412,6 +496,34 @@ export const InterviewPage = () => {
               </div>
             )}
           </div>
+          {recording.preview.value && (
+            <div
+              tw='absolute bottom-3 left-3 rounded-xl overflow-hidden border border-border-strong bg-surface-elevated shadow-lg'
+              style={{ width: 'clamp(100px, 16vw, 180px)' }}
+            >
+              <video
+                aria-label='Your camera preview'
+                autoPlay
+                muted
+                playsInline
+                ref={(element) => {
+                  if (
+                    element && element.srcObject !== recording.preview.value
+                  ) element.srcObject = recording.preview.value ?? null
+                }}
+                style={{
+                  width: '100%',
+                  aspectRatio: '4 / 3',
+                  objectFit: 'cover',
+                  transform: 'scaleX(-1)',
+                  display: 'block',
+                }}
+              />
+              <div tw='px-2 py-1 text-[11px]'>
+                You · {captureStatus === 'recording' ? 'Recording' : 'Saving'}
+              </div>
+            </div>
+          )}
         </section>
 
         <aside
